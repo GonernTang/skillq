@@ -48,6 +48,7 @@ class QlibState:
         lib: Qlib,
         mgr: LibManager,
         lib_root: Path | None = None,
+        seed_initial_q: float = 0.5,
     ) -> None:
         """Persist the library, Q-table, and step counter to JSON."""
         payload = {
@@ -72,6 +73,7 @@ class QlibState:
                     sid: _skill_to_dict(skill) for sid, skill in lib.skills.items()
                 },
             },
+            "seed_initial_q": float(seed_initial_q),
         }
         if lib_root is not None:
             payload["library_root"] = str(lib_root)
@@ -124,6 +126,30 @@ class QlibState:
         lib.skills.clear()
         for sid, raw in lib_data.get("skills", {}).items():
             lib.add(_skill_from_dict(sid, raw))
+
+        # Seed skills: pre-populate a single Q-table entry at
+        # intent_hash=0 with Q=0.5 so they behave identically to
+        # freshly extracted skills on first retrieve. This is a
+        # minimal "optimistic prior" — the Q-table is still keyed
+        # by (intent_hash, skill_id) and grows naturally per-intent
+        # once the skill is actually used.
+        #
+        # The (intent_hash=0) key is a sentinel — bridge.py will
+        # use a *real* intent_hash on first retrieve and the
+        # natural Q update will overwrite / augment this entry.
+        # We only do this for skills that have *no* Q-table entry
+        # yet, so resume from an existing state file is not
+        # affected.
+        seed_initial_q = float(data.get("seed_initial_q", 0.5))
+        if seed_initial_q != 0.0:
+            for sid in lib.skills:
+                # Only seed skills that have NO Q-table entry yet
+                # (don't overwrite an existing Q — resume must be
+                # idempotent).
+                if not any(
+                    skill_id == sid for (_intent, skill_id) in mgr.q_table.keys()
+                ):
+                    mgr.q_table[(0, sid)] = seed_initial_q
 
         self._written = True
         return True

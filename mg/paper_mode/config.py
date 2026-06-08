@@ -72,6 +72,15 @@ class MethodConfig(BaseModel):
             "the attribution says VIEWED_BUT_NOT_USED)."
         ),
     )
+    new_skill_initial_q: float = Field(
+        default=0.5, ge=-1.0, le=1.0,
+        description=(
+            "Initial Q-value assigned to a freshly created or seed skill, "
+            "on the current trial's intent_hash (or on the (0, skill_id) "
+            "sentinel for seed skills). Set 0.5 for an optimistic prior; "
+            "0.0 for cautious; negative for an initial penalty."
+        ),
+    )
 
     # Persistence
     library_root: Path = Field(default=Path("./.mg_library"))

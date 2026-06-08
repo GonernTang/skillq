@@ -287,10 +287,20 @@ def attach_paper_registers(job: Job, method: MethodConfig) -> None:
                     # through the full n_explore window.
                     mgr.probation_count.pop(new_skill.skill_id, None)
                     mgr.probation_avg_q.pop(new_skill.skill_id, None)
+                    # Initial Q-value for the new skill on the
+                    # current intent. MethodConfig defaults to 0.5
+                    # (an "optimistic prior" — gives the new skill
+                    # a fair chance at the z-score Phase B ranking).
+                    mgr.update_q(
+                        intent_hash,
+                        new_skill.skill_id,
+                        method.new_skill_initial_q,
+                    )
                     extracted_skills.append(new_skill)
                     logger.info(
-                        "Extracted new skill %s for intent %s",
+                        "Extracted new skill %s (Q_init=%.2f) for intent %s",
                         new_skill.skill_id,
+                        method.new_skill_initial_q,
                         intent_text,
                     )
 
