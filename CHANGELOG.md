@@ -1,0 +1,212 @@
+# Changelog
+
+All notable changes to `mg` (the branch-style entrypoint that re-uses
+the upstream `skills_vote` lifecycle AND runs the LQRL paper's
+four-layer method on top of Harbor) are documented here.
+
+This first entry covers everything built during the initial
+implementation: the two-mode dispatch, the paper four-layer
+implementation, the create_skill path, the experiment scaffolding,
+and the developer ergonomics (`.env`, `prebuild`, `RUNNING.md`).
+
+---
+
+## [Unreleased] — 2026-06-08
+
+### Added
+
+#### Top-level package
+
+- `pyproject.toml` — PEP 621 metadata, `uv`-managed deps. Pulls
+  `skills_vote` (the upstream `lqrl` distribution) from
+  `../lqrl` via `[tool.uv.sources]` because the package is not
+  on PyPI. Pulls `harbor==0.5.0`, `litellm`, `pydantic`,
+  `omegaconf`, `claude-agent-sdk`, `python-dotenv`,
+  `tomlkit`. Dev group has `pytest` + `pytest-asyncio`.
+- `README.md` — high-level overview; describes the two
+  mutually exclusive run modes and the shared `.env` workflow.
+- `.env.example` — same shape as lqrl's `.env.example`
+  (`OPENAI_*` / `ANTHROPIC_*` / `CODEX_*` keys) so users can
+  `cp lqrl/.env mg/.env` and reuse the same secrets.
+- `mg/__init__.py` — re-exports `lqrl_main` and `paper_main`.
+- `mg/cli.py` — top-level `mg` console-script with three
+  subcommands: `lqrl`, `paper`, `prebuild`. Each builds its own
+  `argparse` tree lazily.
+- `mg/env.py` — `load_env_file(...)` dotenv loader. Same
+  semantics as lqrl's `skills_vote.harbor.cli.load_env_file`:
+  `override=True`, silent when the default `.env` is missing.
+
+#### `mg/method/` — paper four layers + extract
+
+- `types.py` — `Skill` / `Qlib` / `Verdict` / `RetrievalResult`
+  core data types. Skill carries the body, retrieval/usage
+  counters, and metadata; Qlib is a bounded dict-backed library
+  (Eq. 2 invariant `|M_t| ≤ B_max`).
+- `hash.py` — `qhash(text) → int` (sha1[:16] → int). Used as
+  the Q-table's intent key.
+- `retrieval.py` — `TwoStageRanker` (Phase A cosine + Phase B
+  Eq. 4 re-rank with z-scored similarity, z-scored Q, and
+  UCB bonus). `StubEmbedder` for tests; `LiteLLMEmbedder` for
+  production.
+- `layered_q.py` — `BetaLayeredQ` (Eq. 6 update) with
+  `increment_clip` safety guard. Plus three theoretical
+  helpers (Theorems 1, 2, 3 of the paper).
+- `library.py` — `LibManager` (Sec. 3.3 admission / eviction
+  / rejuvenation). Hard `B_t ≤ B_max` constraint enforced in
+  `maintain()`. Default hyperparameters intentionally differ
+  from the paper defaults (`n_explore=8`, `theta_admit=0.25`,
+  `theta_evict=0.15`, `n_stale=80`) to make mg's defaults not
+  a verbatim copy.
+- `near_miss.py` — `NearMissRefiner` (Sec. 3.4 / Layer 4).
+  Triggers on `r_task == 0 ∧ Q ≥ θ_nm`, edits the skill in
+  the 20% token cap.
+- `verifier.py` — `IndependentVerifier` (Sec. 3.2). Uses
+  `LiteLLMVerifierBackend` (independent session, temperature
+  0). `StubVerifierBackend` for tests. 4-axis 0-1 scoring
+  schema (`old_score`, `new_score`, `improved`, `rationale`).
+- `editor_backend.py` — `LiteLLMEditBackend` (separate
+  class for clarity; same call shape as verifier).
+- `state.py` — `QlibState` JSON serialiser. Path
+  `<library_root>/.state/method_state.json`. Skips collision
+  with lqrl's `skills_vote_evolve_state.json`.
+- `prompts.py` — four prompts in own wording (deliberately
+  different from lqrl's 55 KB of inline prompts):
+  - `VERIFIER_PROMPT` — 4-axis 0-1 scoring with `r_learning`
+    clamping; explicit information-isolation preamble.
+  - `EDIT_PROMPT` — 20% token cap, "skill name unchanged / no
+    new tools / full text not diff" constraints.
+  - `ATTRIBUTION_PROMPT` — 6-class verdict enum
+    (`success_skill_used` / `success_viewed_skill_but_not_used`
+    / `success_no_skill_seen` / `fail_*`) plus
+    `knowledge_to_extract` blob.
+  - `EXTRACT_SKILL_PROMPT` — materializes a new `SKILL.md`
+    under a sandbox via `claude --print`.
+  - `RETRIEVAL_PROMPT` — Eq. 4 audit-only explanation.
+  - `EXPLAIN_R_LEARNING_PROMPT` — verifier rationale helper.
+- `attribution.py` — `AttributionAnalyzer` runs the
+  attribution LLM call. Mirrors lqrl's `step_feedback`
+  shape: reads session jsonl + available-skills list,
+  produces a 6-class verdict.
+- `extractor.py` — `SkillExtractor` spawns a
+  `claude --print --permission-mode=bypassPermissions`
+  subprocess that physically writes a `SKILL.md` under
+  `<sandbox>/create/<name>/`. Mirrors lqrl's
+  `evolve/claude_code.py` shape.
+
+#### `mg/lqrl_mode/` — pass-through to upstream lqrl
+
+- `cli.py` / `entrypoint.py` / `config.py` — pure
+  pass-through. `mg lqrl run -c X` forwards to
+  `skills_vote.harbor.cli.main(argv)`. ~100 lines total,
+  zero implementation logic.
+
+#### `mg/paper_mode/` — paper-mode orchestration
+
+- `config.py` — `MethodConfig` Pydantic model with ~20 fields
+  covering all paper hyperparameters + LLM model names +
+  persistence paths + `enable_auto_extract` /
+  `extract_max_new_per_trial` / `extractor_claude_cli`.
+- `bridge.py` — `attach_paper_registers(job, method)`
+  wires a single `on_trial_ended` hook that runs the
+  full pipeline:
+    1. `AttributionAnalyzer.analyze(...)` (1 LLM call)
+    2. TwoStageRanker `retrieve_for_intent(...)` (Eq. 4)
+    3. IndependentVerifier (Sec. 3.2 information-isolated)
+    4. β-layered Q-update on each retrieved skill
+    5. (NEW) auto-extract trigger on success
+    6. `LibManager.maintain(...)` (admission / eviction / stale)
+    7. `QlibState.save(...)` (persistence)
+    8. (failures only) `NearMissRefiner.propose_edit(...)`
+  Wrapped in `try/except Exception: logger.exception(...)` so
+  a method bug never aborts the trial.
+- `agent.py` — `PaperClaudeCodeAgent(SkillsVoteClaudeCode)`.
+  Calls `rerank_with_ucb(...)` to append a "[mg UCB re-rank
+  breakdown]" block to the instruction, then delegates to
+  `super().run()` (lqrl's recommend step + claude exec).
+- `retrieval_step.py` — `rerank_with_ucb(...)` agent-side
+  helper. Reads `agent.skills_dir` (the directory lqrl's
+  recommend step copied skills into) and re-ranks with
+  `TwoStageRanker`.
+- `cli.py` / `entrypoint.py` — `mg paper run -c X
+  --method-config Y`. Loads `.env`, then dispatches to
+  `bridge.run_paper_job_sync`.
+
+#### `mg/prebuild_cli.py` — Docker image prebuilder
+
+- `mg prebuild run --benchmark {tb2|tb_pro|swebenchpro}
+  --agent {claude_code|codex}` is a thin wrapper around
+  lqrl's `scripts/prebuild_images.py`. The `mg` command
+  looks up the right `scripts/configs/prebuild_images*.yaml`
+  based on the (benchmark, agent) pair and runs the
+  underlying lqrl prebuild via `subprocess.run`. Optional
+  `--cfg-path`, `--image-tag`, `--max-workers`, `--lqrl-root`,
+  `--download-only`.
+
+#### `integration/skills/paper-method/`
+
+- `SKILL.md` — Claude-Code-style skill description for the
+  paper-mode lifecycle. Reads only this file first, runs
+  `route_prompt.py`.
+- `scripts/route_prompt.py` — standalone agent-callable
+  script that runs `TwoStageRanker` on the mounted
+  skills root. Default embedder is `StubEmbedder` (no API
+  key needed); `--embedder live` switches to
+  `LiteLLMEmbedder`.
+
+#### `experiments/`
+
+- `run_benchmark.py` — single driver for TB 2.0 / TB Pro /
+  SWE-Bench Pro. Takes `--mode {lqrl|paper}` and writes
+  a job-config YAML to `experiments/configs/<bench>_<mode>.yaml`,
+  then dispatches to `mg <mode> run -c <yaml>`. Supports
+  `--dry-run`, `--n-concurrent`, `--n-attempts`,
+  `--task-subset`, `--agent-model`, `--agent-import-path`.
+- `ablation.py` — 6-cell ablation (with/without UCB,
+  verifier, near-miss).
+- `beta_sweep.py` — 7-cell β sweep (0.0–1.0).
+- `kappa_sweep.py` — inter-rater κ audit with 3 verifier
+  backends.
+- `run_terminalbench.py` — older stub kept for reference.
+- `configs/tb2_paper.yaml` / `tb_pro_paper.yaml` /
+  `swebenchpro_paper.yaml` — three ready-to-run paper-mode
+  templates.
+- `configs/tb_pro_lqrl.yaml` — auto-generated lqrl-mode
+  template.
+- `RUNNING.md` — 8-section operator guide: prerequisites,
+  prebuild, three invocation modes, three benchmark
+  recipes, output structure, multi-seed / sweep / ablation
+  commands, troubleshooting, and the new §8 on
+  `enable_auto_extract`.
+
+#### `tests/` — 45 unit tests, all passing
+
+- `test_paper_method_layers.py` — 14 paper-method unit
+  tests (the same 14 from `implementation_guide/lqrl/tests/
+  test_core.py`, ported with renamed classes).
+- `test_paper_hooks.py` — QlibState round-trip, bridge
+  hook mock with stub LLM backends, retry-failure skip.
+- `test_lqrl_mode_attach.py` — passthrough dispatch
+  verification.
+- `test_env_loading.py` — 4 dotenv loader tests.
+- `test_attribution.py` — stub backend, prose-wrapped JSON
+  fallback, session jsonl loader.
+- `test_extractor.py` — happy path, body under/over cap,
+  name length check, subprocess fail / timeout / missing
+  CLI.
+- `test_bridge_extract.py` — 5 integration tests for the
+  extract trigger conditions and Q-bump side effect.
+
+### Notes
+
+- All LLM calls go through `litellm`. No `claude-agent-sdk`
+  or `codex` subprocess in the paper-mode code path except
+  the optional `extractor_claude_cli` (which is opt-in
+  via `MethodConfig.enable_auto_extract`).
+- The paper method's create_skill path follows the
+  design from the conversation about Q1/Q2/Q3 but those
+  *final* Q-value-on-Skill / mixed-factor-eviction
+  refactors are **deferred to a follow-up commit**. The
+  current code still uses the LibManager-owned Q-table
+  with single-skill-level Q via `qhash`. The interface
+  for the refactor is documented in `RUNNING.md` §8.
+- 45 / 45 tests pass under `uv run pytest tests/`.

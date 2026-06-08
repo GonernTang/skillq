@@ -1,0 +1,60 @@
+# Example mg paper config for SWE-Bench Pro (1.0)
+#
+# Run with:
+#   uv run mg paper run -c mg/experiments/configs/swebenchpro_paper.yaml
+#
+# SWE-Bench Pro is the largest of the three benchmarks (~700+ tasks).
+# Default: 20-task subset (matches lqrl's scripts/configs/swebenchpro).
+# The full corpus is downloadable but takes hours to build Docker images.
+
+jobs_dir: output
+job_name: swebenchpro_paper__${now:%Y-%m-%d__%H-%M-%S}
+n_attempts: 1
+n_concurrent_trials: 2
+quiet: false
+
+retry:
+  max_retries: 0
+  exclude_exceptions:
+    - VerifierTimeoutError
+    - RewardFileNotFoundError
+    - RewardFileEmptyError
+    - VerifierOutputParseError
+
+agent_timeout_multiplier: 4.0
+
+environment:
+  type: docker
+  force_build: false
+  delete: false
+  mounts_json:
+    - type: bind
+      source: ${abspath:.mg_library/seed}
+      target: /skills
+      read_only: true
+
+agents:
+  - import_path: mg.paper_mode.agent:PaperClaudeCodeAgent
+    model_name: anthropic/claude-sonnet-4-5
+    kwargs:
+      allowed_skills: []
+      recommend:
+        skills_dir: /skills
+        prompt_path: mg.paper_mode.retrieval_step:rerank_with_ucb
+      paper_retrieval:
+        enabled: true
+        k1: 10
+        k2: 3
+        c_ucb: 0.5
+        lambda_: 0.5
+
+datasets:
+  - name: swebenchpro
+    version: "1.0"
+    download_dir: input/swebenchpro
+    task_names:
+      # 20-instance subset (matches lqrl's default). Replace with the
+      # full task list (or remove ``task_names`` entirely) for the full
+      # corpus.
+      - instance_protonmail__webclients-0200ce0fc1d4dbd35178c10d440a284c82ecc858
+      - instance_qutebrowser__qutebrowser-b8c93a8a3a64e2c6cdc2ddde2c6b1ade4dd3cbe9

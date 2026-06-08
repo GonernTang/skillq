@@ -1,0 +1,31 @@
+jobs_dir: output
+job_name: tb_pro_lqrl__2026-06-05__16-57-34
+n_attempts: 1
+n_concurrent_trials: 4
+quiet: false
+retry:
+  max_retries: 0
+  exclude_exceptions:
+  - VerifierTimeoutError
+  - RewardFileNotFoundError
+  - RewardFileEmptyError
+  - VerifierOutputParseError
+agent_timeout_multiplier: 4.0
+environment:
+  type: docker
+  force_build: false
+  delete: false
+agents:
+- import_path: skills_vote.harbor.claude_code:SkillsVoteClaudeCode
+  model_name: anthropic/claude-sonnet-4-5
+  kwargs:
+    allowed_skills: []
+    recommend:
+      skills_dir: ${abspath:.mg_library/seed}
+      prompt_path: skills_vote.recommend.prompt:build
+datasets:
+- name: terminal-bench-pro
+  version: '1.0'
+  download_dir: input/tb-pro
+  task_names:
+  - rebuild-fastproc-for-python-3-13

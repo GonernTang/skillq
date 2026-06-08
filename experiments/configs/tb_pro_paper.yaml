@@ -1,0 +1,57 @@
+# Example mg paper config for Terminal-Bench Pro (1.0)
+#
+# Run with:
+#   uv run mg paper run -c mg/experiments/configs/tb_pro_paper.yaml
+#
+# Terminal-Bench Pro has 48 tasks; subset via ``task_names:`` below or
+# remove the field to run the full corpus. The 24/24 train/test split
+# follows lqrl's convention in scripts/configs/tb_pro/.
+
+jobs_dir: output
+job_name: tb_pro_paper__${now:%Y-%m-%d__%H-%M-%S}
+n_attempts: 1
+n_concurrent_trials: 4
+quiet: false
+
+retry:
+  max_retries: 0
+  exclude_exceptions:
+    - VerifierTimeoutError
+    - RewardFileNotFoundError
+    - RewardFileEmptyError
+    - VerifierOutputParseError
+
+agent_timeout_multiplier: 4.0
+
+environment:
+  type: docker
+  force_build: false
+  delete: false
+  mounts_json:
+    - type: bind
+      source: ${abspath:.mg_library/seed}
+      target: /skills
+      read_only: true
+
+agents:
+  - import_path: mg.paper_mode.agent:PaperClaudeCodeAgent
+    model_name: anthropic/claude-sonnet-4-5
+    kwargs:
+      allowed_skills: []
+      recommend:
+        skills_dir: /skills
+        prompt_path: mg.paper_mode.retrieval_step:rerank_with_ucb
+      paper_retrieval:
+        enabled: true
+        k1: 10
+        k2: 3
+        c_ucb: 0.5
+        lambda_: 0.5
+
+datasets:
+  - name: terminal-bench-pro
+    version: "1.0"
+    download_dir: input/tb-pro
+    task_names:
+      - rebuild-fastproc-for-python-3-13
+      # Add more task names here for the full 24-task TB Pro test split.
