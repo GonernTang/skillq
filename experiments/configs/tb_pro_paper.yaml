@@ -1,7 +1,7 @@
 # Example mg paper config for Terminal-Bench Pro (1.0)
 #
 # Run with:
-#   uv run mg paper run -c mg/experiments/configs/tb_pro_paper.yaml
+#   uv run paper paper run -c paper/experiments/configs/tb_pro_paper.yaml
 #
 # Terminal-Bench Pro has 48 tasks; subset via ``task_names:`` below or
 # remove the field to run the full corpus. The 24/24 train/test split
@@ -34,13 +34,13 @@ environment:
       read_only: true
 
 agents:
-  - import_path: mg.paper_mode.agent:PaperClaudeCodeAgent
+  - import_path: paper.paper_mode.agent:PaperClaudeCodeAgent
     model_name: anthropic/claude-sonnet-4-5
     kwargs:
       allowed_skills: []
       recommend:
         skills_dir: /skills
-        prompt_path: mg.paper_mode.retrieval_step:rerank_with_ucb
+        prompt_path: paper.paper_mode.retrieval_step:rerank_with_ucb
       paper_retrieval:
         enabled: true
         k1: 10

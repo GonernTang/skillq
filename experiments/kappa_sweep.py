@@ -1,4 +1,4 @@
-"""``mg/experiments/kappa_sweep.py`` — inter-rater agreement audit.
+"""``paper/experiments/kappa_sweep.py`` — inter-rater agreement audit.
 
 The paper's Sec. 4.7 reports κ agreement across three verifier
 backends. This driver runs the same (50) skill-delta audits with
@@ -21,8 +21,8 @@ from typing import Sequence
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from mg.method.types import Skill, Verdict  # noqa: E402
-from mg.method.verifier import (  # noqa: E402
+from paper.method.types import Skill, Verdict  # noqa: E402
+from paper.method.verifier import (  # noqa: E402
     IndependentVerifier,
     LiteLLMVerifierBackend,
     StubVerifierBackend,

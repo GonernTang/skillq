@@ -22,10 +22,10 @@ from unittest.mock import MagicMock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from mg.method.library import LibManager  # noqa: E402
-from mg.method.state import QlibState  # noqa: E402
-from mg.method.types import Qlib, Skill  # noqa: E402
-from mg.paper_mode.config import MethodConfig  # noqa: E402
+from paper.method.library import LibManager  # noqa: E402
+from paper.method.state import QlibState  # noqa: E402
+from paper.method.types import Qlib, Skill  # noqa: E402
+from paper.paper_mode.config import MethodConfig  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +112,7 @@ def test_attach_paper_registers_wires_on_trial_ended(tmp_path: Path, monkeypatch
     state.save(lib, _fresh_manager(method), lib_root=method.library_root)
 
     job = _MockJob()
-    from mg.paper_mode import bridge as bridge_mod
+    from paper.paper_mode import bridge as bridge_mod
     bridge_mod.attach_paper_registers(job, method)
     assert job.on_ended is not None
 
@@ -141,7 +141,7 @@ def test_attach_paper_registers_skips_failed_trials(tmp_path: Path, monkeypatch)
     state.save(Qlib(b_max=4), _fresh_manager(method), lib_root=method.library_root)
 
     job = _MockJob()
-    from mg.paper_mode import bridge as bridge_mod
+    from paper.paper_mode import bridge as bridge_mod
     bridge_mod.attach_paper_registers(job, method)
 
     # Failed trial — exception_info is set.
@@ -163,10 +163,10 @@ def _patch_litellm_backends(monkeypatch) -> None:
     """Replace LiteLLM embedder/verifier/attribution with stub shims
     that accept the ``model=`` kwarg the bridge passes.
     """
-    from mg.paper_mode import bridge as bridge_mod
-    from mg.method.attribution import StubAttributionBackend
-    from mg.method.retrieval import StubEmbedder
-    from mg.method.verifier import StubVerifierBackend
+    from paper.paper_mode import bridge as bridge_mod
+    from paper.method.attribution import StubAttributionBackend
+    from paper.method.retrieval import StubEmbedder
+    from paper.method.verifier import StubVerifierBackend
 
     class _StubVerifierShim(StubVerifierBackend):
         def __init__(self, *args, **kwargs) -> None:

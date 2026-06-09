@@ -1,9 +1,9 @@
-"""``mg/experiments/run_terminalbench.py`` — main TB 2.0 / TB Pro driver.
+"""``paper/experiments/run_terminalbench.py`` — main TB 2.0 / TB Pro driver.
 
 Usage:
 
     # Run the paper method on Terminal-Bench 2.0 (15 tasks, 5 seeds).
-    uv run python -m mg.experiments.run_terminalbench \
+    uv run python -m paper.experiments.run_terminalbench \
         --mode paper \
         --benchmark tb2 \
         --n-tasks 15 \
@@ -11,7 +11,7 @@ Usage:
         --jobs-dir output/tb2_paper
 
     # Run the upstream lqrl mode for comparison.
-    uv run python -m mg.experiments.run_terminalbench \
+    uv run python -m paper.experiments.run_terminalbench \
         --mode lqrl \
         --benchmark tb2 \
         --n-tasks 15 \
@@ -20,7 +20,7 @@ Usage:
 
 The driver writes one Harbor job-config YAML per (seed, mode) cell
 under ``--jobs-dir/configs/`` and then calls the corresponding
-``mg <mode> run -c <yaml>`` entrypoint. Results land under
+``paper <mode> run -c <yaml>`` entrypoint. Results land under
 ``--jobs-dir/<job_name>/`` per Harbor's own convention.
 """
 
@@ -79,8 +79,8 @@ def build_job_config(
     n_concurrent: int,
 ) -> dict[str, Any]:
     """Construct a Harbor-compatible JobConfig dict for a given (mode, tasks)."""
-    # Both modes use the same agent import_path. ``mg paper`` mode
-    # additionally reads ``paper_retrieval``; ``mg lqrl`` mode
+    # Both modes use the same agent import_path. ``paper paper`` mode
+    # additionally reads ``paper_retrieval``; ``paper lqrl`` mode
     # additionally reads ``recommend``. The ``agent_kwargs`` dict
     # carries both; the runtime agent picks the relevant one.
     return {
@@ -89,7 +89,7 @@ def build_job_config(
         "agents": [
             {
                 "import_path": (
-                    "mg.paper_mode.agent:PaperClaudeCodeAgent"
+                    "paper.paper_mode.agent:PaperClaudeCodeAgent"
                     if mode == "paper"
                     else "skills_vote.harbor.claude_code:SkillsVoteClaudeCode"
                 ),
@@ -154,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
 
         cfg_path.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
 
-        cmd = [sys.executable, "-m", "mg.cli", args.mode, "run", "-c", str(cfg_path)]
+        cmd = [sys.executable, "-m", "paper.cli", args.mode, "run", "-c", str(cfg_path)]
         print(f"[run_terminalbench] {' '.join(cmd)}")
         result = subprocess.run(cmd, env=None)
         summary.append(

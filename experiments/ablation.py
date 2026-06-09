@@ -1,8 +1,8 @@
-"""``mg/experiments/ablation.py`` — ablation matrix for the four-layer method.
+"""``paper/experiments/ablation.py`` — ablation matrix for the four-layer method.
 
 Each cell of the ablation matrix toggles a single component of the
 paper method. The driver writes the corresponding ``MethodConfig`` to
-a per-cell YAML and invokes ``mg paper run -c <job.yaml> --method-config <cell.yaml>``.
+a per-cell YAML and invokes ``paper paper run -c <job.yaml> --method-config <cell.yaml>``.
 
 Cells (all on/off against the default hyperparameters):
 
@@ -25,11 +25,11 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-# Make ``mg.*`` importable when this file is run directly.
+# Make ``paper.*`` importable when this file is run directly.
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from mg.paper_mode.config import MethodConfig  # noqa: E402
+from paper.paper_mode.config import MethodConfig  # noqa: E402
 
 
 def _config_diff(base: MethodConfig, **overrides: Any) -> MethodConfig:
@@ -76,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
         cmd = [
             sys.executable,
             "-m",
-            "mg.cli",
+            "paper.cli",
             "paper",
             "run",
             "-c",

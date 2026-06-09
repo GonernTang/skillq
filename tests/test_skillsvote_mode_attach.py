@@ -1,8 +1,8 @@
-"""Tests for the ``mg skillsvote_mode`` pass-through entrypoint.
+"""Tests for the ``paper skillsvote_mode`` pass-through entrypoint.
 
 These tests verify that the entrypoint is a *pure* pass-through:
 - ``SkillsVoteModeConfig`` accepts arbitrary extra fields.
-- ``mg.skillsvote_mode.cli._run_command`` dispatches to
+- ``paper.skillsvote_mode.cli._run_command`` dispatches to
   ``skills_vote.harbor.cli.main`` (mocked here, since the upstream
   package's CLI exits the interpreter).
 """
@@ -15,7 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from mg.skillsvote_mode.config import SkillsVoteModeConfig  # noqa: E402
+from paper.skillsvote_mode.config import SkillsVoteModeConfig  # noqa: E402
 
 
 def test_skillsvote_mode_config_accepts_arbitrary_extra_fields():
@@ -32,8 +32,8 @@ def test_skillsvote_mode_config_accepts_arbitrary_extra_fields():
 
 
 def test_skillsvote_mode_cli_run_dispatches_to_upstream(monkeypatch, tmp_path):
-    """``mg skillsvote run -c X`` should call ``skills_vote.harbor.cli.main``."""
-    from mg.skillsvote_mode import cli as skillsvote_cli
+    """``paper skillsvote run -c X`` should call ``skills_vote.harbor.cli.main``."""
+    from paper.skillsvote_mode import cli as skillsvote_cli
 
     captured: dict = {}
 

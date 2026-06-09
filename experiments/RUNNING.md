@@ -1,9 +1,9 @@
 # 跑 TB 2.0 / TB Pro / SWE-Bench Pro 实验 — 完整指南
 
-`mg` 通过两条互斥的 entrypoint 暴露这两个 benchmark:
+`paper` 通过两条互斥的 entrypoint 暴露这两个 benchmark:
 
-- **`mg skillsvote run -c X`** —— 包装 `skills_vote.harbor.cli.run_job`,完全走 SkillsVote 上游的 recommend → feedback → evolve 生命周期(SkillsVote 是 **LQRL 论文对比的 baseline**)。
-- **`mg paper run -c Y`** —— 在 SkillsVote agent 之上多套一层 UCB rerank,跑 **LQRL 论文的** β-Q + 库管理 + near-miss 编辑。
+- **`paper skillsvote run -c X`** —— 包装 `skills_vote.harbor.cli.run_job`,完全走 SkillsVote 上游的 recommend → feedback → evolve 生命周期(SkillsVote 是 **LQRL 论文对比的 baseline**)。
+- **`paper paper run -c Y`** —— 在 SkillsVote agent 之上多套一层 UCB rerank,跑 **LQRL 论文的** β-Q + 库管理 + near-miss 编辑。
 
 三个 benchmark 共用同一份 JobConfig 结构,只是 `datasets:` 字段不同。
 
@@ -13,17 +13,17 @@
 
 ```bash
 cd /home/gonern/workspace/mg
-uv sync                                         # 装 mg + skills_vote + harbor + litellm
+uv sync                                         # 装 paper + skills_vote + harbor + litellm
 
-# 拷贝 lqrl 的 .env 到 mg/ 下(键名完全一致,可直接 cp)
+# 拷贝 lqrl 的 .env 到 paper/ 下(键名完全一致,可直接 cp)
 cp /home/gonern/workspace/lqrl/.env.example .env
 # 编辑 .env 填入 OPENAI_API_KEY / ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL / ...
 ```
 
 ### `.env` 格式(跟 lqrl 完全一样)
 
-`mg/.env.example` 已经写好,字段名跟 `lqrl/.env.example` 一致(可直接
-`cp lqrl/.env mg/.env`):
+`paper/.env.example` 已经写好,字段名跟 `lqrl/.env.example` 一致(可直接
+`cp lqrl/.env paper/.env`):
 
 ```bash
 # Codex / OpenAI 路径
@@ -38,8 +38,8 @@ ANTHROPIC_AUTH_TOKEN=
 ANTHROPIC_MODEL=
 ```
 
-`mg paper run` / `mg prebuild run` / `mg skillsvote run` **都会**自动加载
-`.env`(默认 `./.env`,可用 `--env-file` 覆盖)。`mg.env.load_env_file`
+`paper paper run` / `paper prebuild run` / `paper skillsvote run` **都会**自动加载
+`.env`(默认 `./.env`,可用 `--env-file` 覆盖)。`paper.env.load_env_file`
 在语义上跟 SkillsVote 的 `skills_vote.harbor.cli.load_env_file` 一致:
 `override=True` 意味着 .env 里的值会覆盖已有的 shell export。
 
@@ -47,46 +47,46 @@ ANTHROPIC_MODEL=
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
-uv run mg paper run -c experiments/configs/tb2_paper.yaml
+uv run paper paper run -c experiments/configs/tb2_paper.yaml
 ```
 
 ---
 
 ## 0.5. 预构建 Docker 镜像(强烈建议,第一次跑之前做)
 
-**mg 的实验流和 lqrl 一样需要先 prebuild Docker 镜像**。原因:每个 trial 跑在
+**paper 的实验流和 lqrl 一样需要先 prebuild Docker 镜像**。原因:每个 trial 跑在
 一个全新容器里;如果不预构建,每次 trial 都要 apt-get / pip 装 agent
 + 依赖,5-10 分钟一次。预构建把 agent 装一次,打 tag 成
 `local/<task_name>:<tag>`,后续 trial 直接复用这个 image。
 
-mg 提供 `mg prebuild` 子命令,内部转调 lqrl 的
+paper 提供 `paper prebuild` 子命令,内部转调 lqrl 的
 `scripts/prebuild_images.py`(避免重复实现):
 
 ```bash
 # TB 2.0 + Claude Code(默认 4 个并行 worker,tag = 今天日期)
-uv run mg prebuild run --benchmark tb2 --agent claude_code
+uv run paper prebuild run --benchmark tb2 --agent claude_code
 
 # TB Pro + Codex
-uv run mg prebuild run --benchmark tb_pro --agent codex
+uv run paper prebuild run --benchmark tb_pro --agent codex
 
 # SWE-Bench Pro + Claude Code
-uv run mg prebuild run --benchmark swebenchpro --agent claude_code
+uv run paper prebuild run --benchmark swebenchpro --agent claude_code
 
 # 自定义 tag(确保多个 run 之间 image 复用)
-uv run mg prebuild run --benchmark tb2 --agent claude_code --image-tag 20260605
+uv run paper prebuild run --benchmark tb2 --agent claude_code --image-tag 20260605
 
 # 调整并行度(默认 4)
-uv run mg prebuild run --benchmark tb2 --agent claude_code --max-workers 8
+uv run paper prebuild run --benchmark tb2 --agent claude_code --max-workers 8
 
 # 只下载 task 定义,不构建 image(快速验证 task 集合)
-uv run mg prebuild run --benchmark tb2 --download-only
+uv run paper prebuild run --benchmark tb2 --download-only
 
 # 用自定义 prebuild YAML(指向你 fork 的版本)
-uv run mg prebuild run --benchmark tb2 \
+uv run paper prebuild run --benchmark tb2 \
     --cfg-path /path/to/my_prebuild.yaml
 ```
 
-`mg prebuild` 默认按 `(benchmark, agent)` 选 lqrl 的
+`paper prebuild` 默认按 `(benchmark, agent)` 选 lqrl 的
 `scripts/configs/prebuild_images*.yaml`(Claude 用 `.claude.yaml`,Codex
 用 `.yaml`)。`--cfg-path` 可以覆盖。镜像打好后会带 `local/<task>:<tag>`
 tag,Harbor 在 `Trial.create` 时会优先复用这个 image。
@@ -98,29 +98,29 @@ tag,Harbor 在 `Trial.create` 时会优先复用这个 image。
 >   的 repo clone 都要花时间;只跑子集就快得多)
 
 跑过一次后,`docker images | grep local/` 能看到打好的镜像。下次跑
-`mg paper run` 直接复用,**不会**重头构建。
+`paper paper run` 直接复用,**不会**重头构建。
 
-**mg 的 prebuild 跟 lqrl 一样吗?** —— 完全一样,只是入口命令不同。lqrl 用
-`uv run python lqrl/scripts/prebuild_images.py --cfg-path ...`,mg 用
-`uv run mg prebuild run --benchmark ...`。两个最终调的是**同一段
-prebuild 逻辑**(mg 的 prebuild_cli.py 内部 `subprocess.run` 调 lqrl 的
+**paper 的 prebuild 跟 lqrl 一样吗?** —— 完全一样,只是入口命令不同。lqrl 用
+`uv run python lqrl/scripts/prebuild_images.py --cfg-path ...`,paper 用
+`uv run paper prebuild run --benchmark ...`。两个最终调的是**同一段
+prebuild 逻辑**(paper 的 prebuild_cli.py 内部 `subprocess.run` 调 lqrl 的
 `prebuild_images.py`),所以镜像 tag、registry、build args 全部一致。
 
 ---
 
 ## 1. 直接用现成 config 跑(最快)
 
-`mg/experiments/configs/` 下已经准备好三份 paper-mode YAML:
+`paper/experiments/configs/` 下已经准备好三份 paper-mode YAML:
 
 ```bash
 # Terminal-Bench 2.0(89 tasks,默认全跑)
-uv run mg paper run -c mg/experiments/configs/tb2_paper.yaml
+uv run paper paper run -c paper/experiments/configs/tb2_paper.yaml
 
 # Terminal-Bench Pro(48 tasks,默认 1 个 task 做冒烟)
-uv run mg paper run -c mg/experiments/configs/tb_pro_paper.yaml
+uv run paper paper run -c paper/experiments/configs/tb_pro_paper.yaml
 
 # SWE-Bench Pro(700+ tasks,默认 2 个 instance 做冒烟)
-uv run mg paper run -c mg/experiments/configs/swebenchpro_paper.yaml
+uv run paper paper run -c paper/experiments/configs/swebenchpro_paper.yaml
 ```
 
 **SkillsVote 模式**只是入口不同,配置类似:
@@ -129,12 +129,12 @@ uv run mg paper run -c mg/experiments/configs/swebenchpro_paper.yaml
 # 1) 把 configs/tb2_paper.yaml 复制一份,把 agents[0].import_path 改成
 #    skills_vote.harbor.claude_code:SkillsVoteClaudeCode(去掉 paper_retrieval)
 # 2) 跑:
-uv run mg skillsvote run -c configs/tb2_skillsvote.yaml
+uv run paper skillsvote run -c configs/tb2_skillsvote.yaml
 ```
 
 `jobs_dir: output` 字段告诉 Harbor 把 trial 结果写到哪里(默认是
 `output/<job_name>/<trial_name>/result.json`)。每个 trial end 后
-`mg paper` 的 hook 会写 `<job_dir>/.mg_library/.state/method_state.json`。
+`paper paper` 的 hook 会写 `<job_dir>/.mg_library/.state/method_state.json`。
 
 ---
 
@@ -142,30 +142,30 @@ uv run mg skillsvote run -c configs/tb2_skillsvote.yaml
 
 ```bash
 # TB 2.0, paper 模式, Sonnet 4.5
-uv run python -m mg.experiments.run_benchmark \
+uv run python -m paper.experiments.run_benchmark \
     --benchmark tb2 \
     --mode paper \
     --agent-model anthropic/claude-sonnet-4-5
 
 # TB Pro, SkillsVote 模式, Codex GPT-5.5
-uv run python -m mg.experiments.run_benchmark \
+uv run python -m paper.experiments.run_benchmark \
     --benchmark tb_pro \
     --mode skillsvote \
     --agent-import-path skills_vote.harbor.agents:SkillsVoteCodex \
     --agent-model openai/gpt-5.5
 
 # SWE-Bench Pro, paper 模式, Opus 4.1
-uv run python -m mg.experiments.run_benchmark \
+uv run python -m paper.experiments.run_benchmark \
     --benchmark swebenchpro \
     --mode paper \
     --agent-model anthropic/claude-opus-4-1
 
 # 加 --dry-run 只写 YAML 不跑
-uv run python -m mg.experiments.run_benchmark \
+uv run python -m paper.experiments.run_benchmark \
     --benchmark tb_pro --mode paper --dry-run
 
 # 自定义并发度 / 重试次数 / 子集
-uv run python -m mg.experiments.run_benchmark \
+uv run python -m paper.experiments.run_benchmark \
     --benchmark tb2 --mode paper \
     --n-concurrent 4 --n-attempts 1 \
     --task-subset tb2-001 tb2-002
@@ -176,14 +176,14 @@ uv run python -m mg.experiments.run_benchmark \
 1. 把 benchmark 默认配置(dataset name/version + 合理并发度)合并进
    JobConfig;
 2. 根据 `--mode` 注入正确的 agent `import_path` 和 `kwargs`;
-3. 写 YAML 到 `mg/experiments/configs/<benchmark>_<mode>.yaml`;
-4. 调用 `uv run mg <mode> run -c <yaml>` 启动。
+3. 写 YAML 到 `paper/experiments/configs/<benchmark>_<mode>.yaml`;
+4. 调用 `uv run paper <mode> run -c <yaml>` 启动。
 
 ---
 
 ## 3. 手工写 YAML(最高自由度)
 
-参考 `mg/experiments/configs/tb2_paper.yaml` 的结构:
+参考 `paper/experiments/configs/tb2_paper.yaml` 的结构:
 
 ```yaml
 jobs_dir: output
@@ -199,7 +199,7 @@ environment:
   force_build: false
   delete: false
 agents:
-  - import_path: mg.paper_mode.agent:PaperClaudeCodeAgent   # paper mode
+  - import_path: paper.paper_mode.agent:PaperClaudeCodeAgent   # paper mode
     # - import_path: skills_vote.harbor.claude_code:SkillsVoteClaudeCode  # lqrl mode
     model_name: anthropic/claude-sonnet-4-5
     kwargs:
@@ -214,7 +214,7 @@ datasets:
 ```
 
 OmegaConf 的 `${now:%Y-%m-%d__%H-%M-%S}` / `${abspath:...}` 解析 lqrl 自己也用,
-mg 自动支持。
+(paper) 自动支持。
 
 ---
 
@@ -230,11 +230,11 @@ ls output/tb2_paper__2026-06-05__14-30-00/trial-001/
 # verifier/           # ctrf.json / test-stdout.txt / reward.json
 ```
 
-`mg paper` 模式额外写:
+`paper paper` 模式额外写:
 - `output/<job_name>/.mg_library/.state/method_state.json` — Q-table 持久化
 - `output/<job_name>/.mg_library/<skill_name>/` — 被 near-miss 改写的 skill
 
-`mg skillsvote` 模式额外写(由 SkillsVote 自己写,mg 不参与):
+`paper skillsvote` 模式额外写(由 SkillsVote 自己写,paper 不参与):
 - `output/<job_name>/feedback.json`(每 trial)
 - `output/<job_name>/skills_vote_evolve_state.json`
 - `output/<job_name>/working_skills/`
@@ -248,19 +248,19 @@ uv run harbor view output/      # Harbor 自带 viewer
 
 ## 5. 跑多 seed / 跑 β sweep / 跑 ablation
 
-`mg/experiments/` 下还有三个 driver:
+`paper/experiments/` 下还有三个 driver:
 
 ```bash
 # β sweep: 7 个 β 值 × 同一份 job config
-uv run python -m mg.experiments.beta_sweep \
-    --job-config mg/experiments/configs/tb2_paper.yaml
+uv run python -m paper.experiments.beta_sweep \
+    --job-config paper/experiments/configs/tb2_paper.yaml
 
 # Ablation: 6 个 cell(with/without UCB, with/without verifier, with/without near-miss)
-uv run python -m mg.experiments.ablation \
-    --job-config mg/experiments/configs/tb2_paper.yaml
+uv run python -m paper.experiments.ablation \
+    --job-config paper/experiments/configs/tb2_paper.yaml
 
 # Inter-rater κ: 用三个 verifier 后端跑同样的 (old, new) 对
-uv run python -m mg.experiments.kappa_sweep \
+uv run python -m paper.experiments.kappa_sweep \
     --n-pairs 50 --backends stub gpt-4o claude-sonnet-4-5
 ```
 
@@ -271,7 +271,7 @@ shell 循环调 `run_benchmark.py` 5 次即可,每次改 `--agent-model`
 
 ```bash
 for seed in 0 1 2 3 4; do
-    uv run python -m mg.experiments.run_benchmark \
+    uv run python -m paper.experiments.run_benchmark \
         --benchmark tb2 --mode paper \
         --job-name tb2_paper_seed${seed}__$(date +%H%M%S)
 done
@@ -287,7 +287,7 @@ done
 | `ModuleNotFoundError: harbor` | `harbor==0.5.0` 在 deps 里,跑 `uv sync` 重装 |
 | trial 跑到一半挂 `Docker daemon not running` | 本地 docker 没起;或者改用 `--env e2b` / `--env daytona` |
 | `litellm.AuthenticationError` | 缺 `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`,`export` 一下 |
-| 第一次 `mg paper run` 跑得很慢 | Docker image 在拉(`terminal-bench` image ≈ 1-2 GB);用 lqrl 的 `prebuild_images.py` 预热 |
+| 第一次 `paper paper run` 跑得很慢 | Docker image 在拉(`terminal-bench` image ≈ 1-2 GB);用 lqrl 的 `prebuild_images.py` 预热 |
 | paper 模式写不进 `state.json` | 检查 `output/<job_name>/.mg_library/.state/` 目录权限,bridge 不会自己 `chmod` |
 | `qhash()` 跑出大整数 | 正常;`int(hashlib.sha1(text).hexdigest()[:16], 16)` 是设计上的 64-bit key |
 

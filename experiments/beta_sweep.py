@@ -1,4 +1,4 @@
-"""``mg/experiments/beta_sweep.py`` — sweep the β hyperparameter of Eq. 6.
+"""``paper/experiments/beta_sweep.py`` — sweep the β hyperparameter of Eq. 6.
 
 The paper's Sec. 4.5 reports a sweet spot at ``β ≈ 0.3-0.5``; this
 driver runs the same Terminal-Bench 2.0 job with seven β values
@@ -17,7 +17,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from mg.paper_mode.config import MethodConfig  # noqa: E402
+from paper.paper_mode.config import MethodConfig  # noqa: E402
 
 BETA_VALUES = [0.0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0]
 
@@ -45,7 +45,7 @@ def main(argv: list[str] | None = None) -> int:
         cmd = [
             sys.executable,
             "-m",
-            "mg.cli",
+            "paper.cli",
             "paper",
             "run",
             "-c",

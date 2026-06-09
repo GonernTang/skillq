@@ -16,13 +16,13 @@ environment:
   force_build: false
   delete: false
 agents:
-- import_path: mg.paper_mode.agent:PaperClaudeCodeAgent
+- import_path: paper.paper_mode.agent:PaperClaudeCodeAgent
   model_name: anthropic/claude-sonnet-4-5
   kwargs:
     allowed_skills: []
     recommend:
       skills_dir: ${abspath:.mg_library/seed}
-      prompt_path: mg.paper_mode.retrieval_step:rerank_with_ucb
+      prompt_path: paper.paper_mode.retrieval_step:rerank_with_ucb
     paper_retrieval:
       enabled: true
       k1: 10

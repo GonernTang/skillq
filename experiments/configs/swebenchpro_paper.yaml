@@ -1,7 +1,7 @@
 # Example mg paper config for SWE-Bench Pro (1.0)
 #
 # Run with:
-#   uv run mg paper run -c mg/experiments/configs/swebenchpro_paper.yaml
+#   uv run paper paper run -c paper/experiments/configs/swebenchpro_paper.yaml
 #
 # SWE-Bench Pro is the largest of the three benchmarks (~700+ tasks).
 # Default: 20-task subset (matches lqrl's scripts/configs/swebenchpro).
@@ -34,13 +34,13 @@ environment:
       read_only: true
 
 agents:
-  - import_path: mg.paper_mode.agent:PaperClaudeCodeAgent
+  - import_path: paper.paper_mode.agent:PaperClaudeCodeAgent
     model_name: anthropic/claude-sonnet-4-5
     kwargs:
       allowed_skills: []
       recommend:
         skills_dir: /skills
-        prompt_path: mg.paper_mode.retrieval_step:rerank_with_ucb
+        prompt_path: paper.paper_mode.retrieval_step:rerank_with_ucb
       paper_retrieval:
         enabled: true
         k1: 10

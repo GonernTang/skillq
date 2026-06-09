@@ -1,4 +1,4 @@
-"""Tests for ``mg/method/extractor.py`` SkillExtractor.
+"""Tests for ``paper/method/extractor.py`` SkillExtractor.
 
 The extractor is a ``claude --print`` subprocess wrapper, so the tests
 stub the subprocess at the ``asyncio.to_thread`` boundary. We don't
@@ -15,7 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from mg.method.extractor import SkillExtractor  # noqa: E402
+from paper.method.extractor import SkillExtractor  # noqa: E402
 
 
 def _fake_proc(*, returncode: int = 0, stdout: str = "", stderr: str = ""):

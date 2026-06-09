@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to `mg` (the branch-style entrypoint that re-uses
+All notable changes to `paper` (the branch-style entrypoint that re-uses
 the upstream `skills_vote` lifecycle AND runs the LQRL paper's
 four-layer method on top of Harbor) are documented here.
 
@@ -27,16 +27,16 @@ and the developer ergonomics (`.env`, `prebuild`, `RUNNING.md`).
   mutually exclusive run modes and the shared `.env` workflow.
 - `.env.example` — same shape as lqrl's `.env.example`
   (`OPENAI_*` / `ANTHROPIC_*` / `CODEX_*` keys) so users can
-  `cp lqrl/.env mg/.env` and reuse the same secrets.
+  `cp lqrl/.env paper/.env` and reuse the same secrets.
 - `mg/__init__.py` — re-exports `lqrl_main` and `paper_main`.
-- `mg/cli.py` — top-level `mg` console-script with three
+- `mg/cli.py` — top-level `paper` console-script with three
   subcommands: `lqrl`, `paper`, `prebuild`. Each builds its own
   `argparse` tree lazily.
 - `mg/env.py` — `load_env_file(...)` dotenv loader. Same
   semantics as lqrl's `skills_vote.harbor.cli.load_env_file`:
   `override=True`, silent when the default `.env` is missing.
 
-#### `mg/method/` — paper four layers + extract
+#### `paper/method/` — paper four layers + extract
 
 - `types.py` — `Skill` / `Qlib` / `Verdict` / `RetrievalResult`
   core data types. Skill carries the body, retrieval/usage
@@ -96,11 +96,11 @@ and the developer ergonomics (`.env`, `prebuild`, `RUNNING.md`).
 #### `mg/lqrl_mode/` — pass-through to upstream lqrl
 
 - `cli.py` / `entrypoint.py` / `config.py` — pure
-  pass-through. `mg lqrl run -c X` forwards to
+  pass-through. `paper lqrl run -c X` forwards to
   `skills_vote.harbor.cli.main(argv)`. ~100 lines total,
   zero implementation logic.
 
-#### `mg/paper_mode/` — paper-mode orchestration
+#### `paper/paper_mode/` — paper-mode orchestration
 
 - `config.py` — `MethodConfig` Pydantic model with ~20 fields
   covering all paper hyperparameters + LLM model names +
@@ -127,15 +127,15 @@ and the developer ergonomics (`.env`, `prebuild`, `RUNNING.md`).
   helper. Reads `agent.skills_dir` (the directory lqrl's
   recommend step copied skills into) and re-ranks with
   `TwoStageRanker`.
-- `cli.py` / `entrypoint.py` — `mg paper run -c X
+- `cli.py` / `entrypoint.py` — `paper paper run -c X
   --method-config Y`. Loads `.env`, then dispatches to
   `bridge.run_paper_job_sync`.
 
-#### `mg/prebuild_cli.py` — Docker image prebuilder
+#### `paper/prebuild_cli.py` — Docker image prebuilder
 
-- `mg prebuild run --benchmark {tb2|tb_pro|swebenchpro}
+- `paper prebuild run --benchmark {tb2|tb_pro|swebenchpro}
   --agent {claude_code|codex}` is a thin wrapper around
-  lqrl's `scripts/prebuild_images.py`. The `mg` command
+  lqrl's `scripts/prebuild_images.py`. The `paper` command
   looks up the right `scripts/configs/prebuild_images*.yaml`
   based on the (benchmark, agent) pair and runs the
   underlying lqrl prebuild via `subprocess.run`. Optional
@@ -158,7 +158,7 @@ and the developer ergonomics (`.env`, `prebuild`, `RUNNING.md`).
 - `run_benchmark.py` — single driver for TB 2.0 / TB Pro /
   SWE-Bench Pro. Takes `--mode {lqrl|paper}` and writes
   a job-config YAML to `experiments/configs/<bench>_<mode>.yaml`,
-  then dispatches to `mg <mode> run -c <yaml>`. Supports
+  then dispatches to `paper <mode> run -c <yaml>`. Supports
   `--dry-run`, `--n-concurrent`, `--n-attempts`,
   `--task-subset`, `--agent-model`, `--agent-import-path`.
 - `ablation.py` — 6-cell ablation (with/without UCB,

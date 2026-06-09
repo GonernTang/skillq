@@ -1,4 +1,4 @@
-"""``mg/experiments/run_benchmark.py`` — single-driver for TB 2.0 / TB Pro / SWE-Bench Pro.
+"""``paper/experiments/run_benchmark.py`` — single-driver for TB 2.0 / TB Pro / SWE-Bench Pro.
 
 This is the recommended entrypoint for the three benchmarks you
 mentioned (Terminal-Bench 2.0, Terminal-Bench Pro, SWE-Bench Pro).
@@ -7,13 +7,13 @@ It supersedes the stub-only ``run_terminalbench.py``.
 Usage:
 
     # TB 2.0, paper mode, Claude Sonnet 4.5
-    uv run python -m mg.experiments.run_benchmark \\
+    uv run python -m paper.experiments.run_benchmark \\
         --benchmark tb2 \\
         --mode paper \\
         --agent-model anthropic/claude-sonnet-4-5
 
     # TB Pro, lqrl mode, Codex GPT-5.5
-    uv run python -m mg.experiments.run_benchmark \\
+    uv run python -m paper.experiments.run_benchmark \\
         --benchmark tb_pro \\
         --mode lqrl \\
         --agent-import-path skills_vote.harbor.agents:SkillsVoteCodex \\
@@ -21,13 +21,13 @@ Usage:
         --agent-version 0.125.0
 
     # SWE-Bench Pro, paper mode, Opus 4.1
-    uv run python -m mg.experiments.run_benchmark \\
+    uv run python -m paper.experiments.run_benchmark \\
         --benchmark swebenchpro \\
         --mode paper \\
         --agent-model anthropic/claude-opus-4-1
 
 The driver writes a Harbor JobConfig YAML to ``--output-dir/configs/`` and
-invokes the corresponding ``mg <mode> run -c <yaml>`` subcommand.
+invokes the corresponding ``paper <mode> run -c <yaml>`` subcommand.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-# Make ``mg.*`` importable when this file is run directly.
+# Make ``paper.*`` importable when this file is run directly.
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
@@ -114,13 +114,13 @@ def build_job_config(
                 "path or use --mode lqrl."
             )
         agent_block: dict[str, Any] = {
-            "import_path": "mg.paper_mode.agent:PaperClaudeCodeAgent",
+            "import_path": "paper.paper_mode.agent:PaperClaudeCodeAgent",
             "model_name": agent_model,
             "kwargs": {
                 "allowed_skills": [],
                 "recommend": {
                     "skills_dir": "${abspath:.mg_library/seed}",
-                    "prompt_path": "mg.paper_mode.retrieval_step:rerank_with_ucb",
+                    "prompt_path": "paper.paper_mode.retrieval_step:rerank_with_ucb",
                 },
                 "paper_retrieval": {
                     "enabled": True,
@@ -262,7 +262,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         return 0
 
-    cmd = [sys.executable, "-m", "mg.cli", args.mode, "run", "-c", str(cfg_path)]
+    cmd = [sys.executable, "-m", "paper.cli", args.mode, "run", "-c", str(cfg_path)]
     print(f"[run_benchmark] {' '.join(cmd)}")
     result = subprocess.run(cmd)
     return result.returncode

@@ -17,21 +17,21 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from mg.method.layered_q import (  # noqa: E402
+from paper.method.layered_q import (  # noqa: E402
     BetaLayeredQ,
     check_improvement_penalty_resolution,
     expected_variance,
     improvement_penalty_threshold,
     variance_bound,
 )
-from mg.method.library import (  # noqa: E402
+from paper.method.library import (  # noqa: E402
     LibManager,
     forgetting_rate_upper_bound,
 )
-from mg.method.near_miss import NearMissRefiner, StubEditBackend  # noqa: E402
-from mg.method.retrieval import StubEmbedder, TwoStageRanker  # noqa: E402
-from mg.method.types import Qlib, Skill, Verdict  # noqa: E402
-from mg.method.verifier import IndependentVerifier, StubVerifierBackend  # noqa: E402
+from paper.method.near_miss import NearMissRefiner, StubEditBackend  # noqa: E402
+from paper.method.retrieval import StubEmbedder, TwoStageRanker  # noqa: E402
+from paper.method.types import Qlib, Skill, Verdict  # noqa: E402
+from paper.method.verifier import IndependentVerifier, StubVerifierBackend  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

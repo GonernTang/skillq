@@ -1,6 +1,6 @@
 """End-to-end bridge tests for the new auto-extract path.
 
-These tests verify that :func:`mg.paper_mode.bridge.attach_paper_registers`
+These tests verify that :func:`paper.paper_mode.bridge.attach_paper_registers`
 correctly triggers the extractor on the right attribution verdicts,
 adds the new skill to the library, and resets its probation counter.
 """
@@ -17,11 +17,11 @@ from unittest.mock import MagicMock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from mg.method.attribution import Attribution, TrialAttribution  # noqa: E402
-from mg.method.library import LibManager  # noqa: E402
-from mg.method.state import QlibState  # noqa: E402
-from mg.method.types import Qlib, Skill  # noqa: E402
-from mg.paper_mode.config import MethodConfig  # noqa: E402
+from paper.method.attribution import Attribution, TrialAttribution  # noqa: E402
+from paper.method.library import LibManager  # noqa: E402
+from paper.method.state import QlibState  # noqa: E402
+from paper.method.types import Qlib, Skill  # noqa: E402
+from paper.paper_mode.config import MethodConfig  # noqa: E402
 
 
 class _MockJob:
@@ -40,10 +40,10 @@ def _patch_litellm_backends(monkeypatch) -> None:
     """Replace LiteLLM + subprocess with stub shims that accept the
     kwargs the bridge passes and return predictable outputs.
     """
-    from mg.paper_mode import bridge as bridge_mod
-    from mg.method.attribution import StubAttributionBackend
-    from mg.method.retrieval import StubEmbedder
-    from mg.method.verifier import StubVerifierBackend
+    from paper.paper_mode import bridge as bridge_mod
+    from paper.method.attribution import StubAttributionBackend
+    from paper.method.retrieval import StubEmbedder
+    from paper.method.verifier import StubVerifierBackend
 
     class _StubVerifierShim(StubVerifierBackend):
         def __init__(self, *args, **kwargs) -> None:
@@ -72,7 +72,7 @@ def _patch_extractor_to_return(monkeypatch, skill: Skill | None) -> None:
     """Replace :class:`SkillExtractor.extract` with a coroutine that
     immediately returns ``skill`` (no subprocess).
     """
-    from mg.paper_mode import bridge as bridge_mod
+    from paper.paper_mode import bridge as bridge_mod
 
     async def fake_extract(self, **kwargs) -> Skill | None:
         return skill
@@ -129,8 +129,8 @@ def test_bridge_extracts_on_success_no_skill_seen(tmp_path: Path, monkeypatch):
     _patch_extractor_to_return(monkeypatch, new_skill)
 
     # Make the attribution analyzer return SUCCESS_NO_SKILL_SEEN
-    from mg.paper_mode import bridge as bridge_mod
-    from mg.method.attribution import Attribution, StubAttributionBackend
+    from paper.paper_mode import bridge as bridge_mod
+    from paper.method.attribution import Attribution, StubAttributionBackend
 
     def returning_no_skill_seen(self, **kwargs):
         return TrialAttribution(
@@ -175,7 +175,7 @@ def test_bridge_skips_extract_on_failure(tmp_path: Path, monkeypatch):
         called["n"] += 1
         return new_skill
 
-    from mg.paper_mode import bridge as bridge_mod
+    from paper.paper_mode import bridge as bridge_mod
     monkeypatch.setattr(bridge_mod.SkillExtractor, "extract", fake_extract)
     monkeypatch.setattr(
         bridge_mod.AttributionAnalyzer,
@@ -211,7 +211,7 @@ def test_bridge_skips_extract_on_skill_used(tmp_path: Path, monkeypatch):
         called["n"] += 1
         return new_skill
 
-    from mg.paper_mode import bridge as bridge_mod
+    from paper.paper_mode import bridge as bridge_mod
     monkeypatch.setattr(bridge_mod.SkillExtractor, "extract", fake_extract)
     monkeypatch.setattr(
         bridge_mod.AttributionAnalyzer,
@@ -250,7 +250,7 @@ def test_bridge_skips_extract_when_disabled(tmp_path: Path, monkeypatch):
     _seed_lib(method)
     job = _MockJob()
 
-    from mg.paper_mode import bridge as bridge_mod
+    from paper.paper_mode import bridge as bridge_mod
 
     bridge_mod.attach_paper_registers(job, method)
     # The hook closes over an `extractor` var; if it's None the extract
@@ -270,7 +270,7 @@ def test_viewed_but_not_used_bumps_q(tmp_path: Path, monkeypatch):
     _patch_litellm_backends(monkeypatch)
     _patch_extractor_to_return(monkeypatch, None)
 
-    from mg.paper_mode import bridge as bridge_mod
+    from paper.paper_mode import bridge as bridge_mod
 
     def returning_viewed(self, **kwargs):
         # Use a plain dict for the subtask; TrialAttribution is

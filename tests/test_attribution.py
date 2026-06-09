@@ -1,4 +1,4 @@
-"""Tests for ``mg/method/attribution.py``."""
+"""Tests for ``paper/method/attribution.py``."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from mg.method.attribution import (  # noqa: E402
+from paper.method.attribution import (  # noqa: E402
     Attribution,
     AttributionAnalyzer,
     LiteLLMAttributionBackend,

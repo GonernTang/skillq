@@ -1,5 +1,5 @@
 [project]
-name = "mg"
+name = "paper"
 version = "0.1.0"
 description = "Branch-style entrypoint that exposes the upstream skills_vote lifecycle AND the LQRL paper's four-layer method as mutually exclusive run modes on top of Harbor."
 readme = "README.md"
@@ -7,15 +7,16 @@ requires-python = ">=3.12"
 dependencies = [
     # Harbor framework — provides Job, TrialEvent, TrialHookEvent, etc.
     "harbor==0.5.0",
-    # Upstream skills_vote package. The project directory is named
-    # ``lqrl`` but the distribution name is ``skills_vote``. The source
-    # is pulled from a local path because the package is not on PyPI.
+    # Upstream skills_vote package (the *comparison baseline* in the
+    # LQRL paper). The project directory is named ``lqrl`` but the
+    # distribution name is ``skills_vote``. The source is pulled from
+    # a local path because the package is not on PyPI.
     "skills_vote>=1.2.0,<2.0.0",
     # Single LLM backend for embedder, verifier, editor, and cost.
     "litellm>=1.40.0,<2.0.0",
     "pydantic>=2.13.3,<3.0.0",
     "omegaconf==2.3.0",
-    # Used to drive the lqrl-side recommend step inside the paper agent.
+    # Used to drive the baseline-side recommend step inside the paper agent.
     "claude-agent-sdk>=0.1.50,<0.2.0",
     "python-dotenv>=1.2.2,<2.0.0",
     "tomlkit>=0.14.0",
@@ -30,14 +31,14 @@ dependencies = [
 skills_vote = { path = "../lqrl", editable = true }
 
 [project.scripts]
-mg = "mg.cli:main"
+paper = "paper.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["mg"]
+packages = ["paper"]
 
 [tool.ruff]
 line-length = 100
@@ -48,7 +49,7 @@ select = ["E", "F", "I", "W", "B", "UP"]
 ignore = ["E501"]
 
 [tool.pytest.ini_options]
-testpaths = ["mg/tests"]
+testpaths = ["tests"]
 addopts = "-ra --strict-markers"
 
 [dependency-groups]

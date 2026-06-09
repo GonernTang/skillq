@@ -1,13 +1,13 @@
 """``route_prompt.py`` — agent-side wrapper for the LQRL paper method.
 
 This is the standalone script that the agent invokes when it reads
-``SKILL.md``. It mirrors :func:`mg.paper_mode.retrieval_step.rerank_with_ucb`
+``SKILL.md``. It mirrors :func:`paper.paper_mode.retrieval_step.rerank_with_ucb`
 but in a self-contained, ``uv run``-able form. By design it uses the
-:mod:`mg.method.retrieval.StubEmbedder` so it does not require an
+:mod:`paper.method.retrieval.StubEmbedder` so it does not require an
 ``OPENAI_API_KEY`` to produce a meaningful (deterministic) ranking.
 
 For a real production run, set ``MG_PAPER_EMBEDDER=live`` to switch to
-the LiteLLM-backed :class:`mg.method.retrieval.LiteLLMEmbedder`. (The
+the LiteLLM-backed :class:`paper.method.retrieval.LiteLLMEmbedder`. (The
 ``live`` mode requires an actual API key; this script does not enforce
 that — the LiteLLM call will fail with a clear error from litellm if
 the key is missing.)
@@ -22,18 +22,18 @@ from pathlib import Path
 
 # Allow running this script directly via ``uv run scripts/route_prompt.py``
 # without installing the parent package. We add the project root to
-# sys.path so ``import mg.method.retrieval`` resolves.
+# sys.path so ``import paper.method.retrieval`` resolves.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from mg.method.hash import qhash  # noqa: E402
-from mg.method.retrieval import (  # noqa: E402
+from paper.method.hash import qhash  # noqa: E402
+from paper.method.retrieval import (  # noqa: E402
     LiteLLMEmbedder,
     StubEmbedder,
     TwoStageRanker,
 )
-from mg.method.types import Skill  # noqa: E402
+from paper.method.types import Skill  # noqa: E402
 
 
 def _list_skills(skills_root: Path) -> list[Skill]:
@@ -88,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
         # previously printed verdict. We do not have persistent state
         # in this script, so we just print a placeholder.
         print("[route_prompt] explain mode is a no-op in this standalone script.")
-        print("Run `mg paper run` to get persistent Q-table state.")
+        print("Run `paper paper run` to get persistent Q-table state.")
         return 0
 
     if not args.query:

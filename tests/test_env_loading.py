@@ -1,8 +1,8 @@
-"""Tests for the ``mg.env`` dotenv loader.
+"""Tests for the ``paper.env`` dotenv loader.
 
 These tests focus on the contract: a single ``.env`` file is shared
-between ``mg lqrl`` (which forwards to ``skills_vote.harbor.cli``) and
-``mg paper`` / ``mg prebuild`` (which use this module's loader). The
+between ``paper lqrl`` (which forwards to ``skills_vote.harbor.cli``) and
+``paper paper`` / ``paper prebuild`` (which use this module's loader). The
 keys / values are exactly lqrl's, so a user can copy ``lqrl/.env`` to
 ``mg/.env`` and have it work.
 """
@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from mg.env import load_env_file, load_mg_yaml_env  # noqa: E402
+from paper.env import load_env_file, load_mg_yaml_env  # noqa: E402
 
 
 def test_load_env_file_reads_lqrl_compatible_keys(tmp_path: Path, monkeypatch):

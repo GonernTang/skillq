@@ -20,7 +20,7 @@ four-layer method:
 4. Near-miss-aware incremental editing (20% token cap).
 
 Skip this skill if the user only wants vanilla Codex / Claude
-behaviour, or if `mg lqrl` mode is in use (in which case use the
+behaviour, or if `paper lqrl` mode is in use (in which case use the
 `skills-vote` / `skills-vote-local` skills instead).
 
 All paths mentioned in this file are relative to this skill root.
@@ -30,7 +30,7 @@ All paths mentioned in this file are relative to this skill root.
 - `OPENAI_API_KEY` is set in the environment (used by the embedder /
   verifier / editor backends).
 - `uv` is available on `PATH`.
-- The `mg paper` mode is being used (not `mg lqrl`).
+- The `paper paper` mode is being used (not `paper lqrl`).
 
 ## Discover
 
