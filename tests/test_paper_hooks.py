@@ -90,6 +90,11 @@ class _MockJob:
         # not attribute). We mimic that.
         self.on_ended = callback
 
+    def __len__(self) -> int:
+        # The bridge uses ``len(job)`` to compute expected_terminal_trials
+        # for the buffer force-flush on the last trial.
+        return 1_000_000  # large sentinel so the force-flush never fires in tests
+
 
 def test_attach_paper_registers_wires_on_trial_ended(tmp_path: Path, monkeypatch):
     """The bridge should register exactly one ``on_trial_ended`` callback."""

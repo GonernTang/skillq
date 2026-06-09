@@ -39,6 +39,11 @@ class _MockJob:
     def on_trial_ended(self, callback: Any) -> None:
         self.on_ended = callback
 
+    def __len__(self) -> int:
+        # The bridge uses ``len(job)`` for the buffer force-flush
+        # trigger; a large sentinel keeps it dormant in unit tests.
+        return 1_000_000
+
 
 def _patch_litellm_backends(monkeypatch) -> None:
     from paper.paper_mode import bridge as bridge_mod
@@ -73,7 +78,11 @@ def _patch_extractor_to_return(monkeypatch, skill: Skill | None) -> None:
     async def fake_extract(self, **kwargs) -> Skill | None:
         return skill
 
+    async def fake_extract_batch(self, **kwargs) -> Skill | None:
+        return skill
+
     monkeypatch.setattr(bridge_mod.SkillExtractor, "extract", fake_extract)
+    monkeypatch.setattr(bridge_mod.SkillExtractor, "extract_batch", fake_extract_batch)
 
 
 def _fake_trial_result(reward: float, trial_uri: str) -> MagicMock:
@@ -143,6 +152,7 @@ def test_extract_writes_q_initial_to_q_table(tmp_path: Path, monkeypatch):
         b_max=4,
         n_explore=2,
         enable_auto_extract=True,
+        extract_every_n_trials=1,       # flush on the first qualifying trial
     )
     _seed_lib(method)
     job = _MockJob()
@@ -186,6 +196,7 @@ def test_extract_uses_configured_initial_q(tmp_path: Path, monkeypatch):
         b_max=4,
         n_explore=2,
         enable_auto_extract=True,
+        extract_every_n_trials=1,       # flush on the first qualifying trial
         new_skill_initial_q=0.3,
     )
     _seed_lib(method)

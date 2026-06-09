@@ -308,6 +308,100 @@ Begin now."""
 
 
 # ---------------------------------------------------------------------------
+# BATCHED_EXTRACT_SKILL (Layer 4.5 / "create" path, batched N trials)
+# ---------------------------------------------------------------------------
+# Mirrors SkillsVote's evolve/_CREATE_SYSTEM_PROMPT shape (aggregate
+# reusable exploration across N trials → decide create or skip → write
+# SKILL.md) but in paper-method wording. The aggregate is what gives
+# the LLM enough signal to converge on a *reusable procedure* (per-trial
+# prompts tend to be too task-specific and produce duplicate skills).
+BATCHED_EXTRACT_SKILL_PROMPT = """\
+You are an independent reviewer acting in **generative mode** for a
+SKILL.md creation step. Over the last {n_trials} successful trials,
+the agent solved its tasks **without** a pre-existing skill that
+materially shaped the path. Each trial is annotated with the agent's
+*reusable procedural knowledge* the bridge extracted from the trace.
+
+Your job is to **synthesize** a single, high-quality SKILL.md that
+captures the *common* reusable procedure across these trials, then
+**physically write it** to the sandbox directory so future similar
+tasks can leverage this knowledge.
+
+## Hard rules
+
+  - Skill **directory name** = kebab-case, **{name_min_words}..{name_max_words}** English words.
+    Examples (good): `parse-cobol` (2), `swe-coverage-trace` (3),
+    `extract-elf-symbols` (3). Bad: `c` (1 char),
+    `ParseCobol` (uppercase), `skill_42` (underscores).
+  - Skill body must be **between {body_min_tokens} and {body_max_tokens} tokens**.
+  - The body must be **the FULL content of SKILL.md** (with YAML
+    frontmatter `name` / `description` per the Skill spec).
+  - Do NOT include task-specific facts: no file names from the
+    specific trials, no environment-specific paths, no one-off values.
+  - Strip away any commentary; only the reusable *procedure*.
+  - The skill must be **coherent and self-contained** — a future
+    agent that has never seen any of the current trials should be
+    able to follow this skill successfully on a similar task.
+  - You MAY optionally create a ``scripts/`` subdirectory with helper
+    code, but only if the procedure genuinely needs it.
+  - The skill name in the YAML frontmatter must match the directory name.
+
+## Aggregation strategy
+
+  1. Read all {n_trials} trial records below.
+  2. Identify the *common* reusable pattern: the procedure that
+     generalises across the trials, NOT any one-off detail.
+  3. If the trials are too heterogeneous to share a single procedure,
+     decide: either pick the most reusable sub-pattern OR output
+     ``status: skip`` with a clear rationale.
+  4. Do NOT create a skill that is redundant with one of the
+     available skills (list below) — in that case, output
+     ``status: skip`` with reason ``redundant``.
+
+## Write location
+
+  - The sandbox root is: `{sandbox_dir}`
+  - Write your SKILL.md to: `{sandbox_dir}/create/<skill-name>/SKILL.md`
+  - All file writes must be under `{sandbox_dir}/create/<skill-name>/`
+  - DO NOT write outside `{sandbox_dir}/`.
+
+## Available skills (avoid duplicates)
+
+The library already contains these skills. If your new skill would
+be redundant with one of these, prefer extending that one (which
+the bridge handles via near-miss edit) over creating a new one.
+If you do create a new one, ensure its scope does not overlap.
+
+```json
+{available_skills}
+```
+
+## Aggregated trial records (chronological)
+
+{aggregated_trials}
+
+## Representative task (for context only; do NOT include in the skill body)
+
+{representative_task}
+
+## What to do
+
+1. Read the available skills (list above) to avoid overlap.
+2. Decide on a skill name (kebab-case, **{name_min_words}..{name_max_words}** words)
+   that captures the *common reusable procedure*.
+3. Create the directory `{sandbox_dir}/create/<skill-name>/`.
+4. Write `SKILL.md` with YAML frontmatter and the procedure body.
+5. Optionally add a `scripts/` subdir if the procedure has concrete
+   reusable code.
+6. As your **final response**, output a single JSON line:
+   `{{"status": "ok", "skill_name": "<name>", "body_tokens": <N>}}`
+   or `{{"status": "skip", "reason": "<why>"}}` if you decide no new
+   skill is justified (heterogeneous trials, redundancy, etc.).
+
+Begin now."""
+
+
+# ---------------------------------------------------------------------------
 # EXPLAIN_R_LEARNING (audit-only)
 # ---------------------------------------------------------------------------
 EXPLAIN_R_LEARNING_PROMPT = """\

@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 from harbor.job import Job
@@ -121,6 +123,60 @@ def _find_skills_dir(event: TrialHookEvent) -> Path | None:
 
 
 # ---------------------------------------------------------------------------
+# Extract buffer (batched-evolve, mirrors lqrl's evolve_every_n_trials)
+# ---------------------------------------------------------------------------
+@dataclass
+class _ExtractBuffer:
+    """Buffer of (task, knowledge) records awaiting a batched-extract flush.
+
+    Mirrors lqrl's ``_will_harbor_retry`` / pending_records buffer pattern
+    in :mod:`lqrl/src/skills_vote/harbor/hooks.py`. Adds a record on each
+    qualifying trial; when the buffer reaches ``n_trials_threshold``
+    records, the bridge calls :meth:`SkillExtractor.extract_batch` to
+    spawn one ``claude --print`` subprocess that aggregates the N
+    records into a single new SKILL.md.
+    """
+
+    n_trials_threshold: int
+    pending: list[dict[str, Any]] = field(default_factory=list)
+
+    def add(
+        self,
+        *,
+        task: str,
+        knowledge: str,
+        intent_hash: int,
+    ) -> list[dict[str, Any]]:
+        """Add a record; if the buffer is full, return a snapshot.
+
+        The pending list is **not** mutated by this method — callers
+        are expected to use :meth:`flush` (or pass the returned batch
+        directly) to actually drain the buffer. This split is what
+        allows the bridge to safely use the returned batch without
+        a redundant second flush.
+        """
+        if not knowledge.strip():
+            return []
+        self.pending.append(
+            {"task": task, "knowledge": knowledge, "intent_hash": intent_hash}
+        )
+        if len(self.pending) >= self.n_trials_threshold:
+            return list(self.pending)
+        return []
+
+    def flush(self) -> list[dict[str, Any]]:
+        """Return the current batch and clear the buffer."""
+        if not self.pending:
+            return []
+        batch = self.pending
+        self.pending = []
+        return batch
+
+    def __len__(self) -> int:
+        return len(self.pending)
+
+
+# ---------------------------------------------------------------------------
 # Public: hook registration
 # ---------------------------------------------------------------------------
 def attach_paper_registers(job: Job, method: MethodConfig) -> None:
@@ -180,8 +236,69 @@ def attach_paper_registers(job: Job, method: MethodConfig) -> None:
         if method.enable_auto_extract
         else None
     )
+    # Buffer that aggregates (task, knowledge) records across
+    # multiple qualifying trials before invoking the extractor.
+    # Mirrors lqrl's `evolve_every_n_trials` semantics.
+    extract_buffer = _ExtractBuffer(n_trials_threshold=method.extract_every_n_trials)
+
+    # Total expected terminal trials; used to force-flush the
+    # buffer on the last qualifying trial.
+    expected_terminal_trials = len(job)
     state = QlibState(method.resolved_state_path())
     state.load_into(lib, mgr, lib_root=method.library_root)
+
+    async def _flush_buffer() -> None:
+        """Spawn one extract_batch subprocess and add the new skill.
+
+        The flush is *forced* on the very last trial so the buffer
+        does not silently discard a partial batch at job end. This
+        mirrors lqrl's ``has_final_partial_batch`` flush trigger.
+        """
+        batch = extract_buffer.flush()
+        if not batch:
+            return
+        try:
+            new_skill = await extractor.extract_batch(  # type: ignore[union-attr]
+                trials=batch,
+                available_skill_names=[
+                    s.skill_id for s in lib.skills.values()
+                ],
+            )
+        except Exception:
+            logger.exception("extract_batch subprocess crashed; batch discarded.")
+            return
+        if new_skill is None:
+            logger.info(
+                "extract_batch returned no skill (LLM skipped or LLM "
+                "output failed); batch of %d records discarded.",
+                len(batch),
+            )
+            return
+        if new_skill.skill_id in lib:
+            logger.warning(
+                "extract_batch produced skill %s which is already in lib; "
+                "skipping lib.add.",
+                new_skill.skill_id,
+            )
+            return
+        # ★ admission_exempt: skip the n_explore probation window.
+        # Quality control falls on the verifier's r_learning signal
+        # feeding back into Eq. 6 across future trials.
+        new_skill.admission_exempt = True
+        lib.add(new_skill)
+        mgr.probation_count.pop(new_skill.skill_id, None)
+        mgr.probation_avg_q.pop(new_skill.skill_id, None)
+        # Initial Q=0.5 (or configured) on the (0, skill_id) sentinel.
+        # The real intent_hash is set when the skill is first
+        # retrieved for some specific intent; the (0, _) entry
+        # is the "global prior".
+        mgr.update_q(0, new_skill.skill_id, method.new_skill_initial_q)
+        logger.info(
+            "Batched extract created skill %s (Q_init=%.2f) from %d trials",
+            new_skill.skill_id,
+            method.new_skill_initial_q,
+            len(batch),
+        )
 
     async def on_ended(event: TrialHookEvent) -> None:
         if event.result is None:
@@ -256,8 +373,11 @@ def attach_paper_registers(job: Job, method: MethodConfig) -> None:
                             0.05,  # small positive bump
                         )
 
-            # Optional: auto-extract (create_skill path)
-            extracted_skills: list[Skill] = []
+            # Auto-extract (create_skill path) — BATCHED.
+            # Mirror lqrl's evolve_every_n_trials: per qualifying
+            # trial we ADD a record to the buffer; when the buffer
+            # reaches N, we spawn ONE extract_batch subprocess that
+            # aggregates the N (task, knowledge) records.
             if (
                 extractor is not None
                 and r_task > 0.5
@@ -272,36 +392,23 @@ def attach_paper_registers(job: Job, method: MethodConfig) -> None:
                     for r in retrieved
                 )
                 and attribution.knowledge_to_extract.strip()
-                and len(extracted_skills) < method.extract_max_new_per_trial
             ):
-                new_skill = await extractor.extract(
+                batch = extract_buffer.add(
                     task=intent_text,
                     knowledge=attribution.knowledge_to_extract,
                     intent_hash=intent_hash,
-                    available_skill_names=[s.skill_id for s in lib.skills.values()],
                 )
-                if new_skill is not None and new_skill.skill_id not in lib:
-                    lib.add(new_skill)
-                    # Reset probation for the new skill so it goes
-                    # through the full n_explore window.
-                    mgr.probation_count.pop(new_skill.skill_id, None)
-                    mgr.probation_avg_q.pop(new_skill.skill_id, None)
-                    # Initial Q-value for the new skill on the
-                    # current intent. MethodConfig defaults to 0.5
-                    # (an "optimistic prior" — gives the new skill
-                    # a fair chance at the z-score Phase B ranking).
-                    mgr.update_q(
-                        intent_hash,
-                        new_skill.skill_id,
-                        method.new_skill_initial_q,
-                    )
-                    extracted_skills.append(new_skill)
-                    logger.info(
-                        "Extracted new skill %s (Q_init=%.2f) for intent %s",
-                        new_skill.skill_id,
-                        method.new_skill_initial_q,
-                        intent_text,
-                    )
+                if batch:
+                    # Buffer hit the threshold; flush now.
+                    await _flush_buffer()
+                # Force-flush on the last expected trial so a
+                # partial buffer is not silently discarded at job
+                # end (mirrors lqrl's has_final_partial_batch).
+                if (
+                    extract_buffer
+                    and (state.step + 1) >= expected_terminal_trials
+                ):
+                    await _flush_buffer()
 
             # Library maintenance (admission / eviction / rejuvenation)
             mgr.maintain(lib, current_step=state.step + 1)

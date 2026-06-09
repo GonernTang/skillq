@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from paper.method.hash import qhash
-from paper.method.prompts import EXTRACT_SKILL_PROMPT
+from paper.method.prompts import BATCHED_EXTRACT_SKILL_PROMPT, EXTRACT_SKILL_PROMPT
 from paper.method.types import Skill
 
 logger = logging.getLogger("paper.method.extractor")
@@ -74,23 +74,97 @@ class SkillExtractor:
         available_skill_names: list[str] | None = None,
         sandbox_root: Path | None = None,
     ) -> Skill | None:
-        """Materialize a new SKILL.md and return a :class:`Skill`.
+        """Materialize a new SKILL.md from a single (task, knowledge) pair.
+
+        Per-trial entry point used by the per-trial attribution path.
+        For the batched N-trial flush, prefer :meth:`extract_batch`.
 
         Returns ``None`` on any failure (timeout, parse error, security
         check failed, LLM did not write a file, etc.). The bridge
         treats ``None`` as "extract skipped" and moves on.
         """
-        sandbox = self._make_sandbox(sandbox_root)
-        system_prompt = EXTRACT_SKILL_PROMPT.format(
+        return await self._extract_with_prompt(
+            prompt_template=EXTRACT_SKILL_PROMPT,
+            format_kwargs={
+                "task": task,
+                "knowledge": knowledge,
+                "intent_hash": f"{intent_hash:016x}",
+                "available_skills": json.dumps(available_skill_names or []),
+            },
             task=task,
-            knowledge=knowledge,
-            intent_hash=f"{intent_hash:016x}",
-            available_skills=json.dumps(available_skill_names or []),
+            intent_hash=intent_hash,
+            sandbox_root=sandbox_root,
+        )
+
+    async def extract_batch(
+        self,
+        *,
+        trials: list[dict[str, Any]],
+        available_skill_names: list[str] | None = None,
+        sandbox_root: Path | None = None,
+        aggregated_intent_hash: int = 0,
+    ) -> Skill | None:
+        """Materialize a new SKILL.md from N aggregated (task, knowledge)
+        records. Spawns ONE ``claude --print`` subprocess.
+
+        Each entry in ``trials`` is a dict with keys:
+            ``task`` (str), ``knowledge`` (str), ``intent_hash`` (int).
+
+        Mirrors lqrl's ``step_evolve`` ``_CREATE_SYSTEM_PROMPT`` shape
+        (aggregate reusable exploration → decide create or skip →
+        synthesize), but in our own wording and with paper-method
+        constraints.
+        """
+        if not trials:
+            return None
+        # Format the per-trial lines
+        per_trial_lines = []
+        for i, t in enumerate(trials, start=1):
+            per_trial_lines.append(
+                f"[Trial {i}]\n"
+                f"  intent_hash: {t.get('intent_hash', 0):016x}\n"
+                f"  task: {t.get('task', '')!r}\n"
+                f"  reusable_knowledge: {t.get('knowledge', '')!r}\n"
+            )
+        aggregated = "\n".join(per_trial_lines)
+
+        # Use the first non-empty task as the "representative" task
+        representative_task = next(
+            (t["task"] for t in trials if t.get("task")), "aggregate"
+        )
+        return await self._extract_with_prompt(
+            prompt_template=BATCHED_EXTRACT_SKILL_PROMPT,
+            format_kwargs={
+                "n_trials": len(trials),
+                "aggregated_trials": aggregated,
+                "representative_task": representative_task,
+                "available_skills": json.dumps(available_skill_names or []),
+            },
+            task=representative_task,
+            intent_hash=aggregated_intent_hash,
+            sandbox_root=sandbox_root,
+        )
+
+    async def _extract_with_prompt(
+        self,
+        *,
+        prompt_template: str,
+        format_kwargs: dict[str, Any],
+        task: str,
+        intent_hash: int,
+        sandbox_root: Path | None,
+    ) -> Skill | None:
+        """Common subprocess + sandbox + collect plumbing for both
+        :meth:`extract` and :meth:`extract_batch`.
+        """
+        sandbox = self._make_sandbox(sandbox_root)
+        system_prompt = prompt_template.format(
             sandbox_dir=str(sandbox),
             name_min_words=self.name_min_words,
             name_max_words=self.name_max_words,
             body_min_tokens=self.body_min_tokens,
             body_max_tokens=self.body_max_tokens,
+            **format_kwargs,
         )
 
         cmd = [

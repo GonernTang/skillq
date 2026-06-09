@@ -65,6 +65,19 @@ class MethodConfig(BaseModel):
 
     # Auto-extract (create_skill path) — opt-in, see bridge.py
     enable_auto_extract: bool = False
+    extract_every_n_trials: int = Field(
+        default=4, ge=1,
+        description=(
+            "Batched-evolve flush cadence. Every N qualifying successful "
+            "trials (those whose attribution ∈ {SUCCESS_NO_SKILL_SEEN, "
+            "SUCCESS_VIEWED_SKILL_BUT_NOT_USED} and where no retrieved "
+            "skill has Q > theta_consider_used), spawn ONE claude "
+            "--print subprocess that aggregates the N (task, knowledge) "
+            "records into a single new SKILL.md. Default 4 mirrors "
+            "SkillsVote's evolve_every_n_trials=1 default offset by the "
+            "extra LLM call cost in the paper's per-trial attribution step."
+        ),
+    )
     extract_max_new_per_trial: int = Field(default=1, ge=0, le=10)
     extract_timeout_sec: int = Field(default=600, ge=10)
     theta_consider_used: float = Field(

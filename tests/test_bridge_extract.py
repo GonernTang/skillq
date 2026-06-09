@@ -35,6 +35,13 @@ class _MockJob:
     def on_trial_ended(self, callback: Any) -> None:
         self.on_ended = callback
 
+    def __len__(self) -> int:
+        # The bridge uses ``len(job)`` to compute expected_terminal_trials
+        # for the buffer force-flush on the last trial. We return a
+        # large sentinel so the force-flush never fires in unit tests
+        # (the per-trial buffer.add() handles the normal case).
+        return 1_000_000
+
 
 def _patch_litellm_backends(monkeypatch) -> None:
     """Replace LiteLLM + subprocess with stub shims that accept the
@@ -69,15 +76,19 @@ def _patch_litellm_backends(monkeypatch) -> None:
 
 
 def _patch_extractor_to_return(monkeypatch, skill: Skill | None) -> None:
-    """Replace :class:`SkillExtractor.extract` with a coroutine that
-    immediately returns ``skill`` (no subprocess).
+    """Replace :class:`SkillExtractor.extract` and ``extract_batch``
+    with coroutines that immediately return ``skill`` (no subprocess).
     """
     from paper.paper_mode import bridge as bridge_mod
 
     async def fake_extract(self, **kwargs) -> Skill | None:
         return skill
 
+    async def fake_extract_batch(self, **kwargs) -> Skill | None:
+        return skill
+
     monkeypatch.setattr(bridge_mod.SkillExtractor, "extract", fake_extract)
+    monkeypatch.setattr(bridge_mod.SkillExtractor, "extract_batch", fake_extract_batch)
 
 
 def _fake_trial_result(reward: float, trial_uri: str) -> MagicMock:
@@ -148,6 +159,7 @@ def test_bridge_extracts_on_success_no_skill_seen(tmp_path: Path, monkeypatch):
         b_max=4,
         n_explore=2,
         enable_auto_extract=True,
+        extract_every_n_trials=1,       # flush on the first qualifying trial
     )
     _seed_lib(method)
     job = _MockJob()
@@ -188,7 +200,8 @@ def test_bridge_skips_extract_on_failure(tmp_path: Path, monkeypatch):
     )
 
     method = MethodConfig(
-        library_root=tmp_path / "lib", b_max=4, n_explore=2, enable_auto_extract=True
+        library_root=tmp_path / "lib", b_max=4, n_explore=2, enable_auto_extract=True,
+        extract_every_n_trials=1,       # flush on the first qualifying trial
     )
     _seed_lib(method)
     job = _MockJob()
@@ -224,7 +237,8 @@ def test_bridge_skips_extract_on_skill_used(tmp_path: Path, monkeypatch):
     )
 
     method = MethodConfig(
-        library_root=tmp_path / "lib", b_max=4, n_explore=2, enable_auto_extract=True
+        library_root=tmp_path / "lib", b_max=4, n_explore=2, enable_auto_extract=True,
+        extract_every_n_trials=1,       # flush on the first qualifying trial
     )
     _seed_lib(method)
     job = _MockJob()
