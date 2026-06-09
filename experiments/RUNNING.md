@@ -2,8 +2,8 @@
 
 `mg` 通过两条互斥的 entrypoint 暴露这两个 benchmark:
 
-- **`mg lqrl run -c X`** —— 包装 `skills_vote.harbor.cli.run_job`,完全走 lqrl 上游的 recommend → feedback → evolve 生命周期。
-- **`mg paper run -c Y`** —— 在 lqrl agent 之上多套一层 UCB rerank,跑论文的 β-Q + 库管理 + near-miss 编辑。
+- **`mg skillsvote run -c X`** —— 包装 `skills_vote.harbor.cli.run_job`,完全走 SkillsVote 上游的 recommend → feedback → evolve 生命周期(SkillsVote 是 **LQRL 论文对比的 baseline**)。
+- **`mg paper run -c Y`** —— 在 SkillsVote agent 之上多套一层 UCB rerank,跑 **LQRL 论文的** β-Q + 库管理 + near-miss 编辑。
 
 三个 benchmark 共用同一份 JobConfig 结构,只是 `datasets:` 字段不同。
 
@@ -38,9 +38,9 @@ ANTHROPIC_AUTH_TOKEN=
 ANTHROPIC_MODEL=
 ```
 
-`mg paper run` / `mg prebuild run` / `mg lqrl run` **都会**自动加载
+`mg paper run` / `mg prebuild run` / `mg skillsvote run` **都会**自动加载
 `.env`(默认 `./.env`,可用 `--env-file` 覆盖)。`mg.env.load_env_file`
-在语义上跟 lqrl 的 `skills_vote.harbor.cli.load_env_file` 一致:
+在语义上跟 SkillsVote 的 `skills_vote.harbor.cli.load_env_file` 一致:
 `override=True` 意味着 .env 里的值会覆盖已有的 shell export。
 
 也可以直接用 shell 环境变量,完全等效:
@@ -123,13 +123,13 @@ uv run mg paper run -c mg/experiments/configs/tb_pro_paper.yaml
 uv run mg paper run -c mg/experiments/configs/swebenchpro_paper.yaml
 ```
 
-**lqrl 模式**只是入口不同,配置类似:
+**SkillsVote 模式**只是入口不同,配置类似:
 
 ```bash
 # 1) 把 configs/tb2_paper.yaml 复制一份,把 agents[0].import_path 改成
 #    skills_vote.harbor.claude_code:SkillsVoteClaudeCode(去掉 paper_retrieval)
 # 2) 跑:
-uv run mg lqrl run -c configs/tb2_lqrl.yaml
+uv run mg skillsvote run -c configs/tb2_skillsvote.yaml
 ```
 
 `jobs_dir: output` 字段告诉 Harbor 把 trial 结果写到哪里(默认是
@@ -147,10 +147,10 @@ uv run python -m mg.experiments.run_benchmark \
     --mode paper \
     --agent-model anthropic/claude-sonnet-4-5
 
-# TB Pro, lqrl 模式, Codex GPT-5.5
+# TB Pro, SkillsVote 模式, Codex GPT-5.5
 uv run python -m mg.experiments.run_benchmark \
     --benchmark tb_pro \
-    --mode lqrl \
+    --mode skillsvote \
     --agent-import-path skills_vote.harbor.agents:SkillsVoteCodex \
     --agent-model openai/gpt-5.5
 
@@ -234,7 +234,7 @@ ls output/tb2_paper__2026-06-05__14-30-00/trial-001/
 - `output/<job_name>/.mg_library/.state/method_state.json` — Q-table 持久化
 - `output/<job_name>/.mg_library/<skill_name>/` — 被 near-miss 改写的 skill
 
-`mg lqrl` 模式额外写(由 lqrl 自己写,mg 不参与):
+`mg skillsvote` 模式额外写(由 SkillsVote 自己写,mg 不参与):
 - `output/<job_name>/feedback.json`(每 trial)
 - `output/<job_name>/skills_vote_evolve_state.json`
 - `output/<job_name>/working_skills/`
@@ -297,7 +297,7 @@ done
 
 1. **冷启动**:在 TB 2.0 选 5 个 task,paper 模式跑 1 个 seed,看 Q-table
    是不是真的在演化(看 `method_state.json` 的 `q_table` 长度)。
-2. **基线对比**:同一份 task 列表,paper 模式 + lqrl 模式 + 无方法(bare
+2. **基线对比**:同一份 task 列表,paper 模式 + skillsvote 模式 + 无方法(bare
    `harbor run`)各跑一遍,统计 `verifier_result.rewards["reward"]`。
 3. **β sweep**:在第 1 步的 5 个 task 上跑 `beta_sweep.py`,挑甜区。
 4. **主实验**:TB 2.0 全 89 task × 5 seed,paper 模式 24-48 小时。

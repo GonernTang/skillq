@@ -1,4 +1,4 @@
-"""argparse subcommand for ``mg lqrl``."""
+"""argparse subcommand for ``mg skillsvote``."""
 
 from __future__ import annotations
 
@@ -19,10 +19,15 @@ def _path_exists(s: str) -> str:
 
 
 def build_parser(parent: argparse.ArgumentParser) -> None:
-    """Attach ``mg lqrl <subcommand>`` subparsers to ``parent``."""
-    sub = parent.add_subparsers(dest="lqrl_command", required=True, metavar="LQRL_CMD")
+    """Attach ``mg skillsvote <subcommand>`` subparsers to ``parent``."""
+    sub = parent.add_subparsers(
+        dest="skillsvote_command", required=True, metavar="SV_CMD"
+    )
 
-    run_p = sub.add_parser("run", help="Run an lqrl-flavoured Harbor job.")
+    run_p = sub.add_parser(
+        "run",
+        help="Run a SkillsVote-baseline Harbor job (the comparison method).",
+    )
     run_p.add_argument(
         "-c",
         "--config",
@@ -51,13 +56,13 @@ def build_parser(parent: argparse.ArgumentParser) -> None:
 
 
 def _run_command(args: argparse.Namespace) -> int:
-    """Dispatch to upstream lqrl's :func:`skills_vote.harbor.cli.main`."""
+    """Dispatch to upstream SkillsVote's :func:`skills_vote.harbor.cli.main`."""
     # Late import: keep the paper-mode modules un-imported when the user
-    # only uses ``mg lqrl``.
-    from skills_vote.harbor.cli import main as lqrl_main
+    # only uses ``mg skillsvote``.
+    from skills_vote.harbor.cli import main as skillsvote_main
 
     argv: list[str] = ["run", "-c", args.config_path, "--env-file", args.env_file]
     if args.yes:
         argv.append("-y")
     argv.extend(args.overrides)
-    return lqrl_main(argv)
+    return skillsvote_main(argv)

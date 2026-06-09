@@ -1,8 +1,8 @@
-"""Tests for the ``mg lqrl_mode`` pass-through entrypoint.
+"""Tests for the ``mg skillsvote_mode`` pass-through entrypoint.
 
 These tests verify that the entrypoint is a *pure* pass-through:
-- ``LqrlModeConfig`` accepts arbitrary extra fields.
-- ``mg.lqrl_mode.cli._run_command`` dispatches to
+- ``SkillsVoteModeConfig`` accepts arbitrary extra fields.
+- ``mg.skillsvote_mode.cli._run_command`` dispatches to
   ``skills_vote.harbor.cli.main`` (mocked here, since the upstream
   package's CLI exits the interpreter).
 """
@@ -15,12 +15,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from mg.lqrl_mode.config import LqrlModeConfig  # noqa: E402
+from mg.skillsvote_mode.config import SkillsVoteModeConfig  # noqa: E402
 
 
-def test_lqrl_mode_config_accepts_arbitrary_extra_fields():
+def test_skillsvote_mode_config_accepts_arbitrary_extra_fields():
     """SkillsVoteConfig is permissive; mg's marker class should be too."""
-    cfg = LqrlModeConfig(
+    cfg = SkillsVoteModeConfig(
         feedback_prompt_path="prompts/feedback.j2",
         evolve_prompt_path="prompts/evolve.j2",
         evolve_every_n_trials=2,
@@ -31,9 +31,9 @@ def test_lqrl_mode_config_accepts_arbitrary_extra_fields():
     assert dumped["register_import_paths"] == ["my_pkg.bridge:register"]
 
 
-def test_lqrl_mode_cli_run_dispatches_to_upstream(monkeypatch, tmp_path):
-    """``mg lqrl run -c X`` should call ``skills_vote.harbor.cli.main``."""
-    from mg.lqrl_mode import cli as lqrl_cli
+def test_skillsvote_mode_cli_run_dispatches_to_upstream(monkeypatch, tmp_path):
+    """``mg skillsvote run -c X`` should call ``skills_vote.harbor.cli.main``."""
+    from mg.skillsvote_mode import cli as skillsvote_cli
 
     captured: dict = {}
 
@@ -48,7 +48,7 @@ def test_lqrl_mode_cli_run_dispatches_to_upstream(monkeypatch, tmp_path):
     cfg_path = tmp_path / "job.yaml"
     cfg_path.write_text("agents: []\n", encoding="utf-8")
 
-    rc = lqrl_cli._run_command(
+    rc = skillsvote_cli._run_command(
         type("Args", (), {
             "config_path": str(cfg_path),
             "env_file": str(tmp_path / ".env"),

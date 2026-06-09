@@ -2,12 +2,14 @@
 
 Subcommands:
 
-- ``mg lqrl ...``     — pass-through to upstream lqrl (see :mod:`mg.lqrl_mode.cli`).
-- ``mg paper ...``    — run the LQRL paper's four-layer method
-  (see :mod:`mg.paper_mode.cli`).
-- ``mg prebuild ...`` — pre-build the per-task Docker images that
-  benchmark trials need (TB 2.0 / TB Pro / SWE-Bench Pro).
-  Thin wrapper around lqrl's ``scripts/prebuild_images.py``.
+- ``mg skillsvote ...`` — pass-through to the upstream ``skills_vote``
+  package (the SkillsVote baseline; the comparison method for the
+  LQRL paper). See :mod:`mg.skillsvote_mode.cli`.
+- ``mg paper ...``      — run the LQRL paper's four-layer method
+  (the user's own contribution). See :mod:`mg.paper_mode.cli`.
+- ``mg prebuild ...``   — pre-build the per-task Docker images that
+  benchmark trials need (TB 2.0 / TB Pro / SWE-Bench Pro). Thin
+  wrapper around the upstream prebuild script.
 """
 
 from __future__ import annotations
@@ -21,29 +23,34 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="mg",
         description=(
-            "Branch-style entrypoint: mg lqrl re-uses the upstream lqrl "
-            "lifecycle; mg paper runs the LQRL paper's four-layer method."
+            "Branch-style entrypoint: `mg skillsvote` runs the upstream "
+            "SkillsVote baseline (comparison method); `mg paper` runs the "
+            "LQRL paper's four-layer method (the user's own contribution)."
         ),
     )
     sub = parser.add_subparsers(dest="mode", required=True, metavar="MODE")
 
-    # Defer imports so that, e.g., ``mg lqrl --help`` does not need to
-    # import the paper-side modules (or vice-versa).
-    from mg.lqrl_mode.cli import build_parser as build_lqrl
+    # Defer imports so that, e.g., ``mg skillsvote --help`` does not need
+    # to import the paper-side modules (or vice-versa).
+    from mg.skillsvote_mode.cli import build_parser as build_skillsvote
     from mg.paper_mode.cli import build_parser as build_paper
     from mg.prebuild_cli import build_parser as build_prebuild
 
-    lqrl_sub = sub.add_parser(
-        "lqrl",
-        help="Run the upstream lqrl lifecycle (recommend → feedback → evolve).",
+    sv_sub = sub.add_parser(
+        "skillsvote",
+        help=(
+            "Run the SkillsVote baseline (recommend → feedback → evolve). "
+            "This is the *comparison method* for the LQRL paper."
+        ),
     )
-    build_lqrl(lqrl_sub)
+    build_skillsvote(sv_sub)
 
     paper_sub = sub.add_parser(
         "paper",
         help=(
             "Run the LQRL paper's four-layer method "
-            "(UCB retrieval → β-Q → lib mgmt → near-miss edit)."
+            "(UCB retrieval → β-Q → lib mgmt → near-miss edit). "
+            "This is the *user's own contribution*."
         ),
     )
     build_paper(paper_sub)
@@ -52,7 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
         "prebuild",
         help=(
             "Pre-build per-task Docker images (TB 2.0 / TB Pro / SWE-Bench Pro). "
-            "Wraps lqrl's prebuild_images.py."
+            "Wraps the upstream prebuild_images.py."
         ),
     )
     build_prebuild(prebuild_sub)
