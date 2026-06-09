@@ -154,7 +154,6 @@ def attach_paper_registers(job: Job, method: MethodConfig) -> None:
     refiner = NearMissRefiner(
         backend=LiteLLMEditBackend(model=method.editor_model),
         model=method.editor_model,
-        edit_token_cap=method.edit_token_cap,
     )
     ranker = TwoStageRanker(
         embedder=LiteLLMEmbedder(model=method.embedder_model),

@@ -46,11 +46,16 @@ class NearMissRefiner:
     Compared to the implementation_guide's ``NearMissEditor`` the only
     behavioural change is that the prompt comes from
     :data:`mg.method.prompts.EDIT_PROMPT` (own wording).
+
+    The previous 20%-of-original-token cap has been removed
+    (``edit_token_cap`` field deleted). The LLM is free to rewrite
+    as much or as little as it judges necessary; quality control
+    falls entirely on the verifier's ``r_learning`` signal feeding
+    back into Eq. 6.
     """
 
     backend: EditProposalBackend
     model: str = "openai/gpt-4o"
-    edit_token_cap: float = 0.20
     trace_truncate_chars: int = 2000
 
     def is_near_miss(
@@ -70,9 +75,18 @@ class NearMissRefiner:
     ) -> Skill:
         """Propose an edit and return the new (post-edit) skill.
 
-        If the proposal is larger than ``edit_token_cap`` of the original
-        token count, the proposal is **rejected** and the original skill
-        is returned unchanged (the standard 20% cap from the paper).
+        The previous 20%-of-original-token cap has been removed: the
+        LLM is allowed to rewrite as much or as little as it judges
+        necessary. The only hard sanity checks are:
+            - the new body is non-empty
+            - the new body differs from the original (a real edit
+              actually happened; otherwise the LLM is just echoing
+              the input)
+
+        If the proposed body is empty or unchanged, the original
+        skill is returned unchanged. The verifier's ``r_learning`` is
+        the *only* quality signal — a bad edit will simply not get
+        reinforced by future Q-updates.
         """
         prompt = EDIT_PROMPT.format(
             task=task,
@@ -81,10 +95,8 @@ class NearMissRefiner:
         )
         new_body = self.backend(prompt, self.model).strip()
 
-        old_tokens = len(re.findall(r"\S+", skill.body))
-        new_tokens = len(re.findall(r"\S+", new_body))
-        if old_tokens > 0 and new_tokens > (1.0 + self.edit_token_cap) * old_tokens:
-            # Reject: edit too large
+        # Basic sanity: empty or no-op edit → keep the original.
+        if not new_body or new_body == skill.body.strip():
             return skill
 
         return Skill(

@@ -229,14 +229,41 @@ def test_two_stage_ranker_returns_top_k2_in_descending_score():
     assert results[0].score >= results[1].score
 
 
-def test_near_miss_refiner_rejects_oversize_edit():
-    refiner = NearMissRefiner(
-        backend=StubEditBackend(),
-        model="test",
-        edit_token_cap=0.20,
-    )
+def test_near_miss_refiner_accepts_any_size_edit():
+    """The previous 20%-of-original-token cap has been removed: the
+    LLM is free to rewrite as much or as little as it judges
+    necessary. The stub backend appends a comment, which is
+    accepted regardless of size.
+    """
+    refiner = NearMissRefiner(backend=StubEditBackend(), model="test")
     skill = Skill(skill_id="s1", body="short body here")
-    # StubEditBackend appends a comment — within 20% of 3 tokens.
     out = refiner.propose_edit(skill, "task", "trace")
-    # Either accepted (with the stub comment) or rejected (returns same skill).
+    # Accepted (the stub comment is appended; not the same skill).
     assert out.skill_id == skill.skill_id
+    assert "NEAR-MISS" in out.body
+
+
+def test_near_miss_refiner_keeps_original_on_empty_body():
+    """Empty LLM response → keep the original skill unchanged."""
+
+    class EmptyBackend:
+        def __call__(self, prompt, model):
+            return ""
+
+    refiner = NearMissRefiner(backend=EmptyBackend(), model="test")
+    skill = Skill(skill_id="s1", body="original body")
+    out = refiner.propose_edit(skill, "task", "trace")
+    assert out is skill  # same object — original returned
+
+
+def test_near_miss_refiner_keeps_original_on_no_op_edit():
+    """LLM echoes the original unchanged → keep the original skill."""
+
+    class EchoBackend:
+        def __call__(self, prompt, model):
+            return "original body"
+
+    refiner = NearMissRefiner(backend=EchoBackend(), model="test")
+    skill = Skill(skill_id="s1", body="original body")
+    out = refiner.propose_edit(skill, "task", "trace")
+    assert out is skill

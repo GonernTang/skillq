@@ -50,8 +50,11 @@ class MethodConfig(BaseModel):
     n_stale: int = Field(default=80, ge=1)
 
     # Near-miss (Layer 4)
+    # Note: the previous ``edit_token_cap`` field (default 0.20) has
+    # been removed. The LLM is now free to rewrite as much or as
+    # little as it judges necessary. Quality control falls on the
+    # verifier's r_learning signal feeding back into Eq. 6.
     theta_near_miss: float = Field(default=0.5, ge=0.0, le=1.0)
-    edit_token_cap: float = Field(default=0.20, ge=0.0, le=1.0)
 
     # LLM models
     verifier_model: str = "openai/gpt-4o"
