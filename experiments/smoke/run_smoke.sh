@@ -30,7 +30,7 @@ TASKS=(
 )
 IMAGE_TAG="20260604"
 CONFIG="experiments/smoke/fix-git_paper_smoke.yaml"
-JOB_DIR="output/smoke_wiring_v1"
+JOB_DIR="output/smoke_wiring_v2"
 SEED_SKILLS="experiments/smoke/seed_skills"
 METHOD_CONFIG="experiments/smoke/method.yaml"
 LQRL_INPUT="/home/gonern/workspace/lqrl/input/terminal-bench"

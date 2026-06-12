@@ -18,7 +18,7 @@
 
 jobs_dir: output
 # Stable name; the smoke script `rm -rf`s this before each run.
-job_name: smoke_wiring_v1
+job_name: smoke_wiring_v2
 n_attempts: 1
 n_concurrent_trials: 1
 quiet: false
