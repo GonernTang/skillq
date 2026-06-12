@@ -38,8 +38,8 @@ def test_qlib_state_round_trip(tmp_path: Path):
     mgr = LibManager(
         b_max=10, theta_admit=0.3, theta_evict=0.1, n_explore=5, n_stale=80
     )
-    mgr.update_q(intent_hash=1, skill_id="a", delta=0.5)
-    mgr.update_q(intent_hash=2, skill_id="b", delta=-0.2)
+    mgr.update_q(skill_id="a", delta=0.5)
+    mgr.update_q(skill_id="b", delta=-0.2)
     mgr.mark_retrieved("a", current_step=7)
     state = QlibState(tmp_path / "method_state.json")
     state.step = 42
@@ -55,8 +55,8 @@ def test_qlib_state_round_trip(tmp_path: Path):
     assert state2.step == 42
     assert {s.skill_id for s in lib2.skills.values()} == {"a", "b"}
     assert lib2.b_max == 10
-    assert mgr2.q_for(1, "a") == 0.5
-    assert mgr2.q_for(2, "b") == -0.2
+    assert mgr2.q_for("a") == 0.5
+    assert mgr2.q_for("b") == -0.2
     assert mgr2.last_retrieval_step["a"] == 7
 
 

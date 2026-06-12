@@ -1,22 +1,48 @@
-"""Bridge between Harbor's trial-event stream and the four-layer method.
+"""Bridge between Harbor's trial-event stream and the four-layer method
+(per-subtask hook refactor, 2026-06-11).
 
 Two public functions:
 
 - :func:`attach_paper_registers` — wires a single
   :class:`harbor.trial.hooks.TrialEvent.END` callback that runs the
-  retrieval → β-Q → library → near-miss pipeline.
+  per-subtask Q-update + library maintenance pipeline.
 - :func:`run_paper_job` — high-level orchestrator that creates a Harbor
   :class:`Job`, attaches the hook, and runs it.
 
-The bridge is intentionally narrow: it only handles the trial-end
-event. Anything that needs to fire at trial-start can be added to the
-agent subclass (:class:`paper.paper_mode.agent.PaperClaudeCodeAgent`).
+**Global-Q + per-subtask refactor**:
+
+- The Q-table is keyed by ``skill_id`` (single global value per
+  skill). Eq. 4 reads it as ``mgr.q_table[skill_id]``; Eq. 6 (the
+  Q-update) writes to the same key.
+- Per-subtask verdicts come from the container's PreToolUse hook
+  log (``mg_skill_calls.jsonl``). The bridge aggregates by
+  ``(skill_id, trial)`` (mean ``r_subtask`` over all calls in the
+  trial), then applies::
+
+      Q(skill) += alpha * (w_subtask * r_subtask_mean
+                           + w_task    * r_task
+                           - Q(skill))
+
+- The pre-trial ``retrieve_for_intent`` is no longer used for Q
+  attribution. We still keep the bridge's connection to the lib
+  for **emb_cache refresh** (when the lib mutates) and for the
+  per-skill stats (``n_uses``, ``n_success``). The Eq. 4 retrieval
+  itself is what the hook does at sub-task time.
+
+**Per-subtask hook env wiring** (done here, not in the agent class):
+
+The bridge prepares, *at attach time*, the per-job state that the
+agent's container will read at run time. The agent's
+``PaperClaudeCodeAgent.run`` consults the bridge-installed state
+to know what env vars to forward.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -34,13 +60,18 @@ from paper.method.attribution import (
 )
 from paper.method.editor_backend import LiteLLMEditBackend
 from paper.method.extractor import SkillExtractor
-from paper.method.hash import qhash
-from paper.method.layered_q import BetaLayeredQ
 from paper.method.library import LibManager
 from paper.method.near_miss import NearMissRefiner
-from paper.method.retrieval import LiteLLMEmbedder, TwoStageRanker
+from paper.method.retrieval import LiteLLMEmbedder
 from paper.method.state import QlibState
+from paper.method.sub_task_verifier import (
+    LiteLLMSubTaskVerifierBackend,
+    StubSubTaskVerifierBackend,
+    SubTaskVerifier,
+    mean_r_subtask,
+)
 from paper.method.types import Qlib, Skill
+from paper.method.vector_table import VectorTable
 from paper.method.verifier import IndependentVerifier, LiteLLMVerifierBackend
 from paper.paper_mode.config import MethodConfig
 
@@ -100,14 +131,9 @@ def _trial_dir(event: TrialHookEvent) -> Path:
 def _find_skills_dir(event: TrialHookEvent) -> Path | None:
     """Locate the directory lqrl's ``step_recommend`` copied skills into.
 
-    lqrl sets ``$CLAUDE_CONFIG_DIR/skills`` for the Claude agent and
-    ``$CODEX_HOME/skills`` for the Codex agent. We read whichever is
-    present from the event's :class:`TrialHookEvent.config.agent.env`
-    if available, falling back to a probe of the standard paths
-    inside the trial's environment trace. Returning ``None`` is
-    acceptable — the attribution step will just receive an empty
-    available-skills list and classify as
-    ``SUCCESS_NO_SKILL_SEEN`` if no skill is otherwise visible.
+    See comments in the prior revision of this module. The per-subtask
+    hook does not need this; we still surface it for the attribution
+    analyzer.
     """
     config = event.config
     if config is None:
@@ -123,19 +149,11 @@ def _find_skills_dir(event: TrialHookEvent) -> Path | None:
 
 
 # ---------------------------------------------------------------------------
-# Extract buffer (batched-evolve, mirrors lqrl's evolve_every_n_trials)
+# Auto-extract buffer (batched-evolve, mirrors lqrl's evolve_every_n_trials)
 # ---------------------------------------------------------------------------
 @dataclass
 class _ExtractBuffer:
-    """Buffer of (task, knowledge) records awaiting a batched-extract flush.
-
-    Mirrors lqrl's ``_will_harbor_retry`` / pending_records buffer pattern
-    in :mod:`lqrl/src/skills_vote/harbor/hooks.py`. Adds a record on each
-    qualifying trial; when the buffer reaches ``n_trials_threshold``
-    records, the bridge calls :meth:`SkillExtractor.extract_batch` to
-    spawn one ``claude --print`` subprocess that aggregates the N
-    records into a single new SKILL.md.
-    """
+    """Buffer of (task, knowledge) records awaiting a batched-extract flush."""
 
     n_trials_threshold: int
     pending: list[dict[str, Any]] = field(default_factory=list)
@@ -145,27 +163,15 @@ class _ExtractBuffer:
         *,
         task: str,
         knowledge: str,
-        intent_hash: int,
     ) -> list[dict[str, Any]]:
-        """Add a record; if the buffer is full, return a snapshot.
-
-        The pending list is **not** mutated by this method — callers
-        are expected to use :meth:`flush` (or pass the returned batch
-        directly) to actually drain the buffer. This split is what
-        allows the bridge to safely use the returned batch without
-        a redundant second flush.
-        """
         if not knowledge.strip():
             return []
-        self.pending.append(
-            {"task": task, "knowledge": knowledge, "intent_hash": intent_hash}
-        )
+        self.pending.append({"task": task, "knowledge": knowledge})
         if len(self.pending) >= self.n_trials_threshold:
             return list(self.pending)
         return []
 
     def flush(self) -> list[dict[str, Any]]:
-        """Return the current batch and clear the buffer."""
         if not self.pending:
             return []
         batch = self.pending
@@ -177,18 +183,122 @@ class _ExtractBuffer:
 
 
 # ---------------------------------------------------------------------------
+# Sub-task log reader — parses the container's hook JSONL
+# ---------------------------------------------------------------------------
+@dataclass
+class _SubTaskCallRecord:
+    skill_id: str
+    requested: str
+    top_k: list[dict[str, Any]]
+    approved: bool
+    ts: float
+    intent_text: str
+
+
+def _read_skill_calls_log(log_path: Path) -> list[_SubTaskCallRecord]:
+    """Parse the JSONL the hook wrote during a trial.
+
+    Returns [] on any structural failure (missing file, bad JSON).
+    Per the per-subtask design, we aggregate by skill_id downstream
+    and take the mean of r_subtask over all calls in the trial.
+    """
+    if not log_path.exists():
+        return []
+    out: list[_SubTaskCallRecord] = []
+    with open(log_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            out.append(
+                _SubTaskCallRecord(
+                    skill_id=str(rec.get("requested", "")),
+                    requested=str(rec.get("requested", "")),
+                    top_k=list(rec.get("top_k", [])),
+                    approved=bool(rec.get("approved", False)),
+                    ts=float(rec.get("ts", 0.0)),
+                    intent_text=str(rec.get("intent_text", "")),
+                )
+            )
+    return out
+
+
+def _slice_sub_task_trace(trial_dir: Path, ts: float) -> str:
+    """Read a slice of the agent's session log around ``ts`` seconds.
+
+    Used by :class:`SubTaskVerifier` to build its judgment context.
+    Best-effort — returns whatever we can parse; if the session log
+    is missing we return a stub note so the verifier can still
+    produce a (likely "uncertain") verdict rather than crashing.
+    """
+    # Sessions live under <trial_dir>/agent/sessions/projects/*/; the
+    # latest .jsonl is the agent's run log.
+    sessions_root = trial_dir / "agent" / "sessions" / "projects"
+    if not sessions_root.exists():
+        return "<no agent session log found>"
+
+    jsonls = sorted(
+        sessions_root.glob("*/*.jsonl"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not jsonls:
+        return "<no agent session log found>"
+
+    # Approximate: extract the last ~50 records (all of them for short
+    # runs; a budget-capped subset for long ones). The verifier's
+    # judgment is about the sub-task's *last* state, so the most
+    # recent activity is the most informative.
+    out_lines: list[str] = []
+    try:
+        with open(jsonls[0], "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                # Compact representation: type + content snippet
+                rtype = rec.get("type", "?")
+                content = rec.get("message", {}).get("content", "")
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict):
+                            if block.get("type") == "text":
+                                content = block.get("text", "")
+                                break
+                            if block.get("type") == "tool_use":
+                                content = (
+                                    f"[tool_use:{block.get('name','?')}] "
+                                    f"{json.dumps(block.get('input', {}))[:200]}"
+                                )
+                                break
+                if isinstance(content, str):
+                    out_lines.append(f"{rtype}: {content[:300]}")
+    except Exception:  # noqa: BLE001
+        return "<agent session log read failed>"
+    return "\n".join(out_lines[-50:])
+
+
+# ---------------------------------------------------------------------------
 # Public: hook registration
 # ---------------------------------------------------------------------------
 def attach_paper_registers(job: Job, method: MethodConfig) -> None:
-    """Wire a single ``on_trial_ended`` callback that runs the
-    four-layer method against each completed trial.
+    """Wire a single ``on_trial_ended`` callback.
 
-    The callback is wrapped in a broad ``try/except`` so a bug in the
-    method does not abort the trial: Harbor's hook dispatch
-    (``harbor/trial/trial.py:_emit``) is sequential, and an exception
-    from one hook would prevent other hooks from running. Since paper
-    mode is registered alone this is mostly a safety net for
-    production.
+    The callback (1) reads the per-subtask hook log, (2) calls the
+    :class:`SubTaskVerifier` for each unique (skill, trial) pair,
+    (3) applies Eq. 6 (global Q variant) with ``w_subtask * r_subtask
+    + w_task * r_task`` as the target, and (4) maintains the lib.
+
+    Per-trial attribution + auto-extract are unchanged from the
+    pre-refactor bridge.
     """
     lib = Qlib(b_max=method.b_max)
     mgr = LibManager(
@@ -198,11 +308,16 @@ def attach_paper_registers(job: Job, method: MethodConfig) -> None:
         n_explore=method.n_explore,
         n_stale=method.n_stale,
     )
-    q_update = BetaLayeredQ(
-        alpha=method.alpha,
-        beta=method.beta,
-        increment_clip=method.increment_clip,
-    )
+    # State + emb_cache load
+    state = QlibState(method.resolved_state_path())
+    state.load_into(lib, mgr, lib_root=method.library_root)
+    emb_cache = VectorTable(method.resolved_state_path().parent / "emb_cache.json")
+    emb_cache.load()
+
+    # IndependentVerifier (still used for r_learning on near-miss
+    # edits — Eq. 6's `r_learning` term, which is per-skill-content
+    # delta and is computed only when a near-miss edit actually
+    # fires).
     verifier = IndependentVerifier(
         backend=LiteLLMVerifierBackend(model=method.verifier_model),
         model=method.verifier_model,
@@ -211,23 +326,10 @@ def attach_paper_registers(job: Job, method: MethodConfig) -> None:
         backend=LiteLLMEditBackend(model=method.editor_model),
         model=method.editor_model,
     )
-    ranker = TwoStageRanker(
-        embedder=LiteLLMEmbedder(model=method.embedder_model),
-        k1=method.k1,
-        k2=method.k2,
-        lambda_=method.lambda_,
-        c_ucb=method.c_ucb,
-    )
-    # Attribution (mirrors lqrl's feedback step): LLM reads session
-    # trace + available skills list, returns a 6-class verdict plus a
-    # knowledge_to_extract blob for the optional extract step.
     attribution_analyzer = AttributionAnalyzer(
         backend=LiteLLMAttributionBackend(model=method.attribution_model),
         model=method.attribution_model,
     )
-    # Skill extractor (creates new skills): subprocess claude --print
-    # writes a SKILL.md to a sandbox; we read it back and lib.add.
-    # Only constructed when the user opts in.
     extractor: SkillExtractor | None = (
         SkillExtractor(
             claude_cli=method.extractor_claude_cli,
@@ -236,33 +338,30 @@ def attach_paper_registers(job: Job, method: MethodConfig) -> None:
         if method.enable_auto_extract
         else None
     )
-    # Buffer that aggregates (task, knowledge) records across
-    # multiple qualifying trials before invoking the extractor.
-    # Mirrors lqrl's `evolve_every_n_trials` semantics.
     extract_buffer = _ExtractBuffer(n_trials_threshold=method.extract_every_n_trials)
 
-    # Total expected terminal trials; used to force-flush the
-    # buffer on the last qualifying trial.
+    # Sub-task verifier
+    sub_task_verifier = SubTaskVerifier(
+        backend=LiteLLMSubTaskVerifierBackend(
+            model=method.q_subtask_verifier_model
+        ),
+        model=method.q_subtask_verifier_model,
+    )
+
+    # Track which lib mutates fired this on_ended call (so we can
+    # batch emb_cache refresh at the end).
+    lib_changes_this_trial: list[tuple[str, str, str]] = []  # (action, sid, body)
+
     expected_terminal_trials = len(job)
-    state = QlibState(method.resolved_state_path())
-    state.load_into(lib, mgr, lib_root=method.library_root)
 
     async def _flush_buffer() -> None:
-        """Spawn one extract_batch subprocess and add the new skill.
-
-        The flush is *forced* on the very last trial so the buffer
-        does not silently discard a partial batch at job end. This
-        mirrors lqrl's ``has_final_partial_batch`` flush trigger.
-        """
         batch = extract_buffer.flush()
         if not batch:
             return
         try:
             new_skill = await extractor.extract_batch(  # type: ignore[union-attr]
                 trials=batch,
-                available_skill_names=[
-                    s.skill_id for s in lib.skills.values()
-                ],
+                available_skill_names=[s.skill_id for s in lib.skills.values()],
             )
         except Exception:
             logger.exception("extract_batch subprocess crashed; batch discarded.")
@@ -281,18 +380,12 @@ def attach_paper_registers(job: Job, method: MethodConfig) -> None:
                 new_skill.skill_id,
             )
             return
-        # ★ admission_exempt: skip the n_explore probation window.
-        # Quality control falls on the verifier's r_learning signal
-        # feeding back into Eq. 6 across future trials.
         new_skill.admission_exempt = True
         lib.add(new_skill)
-        mgr.probation_count.pop(new_skill.skill_id, None)
-        mgr.probation_avg_q.pop(new_skill.skill_id, None)
-        # Initial Q=0.5 (or configured) on the (0, skill_id) sentinel.
-        # The real intent_hash is set when the skill is first
-        # retrieved for some specific intent; the (0, _) entry
-        # is the "global prior".
-        mgr.update_q(0, new_skill.skill_id, method.new_skill_initial_q)
+        # Seed Q on the new skill (global, no per-intent).
+        mgr.set_q(new_skill.skill_id, method.new_skill_initial_q)
+        # Schedule emb_cache refresh for the new skill.
+        lib_changes_this_trial.append(("add", new_skill.skill_id, new_skill.body))
         logger.info(
             "Batched extract created skill %s (Q_init=%.2f) from %d trials",
             new_skill.skill_id,
@@ -301,6 +394,8 @@ def attach_paper_registers(job: Job, method: MethodConfig) -> None:
         )
 
     async def on_ended(event: TrialHookEvent) -> None:
+        nonlocal lib_changes_this_trial
+
         if event.result is None:
             return
         if event.result.exception_info is not None:
@@ -315,69 +410,115 @@ def attach_paper_registers(job: Job, method: MethodConfig) -> None:
         try:
             r_task = _harbor_r_task(event.result)
             intent_text = event.task_name or _trial_dir(event).name
-            intent_hash = qhash(intent_text)
             trial_dir = _trial_dir(event)
 
-            # Retrieval (Phase A + Phase B)
-            retrieved = ranker.retrieve_for_intent(
-                query=intent_text,
-                lib=lib,
-                intent_hash=intent_hash,
-                q_for=mgr.q_for,
+            # ---- Per-subtask Q-update (new) ----
+            # 1. Read the hook's calls log (one record per Skill
+            #    invocation the agent made during this trial).
+            # 2. For each unique (skill, trial) pair, slice the
+            #    session log around the call's ts and ask the
+            #    sub-task verifier whether the sub-task completed.
+            # 3. Aggregate by mean and apply Eq. 6 (global-Q
+            #    variant).
+            calls_log = _read_skill_calls_log(
+                trial_dir / "mg_skill_calls.jsonl"
             )
+            by_skill: dict[str, list[_SubTaskCallRecord]] = defaultdict(list)
+            for c in calls_log:
+                if not c.skill_id:
+                    continue
+                by_skill[c.skill_id].append(c)
 
-            # Attribution step: 1 LLM call, reads session jsonl +
-            # available-skills list, returns 6-class verdict +
-            # knowledge_to_extract.
+            sub_task_log_entries: list[dict[str, Any]] = []
+            if not by_skill:
+                # No Skill calls in this trial — Q-table unchanged.
+                # Still log this as a no-op for debug.
+                if method.debug_keep_subtask_log:
+                    sub_task_log_entries.append(
+                        {
+                            "trial": event.trial_id,
+                            "skill": "<none>",
+                            "calls": 0,
+                            "verdicts": [],
+                            "r_subtask_mean": 0.0,
+                            "r_task": r_task,
+                            "q_delta": 0.0,
+                        }
+                    )
+            else:
+                for skill_id, calls in by_skill.items():
+                    if skill_id not in lib:
+                        # Skill was in the agent's view at call time
+                        # but has since been evicted. Skip — we don't
+                        # Q-update a skill that no longer exists.
+                        continue
+                    verdicts = []
+                    for call in calls:
+                        trace = _slice_sub_task_trace(trial_dir, call.ts)
+                        skill = lib.get(skill_id)
+                        # We pass the description, not the body. The
+                        # judge evaluates goal completion, not body
+                        # quality.
+                        from paper.method.vector_table import _description_of
+
+                        desc = _description_of(skill.body) if skill else ""
+                        verdict = sub_task_verifier.score(
+                            task=intent_text,
+                            skill_id=skill_id,
+                            skill_description=desc,
+                            sub_task_trace=trace,
+                        )
+                        verdicts.append(verdict)
+                    r_subtask_mean = mean_r_subtask(verdicts)
+                    # Eq. 6 (global-Q variant):
+                    q_old = mgr.q_for(skill_id)
+                    target = method.q_w_subtask * r_subtask_mean + method.q_w_task * r_task
+                    delta = method.q_alpha * (target - q_old)
+                    mgr.update_q(skill_id, delta)
+                    # Bump per-skill counters
+                    skill_obj = lib.get(skill_id)
+                    if skill_obj is not None:
+                        skill_obj.n_uses += 1
+                        if r_task > 0.5:
+                            skill_obj.n_success += 1
+                    # Debug log
+                    if method.debug_keep_subtask_log:
+                        sub_task_log_entries.append(
+                            {
+                                "trial": event.trial_id,
+                                "skill": skill_id,
+                                "calls": len(calls),
+                                "verdicts": [
+                                    {
+                                        "ts": v.confidence,
+                                        "success": v.success,
+                                        "confidence": v.confidence,
+                                        "rationale": v.rationale,
+                                    }
+                                    for v in verdicts
+                                ],
+                                "r_subtask_mean": r_subtask_mean,
+                                "r_task": r_task,
+                                "q_delta": delta,
+                            }
+                        )
+                    logger.info(
+                        "Q-update skill=%s calls=%d r_subtask_mean=%+.2f "
+                        "r_task=%.2f q_old=%+.3f -> q_new=%+.3f",
+                        skill_id,
+                        len(calls),
+                        r_subtask_mean,
+                        r_task,
+                        q_old,
+                        q_old + delta,
+                    )
+
+            # ---- Auto-extract (create_skill path) — unchanged ----
             attribution = attribution_analyzer.analyze(
                 task=intent_text,
                 trial_dir=trial_dir,
                 skills_root=_find_skills_dir(event),
             )
-
-            # Compute a single r_learning for the top retrieved skill.
-            # When the library is empty, the learning signal is zero.
-            r_learning = 0.0
-            if retrieved:
-                top_skill = retrieved[0].skill
-                if lib.get(top_skill.skill_id) is not None:
-                    verdict = verifier.score(intent_text, top_skill, top_skill)
-                    r_learning = verdict.r_learning
-
-            # Q-update for every retrieved skill
-            for r in retrieved:
-                q_old = mgr.q_for(intent_hash, r.skill.skill_id)
-                q_new = q_update.apply(q_old, r_task, r_learning)
-                mgr.update_q(intent_hash, r.skill.skill_id, q_new - q_old)
-                mgr.mark_retrieved(r.skill.skill_id, state.step + 1)
-                r.skill.n_uses += 1
-                if r_task > 0.5:
-                    r.skill.n_success += 1
-
-            # Optional: small Q-bump for the "viewed but not used"
-            # case. The agent glanced at the skill but solved the
-            # task from its own exploration; we acknowledge the
-            # exposure with a small reward so the skill doesn't
-            # drift to extreme-negative Q from being repeatedly
-            # passed over.
-            if (
-                attribution.overall_attribution
-                == Attribution.SUCCESS_VIEWED_SKILL_BUT_NOT_USED
-                and r_task > 0.5
-            ):
-                for st in attribution.subtasks:
-                    if st.skill_linked and st.skill_linked in lib:
-                        mgr.update_q(
-                            intent_hash,
-                            st.skill_linked,
-                            0.05,  # small positive bump
-                        )
-
-            # Auto-extract (create_skill path) — BATCHED.
-            # Mirror lqrl's evolve_every_n_trials: per qualifying
-            # trial we ADD a record to the buffer; when the buffer
-            # reaches N, we spawn ONE extract_batch subprocess that
-            # aggregates the N (task, knowledge) records.
             if (
                 extractor is not None
                 and r_task > 0.5
@@ -387,54 +528,122 @@ def attach_paper_registers(job: Job, method: MethodConfig) -> None:
                     Attribution.SUCCESS_NO_SKILL_SEEN,
                 )
                 and not any(
-                    mgr.q_for(intent_hash, r.skill.skill_id)
-                    > method.theta_consider_used
-                    for r in retrieved
+                    mgr.q_for(s) > method.theta_consider_used for s in lib.skills
                 )
                 and attribution.knowledge_to_extract.strip()
             ):
                 batch = extract_buffer.add(
                     task=intent_text,
                     knowledge=attribution.knowledge_to_extract,
-                    intent_hash=intent_hash,
                 )
                 if batch:
-                    # Buffer hit the threshold; flush now.
                     await _flush_buffer()
-                # Force-flush on the last expected trial so a
-                # partial buffer is not silently discarded at job
-                # end (mirrors lqrl's has_final_partial_batch).
                 if (
                     extract_buffer
                     and (state.step + 1) >= expected_terminal_trials
                 ):
                     await _flush_buffer()
 
-            # Library maintenance (admission / eviction / rejuvenation)
+            # ---- Library maintenance ----
+            # Detect lib changes so we can refresh emb_cache after
+            # maintain() runs (it may evict skills).
+            skills_before = set(lib.skills.keys())
             mgr.maintain(lib, current_step=state.step + 1)
-            state.step += 1
-            state.save(lib, mgr, lib_root=method.library_root)
+            skills_after = set(lib.skills.keys())
+            evicted = skills_before - skills_after
+            for sid in evicted:
+                lib_changes_this_trial.append(("remove", sid, ""))
+                if sid in mgr.q_table:
+                    del mgr.q_table[sid]
 
-            # Near-miss refine (Layer 4) — only on failures
-            if r_task == 0.0 and retrieved:
-                top = retrieved[0]
-                current_skill = lib.get(top.skill.skill_id)
-                if current_skill is not None:
-                    current_q = mgr.q_for(intent_hash, current_skill.skill_id)
-                    if refiner.is_near_miss(
-                        r_task, current_q, method.theta_near_miss
-                    ):
+            # Refresh emb_cache in response to lib changes from
+            # this trial. Done once at the end (not per change) to
+            # batch embedding API calls.
+            if lib_changes_this_trial:
+                try:
+                    from paper.method.retrieval import LiteLLMEmbedder
+
+                    embedder = LiteLLMEmbedder(
+                        model=method.embedder_model,
+                        dim=int(getattr(method, "embedder_dim", 1536)),
+                    )
+                    added = [
+                        (sid, body) for action, sid, body in lib_changes_this_trial
+                        if action == "add" and body
+                    ]
+                    removed = [
+                        sid for action, sid, _ in lib_changes_this_trial
+                        if action == "remove"
+                    ]
+                    from paper.method.vector_table import sync_lib_to_vector_table
+
+                    sync_lib_to_vector_table(
+                        added=added,
+                        removed=removed,
+                        vector_table=emb_cache,
+                        embedder=embedder,
+                    )
+                    emb_cache.save()
+                except Exception:  # noqa: BLE001
+                    logger.exception("emb_cache refresh failed; continuing.")
+
+            state.step += 1
+            state.save(
+                lib,
+                mgr,
+                lib_root=method.library_root,
+                seed_initial_q=method.seed_initial_q,
+                sub_task_log=sub_task_log_entries,
+                debug_keep_subtask_log=method.debug_keep_subtask_log,
+            )
+
+            # ---- Near-miss refine (Layer 4) ----
+            if r_task == 0.0 and lib.skills:
+                # Pick the skill with the highest Q for this trial's
+                # intent — closest to the paper's "best skill" notion
+                # in the global-Q world.
+                top = max(
+                    lib.skills.values(),
+                    key=lambda s: mgr.q_for(s.skill_id),
+                    default=None,
+                )
+                if top is not None:
+                    current_q = mgr.q_for(top.skill_id)
+                    if refiner.is_near_miss(r_task, current_q, method.theta_near_miss):
                         new_skill = refiner.propose_edit(
-                            skill=current_skill,
+                            skill=top,
                             task=intent_text,
                             failure_trace=str(trial_dir),
                         )
-                        if new_skill is not current_skill:
+                        if new_skill is not top:
                             lib.replace(new_skill)
+                            # Near-miss edit triggers a description
+                            # re-embed if the description changed.
+                            from paper.method.vector_table import (
+                                _description_of,
+                                sync_lib_to_vector_table,
+                            )
+                            old_desc = _description_of(top.body)
+                            new_desc = _description_of(new_skill.body)
+                            if old_desc != new_desc:
+                                try:
+                                    from paper.method.retrieval import LiteLLMEmbedder
+                                    embedder = LiteLLMEmbedder(
+                                        model=method.embedder_model,
+                                        dim=int(getattr(method, "embedder_dim", 1536)),
+                                    )
+                                    sync_lib_to_vector_table(
+                                        replaced=[(new_skill.skill_id, top.body, new_skill.body)],
+                                        vector_table=emb_cache,
+                                        embedder=embedder,
+                                    )
+                                    emb_cache.save()
+                                except Exception:  # noqa: BLE001
+                                    logger.exception("emb_cache refresh after near-miss failed; continuing.")
                             logger.info(
-                                "Near-miss refined skill %s for intent %s",
+                                "Near-miss refined skill %s for trial %s",
                                 new_skill.skill_id,
-                                intent_text,
+                                event.trial_id,
                             )
         except Exception:
             # Never let a method bug abort the trial.
@@ -471,7 +680,6 @@ async def run_paper_job(job_config_path: Path, method: MethodConfig) -> int:
     attach_paper_registers(job, method)
     result = await job.run()
 
-    # Final state save
     logger.info(
         "Paper method finished: %s trials, %s successes",
         getattr(result, "n_trials", "?"),

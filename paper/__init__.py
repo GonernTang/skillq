@@ -13,6 +13,12 @@
 The :mod:`paper.cli` module dispatches between them.
 """
 
+# Importing the resolver module registers the ``${now:...}`` and
+# ``${abspath:...}`` OmegaConf resolvers that the existing paper
+# configs depend on. Must come before any submodule that may load a
+# JobConfig YAML.
+from paper import _resolvers  # noqa: F401  (side-effect import)
+
 from paper.paper_mode.entrypoint import main as paper_main
 from paper.skillsvote_mode.entrypoint import main as skillsvote_main
 

@@ -1,13 +1,15 @@
-"""Persistent state for the LQRL paper method.
+"""Persistent state for the LQRL paper method (global-Q refactor).
 
 The :class:`QlibState` serialises everything the four-layer method needs
 to survive a Job resume:
 
 - the bounded :class:`~paper.method.types.Qlib` (skill bodies, n_retrievals,
   n_uses, n_success, metadata);
-- the :class:`~paper.method.library.LibManager` Q-table and probation /
-  eviction queues;
-- the current :attr:`step` counter used to gate staleness.
+- the :class:`~paper.method.library.LibManager` **global** Q-table and
+  per-skill probation / eviction queues (no per-intent dimension in the
+  global-Q refactor);
+- the current :attr:`step` counter used to gate staleness;
+- (optional, debug) a ``sub_task_log`` list of per-trial skill-call verdicts.
 
 The state file lives at a path that does **not** collide with the
 upstream ``lqrl`` package's ``skills_vote_evolve_state.json`` — by
@@ -29,9 +31,19 @@ from paper.method.types import Qlib, Skill
 class QlibState:
     """Persistent serialisation of the four-layer method's working set.
 
-    The state file format is JSON with three top-level keys: ``step``,
-    ``q_table``, ``probation``, and ``library``. Backwards-compatible
-    loaders should default missing fields to the right zero values.
+    State file JSON keys (post global-Q refactor):
+        step:                 int
+        q_table:              [[skill_id: str, q: float], ...]   ← global
+        probation:            {avg_q: {skill_id: float}, count: {skill_id: int}}
+        deprecation_list:     [skill_id, ...]
+        evict_candidates:     [skill_id, ...]
+        last_retrieval_step:  {skill_id: int}
+        library:              {b_max: int, skills: {skill_id: {...}}}
+        seed_initial_q:       float
+        sub_task_log:         [debug entries — only present when
+                               debug_keep_subtask_log=True is set on
+                               the calling bridge]
+        library_root:         str (path, optional)
     """
 
     state_path: Path
@@ -49,20 +61,18 @@ class QlibState:
         mgr: LibManager,
         lib_root: Path | None = None,
         seed_initial_q: float = 0.5,
+        sub_task_log: list[dict[str, Any]] | None = None,
+        debug_keep_subtask_log: bool = True,
     ) -> None:
         """Persist the library, Q-table, and step counter to JSON."""
-        payload = {
+        payload: dict[str, Any] = {
             "step": self.step,
             "q_table": [
-                [intent, skill_id, q]
-                for (intent, skill_id), q in mgr.q_table.items()
+                [skill_id, q] for skill_id, q in mgr.q_table.items()
             ],
             "probation": {
                 "avg_q": dict(mgr.probation_avg_q),
-                "count": {
-                    sid: {str(intent): n for intent, n in counts.items()}
-                    for sid, counts in mgr.probation_count.items()
-                },
+                "count": dict(mgr.probation_count),
             },
             "deprecation_list": list(mgr.deprecation_list),
             "evict_candidates": list(mgr.evict_candidates),
@@ -77,6 +87,8 @@ class QlibState:
         }
         if lib_root is not None:
             payload["library_root"] = str(lib_root)
+        if debug_keep_subtask_log and sub_task_log is not None:
+            payload["sub_task_log"] = sub_task_log
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         self.state_path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
@@ -94,25 +106,42 @@ class QlibState:
 
         Returns ``True`` if a state file was found and loaded; ``False``
         otherwise (in which case the in-memory state is unchanged).
+
+        Backwards compatible with the old ``(intent, skill_id, q)`` row
+        format from the per-intent-Q refactor; any 3-element rows are
+        silently coerced to the new global-Q 2-element form by keeping
+        the q value (per-skill; later rows with the same skill_id
+        overwrite).
         """
         if not self.state_path.exists():
             return False
         data = json.loads(self.state_path.read_text(encoding="utf-8"))
         self.step = int(data.get("step", 0))
 
-        # Q-table
+        # Q-table — accept both new 2-tuple and legacy 3-tuple format.
         mgr.q_table.clear()
         for row in data.get("q_table", []):
-            intent, skill_id, q = int(row[0]), str(row[1]), float(row[2])
-            mgr.q_table[(intent, skill_id)] = q
+            if len(row) == 2:
+                skill_id, q = str(row[0]), float(row[1])
+            elif len(row) == 3:
+                # Legacy: [intent, skill_id, q] — drop the intent dim
+                _intent, skill_id, q = row[0], str(row[1]), float(row[2])
+            else:
+                continue
+            mgr.q_table[skill_id] = q
 
         # Probation bookkeeping
         prob = data.get("probation", {})
         mgr.probation_avg_q = {k: float(v) for k, v in prob.get("avg_q", {}).items()}
-        mgr.probation_count = {
-            sid: {int(intent): int(n) for intent, n in counts.items()}
-            for sid, counts in prob.get("count", {}).items()
-        }
+        # probation_count may be {sid: int} (new) or {sid: {intent: int}} (legacy)
+        raw_count = prob.get("count", {})
+        mgr.probation_count = {}
+        for sid, val in raw_count.items():
+            if isinstance(val, dict):
+                # legacy per-intent count — sum across intents
+                mgr.probation_count[sid] = sum(int(n) for n in val.values())
+            else:
+                mgr.probation_count[sid] = int(val)
 
         mgr.deprecation_list = list(data.get("deprecation_list", []))
         mgr.evict_candidates = list(data.get("evict_candidates", []))
@@ -127,29 +156,16 @@ class QlibState:
         for sid, raw in lib_data.get("skills", {}).items():
             lib.add(_skill_from_dict(sid, raw))
 
-        # Seed skills: pre-populate a single Q-table entry at
-        # intent_hash=0 with Q=0.5 so they behave identically to
-        # freshly extracted skills on first retrieve. This is a
-        # minimal "optimistic prior" — the Q-table is still keyed
-        # by (intent_hash, skill_id) and grows naturally per-intent
-        # once the skill is actually used.
-        #
-        # The (intent_hash=0) key is a sentinel — bridge.py will
-        # use a *real* intent_hash on first retrieve and the
-        # natural Q update will overwrite / augment this entry.
-        # We only do this for skills that have *no* Q-table entry
-        # yet, so resume from an existing state file is not
-        # affected.
+        # Seed skills: pre-populate Q=seed_initial_q for any skill that
+        # has NO q_table entry yet. The seed value is configurable via
+        # the MethodConfig.seed_initial_q field (default 0.5). This is
+        # the "optimistic prior" pattern; resume from an existing state
+        # file is idempotent (we only fill missing entries).
         seed_initial_q = float(data.get("seed_initial_q", 0.5))
         if seed_initial_q != 0.0:
             for sid in lib.skills:
-                # Only seed skills that have NO Q-table entry yet
-                # (don't overwrite an existing Q — resume must be
-                # idempotent).
-                if not any(
-                    skill_id == sid for (_intent, skill_id) in mgr.q_table.keys()
-                ):
-                    mgr.q_table[(0, sid)] = seed_initial_q
+                if sid not in mgr.q_table:
+                    mgr.q_table[sid] = seed_initial_q
 
         self._written = True
         return True

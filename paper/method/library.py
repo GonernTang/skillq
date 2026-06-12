@@ -1,14 +1,26 @@
-"""Q-driven library management (Sec. 3.3 of the paper).
+"""Q-driven library management (Sec. 3.3 of the paper, with the per-subtask
+hook refactor).
+
+**Global-Q refactor (per user design 2026-06-11)**:
+
+- The Q-table is keyed by ``skill_id`` only, not ``(intent_hash, skill_id)``.
+  One global Q per skill, representing its "general usefulness" across
+  the tasks the agent has seen so far. The paper's Eq. 4 (Phase-B
+  re-rank) reads this single Q value directly.
+- Probation is per-skill (not per-(skill, intent)). New skills are
+  "on probation" until ``n_explore`` retrievals have happened, at which
+  point their mean Q is compared to ``theta_admit``.
+- Eviction / staleness rules are unchanged.
 
 Implements three sub-mechanisms:
 
-1. **Admission** (probation window): new skills start with Q=0. After
-   ``n_explore`` retrievals, if mean Q < ``theta_admit`` they move to
-   the deprecation list.
-2. **Eviction** (two queues): stale skills (not retrieved in ``n_stale``
-   steps) and low-Q skills (Q < ``theta_evict`` after the probation
-   window) are queued. When $|M_t| > B_{max}$, evict from the
-   low-Q queue first, then the stale queue.
+1. **Admission** (probation window): new skills start with
+   ``seed_initial_q`` (default 0.5). After ``n_explore`` retrievals,
+   if mean Q < ``theta_admit`` they move to the deprecation list.
+2. **Eviction** (two queues): stale skills (not retrieved in
+   ``n_stale`` steps) and low-Q skills (Q < ``theta_evict`` after
+   the probation window) are queued. When $|M_t| > B_{max}$, evict
+   from the low-Q queue first, then the stale queue.
 3. **Rejuvenation**: a deprecated/evicted skill can be re-instated
    with its previous Q if it is the only Phase-A candidate and
    sim > 0.9.
@@ -25,7 +37,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 from paper.method.types import Qlib, Skill
 
@@ -42,7 +54,13 @@ class LibraryStats:
 
 @dataclass
 class LibManager:
-    """Q-value-driven library management (Sec. 3.3, Layer 3)."""
+    """Q-value-driven library management (Sec. 3.3, Layer 3).
+
+    Q-table is keyed by ``skill_id`` (global, per-skill). This is the
+    per-subtask-hook refactor: every skill has one Q value that the
+    Eq. 4 retrieval reads, and every per-subtask Q-update (and
+    per-trial r_task) updates the same entry.
+    """
 
     b_max: int
     theta_admit: float
@@ -50,15 +68,15 @@ class LibManager:
     n_explore: int
     n_stale: int
 
-    # Q-table: (intent_hash, skill_id) -> Q-value
-    q_table: Dict[Tuple[int, str], float] = field(default_factory=lambda: defaultdict(float))
-    # (intent_hash, skill_id) -> update count (for probation / decay)
-    update_count: Dict[Tuple[int, str], int] = field(default_factory=lambda: defaultdict(int))
+    # Q-table: skill_id -> Q-value (single global value per skill)
+    q_table: Dict[str, float] = field(default_factory=dict)
+    # skill_id -> update count (for probation / decay)
+    update_count: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
     # skill_id -> last retrieval step (for staleness)
     last_retrieval_step: Dict[str, int] = field(default_factory=dict)
 
-    # Probation tracking
-    probation_count: Dict[str, Dict[int, int]] = field(default_factory=lambda: defaultdict(dict))
+    # Per-skill probation (no per-intent dimension)
+    probation_count: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
     probation_avg_q: Dict[str, float] = field(default_factory=dict)
 
     # State lists
@@ -71,30 +89,37 @@ class LibManager:
     # ------------------------------------------------------------------
     # Q-table mutation
     # ------------------------------------------------------------------
-    def update_q(self, intent_hash: int, skill_id: str, delta: float) -> None:
-        """Apply a Q-value increment (or decrement)."""
-        key = (intent_hash, skill_id)
-        self.q_table[key] = self.q_table.get(key, 0.0) + delta
-        self.update_count[key] += 1
+    def update_q(self, skill_id: str, delta: float) -> None:
+        """Apply a Q-value increment (or decrement) to one skill."""
+        self.q_table[skill_id] = self.q_table.get(skill_id, 0.0) + delta
+        self.update_count[skill_id] += 1
 
-        # Probation bookkeeping
-        per_intent = self.probation_count.setdefault(skill_id, {})
-        per_intent[intent_hash] = per_intent.get(intent_hash, 0) + 1
-        n = sum(per_intent.values())
+        # Per-skill probation bookkeeping (no per-intent)
+        n = self.probation_count[skill_id] + 1
+        self.probation_count[skill_id] = n
         old_avg = self.probation_avg_q.get(skill_id, 0.0)
-        self.probation_avg_q[skill_id] = old_avg + (self.q_table[key] - old_avg) / n
+        self.probation_avg_q[skill_id] = old_avg + (
+            self.q_table[skill_id] - old_avg
+        ) / n
 
-    def q_for(self, intent_hash: int, skill_id: str) -> float:
+    def set_q(self, skill_id: str, q_value: float) -> None:
+        """Set the Q value of a skill directly (used for seed/initial).
+
+        Updates the running mean used by probation so subsequent
+        maintain() calls see a consistent state.
+        """
+        self.q_table[skill_id] = q_value
+
+    def q_for(self, skill_id: str) -> float:
         """Public Q-table getter used by retrieval glue."""
-        return self.q_table.get((intent_hash, skill_id), 0.0)
+        return self.q_table.get(skill_id, 0.0)
 
     def average_q(self, skill_id: str) -> float:
-        """Mean Q across all intents a skill has been queried for."""
-        qs = [q for (key_intent, key_skill), q in self.q_table.items() if key_skill == skill_id]
-        return sum(qs) / len(qs) if qs else 0.0
+        """Per-skill Q value (no intent dimension in the global-Q refactor)."""
+        return self.q_table.get(skill_id, 0.0)
 
     def update_count_for_skill(self, skill_id: str) -> int:
-        return sum(v for (_, s), v in self.update_count.items() if s == skill_id)
+        return self.update_count.get(skill_id, 0)
 
     def mark_retrieved(self, skill_id: str, current_step: int) -> None:
         self.last_retrieval_step[skill_id] = current_step
@@ -111,9 +136,8 @@ class LibManager:
         self.stats.last_total_size = library.size
 
         # Admission: move probation failures to the deprecation list
-        for skill_id, counts in list(self.probation_count.items()):
-            total = sum(counts.values())
-            if total < self.n_explore:
+        for skill_id, n in list(self.probation_count.items()):
+            if n < self.n_explore:
                 continue
             avg_q = self.probation_avg_q.get(skill_id, 0.0)
             if avg_q < self.theta_admit and skill_id not in self.deprecation_list:
@@ -130,15 +154,16 @@ class LibManager:
 
         # Low-Q eviction candidates
         for skill in library:
-            if skill.skill_id in self.deprecation_list:
+            sid = skill.skill_id
+            if sid in self.deprecation_list:
                 continue
-            if skill.skill_id in self.evict_candidates:
+            if sid in self.evict_candidates:
                 continue
-            avg_q = self.average_q(skill.skill_id)
-            n_use = self.update_count_for_skill(skill.skill_id)
+            avg_q = self.average_q(sid)
+            n_use = self.update_count_for_skill(sid)
             if n_use >= self.n_explore and avg_q < self.theta_evict:
-                self.evict_candidates.append(skill.skill_id)
-                events.append(f"lowq:{skill.skill_id}")
+                self.evict_candidates.append(sid)
+                events.append(f"lowq:{sid}")
 
         # Hard eviction: enforce B_t ≤ B_max
         while library.size > self.b_max:

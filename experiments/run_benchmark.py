@@ -120,7 +120,18 @@ def build_job_config(
                 "allowed_skills": [],
                 "recommend": {
                     "skills_dir": "${abspath:.mg_library/seed}",
-                    "prompt_path": "paper.paper_mode.retrieval_step:rerank_with_ucb",
+                    # Intentionally no prompt_path here. lqrl's
+                    # step_recommend calls prompt_path(**kwargs) with
+                    # extra kwargs (notably key=...) that
+                    # paper.paper_mode.retrieval_step.rerank_with_ucb
+                    # does not accept, and would TypeError before
+                    # PaperClaudeCodeAgent.run gets a chance to call
+                    # rerank_with_ucb on the instruction. The mg UCB
+                    # rerank is invoked directly from
+                    # PaperClaudeCodeAgent.run, not via prompt_path;
+                    # leaving prompt_path unset lets lqrl fall back
+                    # to its own DEFAULT_PROMPT_PATH
+                    # (skills_vote.recommend.prompt:build).
                 },
                 "paper_retrieval": {
                     "enabled": True,

@@ -59,9 +59,40 @@ class MethodConfig(BaseModel):
     # LLM models
     verifier_model: str = "openai/gpt-4o"
     editor_model: str = "openai/gpt-4o"
-    embedder_model: str = "openai/text-embedding-3-large"
+    embedder_model: str = "openai/text-embedding-3-small"
+    embedder_dim: int = 1536
     attribution_model: str = "openai/gpt-4o"
     extractor_claude_cli: str = "claude"  # the CLI binary invoked for extract
+
+    # === Per-subtask hook (refactor 2026-06-11) ===
+    # The PreToolUse hook runs inside the agent container, fires
+    # before every Skill tool call, ranks skills by
+    #     score = (1-λ) sim_z + λ q_z + c_ucb sqrt(log N / (n+1))
+    # and either approves the agent's call (if it's in the top-k)
+    # or blocks + suggests the top-k + "or skip if none fit".
+    hook_enabled: bool = True
+    hook_top_k: int = Field(default=3, ge=1, le=10)
+    hook_lambda: float = Field(default=0.5, ge=0.0, le=1.0)
+    hook_c_ucb: float = Field(default=0.5, ge=0.0)
+    hook_embedding_service_host: str = "host.docker.internal"
+    hook_embedding_service_port: int = Field(default=8765, ge=1, le=65535)
+    hook_embed_timeout_sec: float = Field(default=5.0, ge=0.1)
+
+    # === Q-value update (per-subtask + trial) ===
+    # Q(skill) += alpha * (w_subtask * r_subtask_mean
+    #                   + w_task    * r_task
+    #                   - Q(skill))
+    # where r_subtask_mean is the mean of sub-task verdicts over
+    # all calls to this skill in this trial, and r_task is the
+    # trial-level reward from the main verifier. Soft constraint
+    # on w_subtask + w_task (not enforced).
+    q_alpha: float = Field(default=0.3, ge=0.0, le=1.0)
+    q_w_subtask: float = Field(default=0.7, ge=0.0, le=1.0)
+    q_w_task: float = Field(default=0.3, ge=0.0, le=1.0)
+    q_r_subtask_success: float = Field(default=1.0)
+    q_r_subtask_failure: float = Field(default=-1.0)
+    q_subtask_verifier_model: str = "openai/gpt-4o"
+    debug_keep_subtask_log: bool = True
 
     # Auto-extract (create_skill path) — opt-in, see bridge.py
     enable_auto_extract: bool = False
@@ -95,6 +126,15 @@ class MethodConfig(BaseModel):
             "on the current trial's intent_hash (or on the (0, skill_id) "
             "sentinel for seed skills). Set 0.5 for an optimistic prior; "
             "0.0 for cautious; negative for an initial penalty."
+        ),
+    )
+    seed_initial_q: float = Field(
+        default=0.5, ge=-1.0, le=1.0,
+        description=(
+            "Q-value assigned to a skill loaded from the saved state "
+            "that has no existing Q-table entry. Same semantics as "
+            "new_skill_initial_q. Set 0.0 to disable seeding (skills "
+            "start with the Q-table default of 0.0)."
         ),
     )
 

@@ -109,7 +109,12 @@ def _seed_lib(method: MethodConfig) -> None:
     lib = Qlib(b_max=method.b_max)
     lib.add(Skill(skill_id="seed", body="seed body"))
     state = QlibState(method.resolved_state_path())
-    state.save(lib, _fresh_mgr(method), lib_root=method.library_root)
+    state.save(
+        lib,
+        _fresh_mgr(method),
+        lib_root=method.library_root,
+        seed_initial_q=method.seed_initial_q,
+    )
 
 
 def _fresh_mgr(method: MethodConfig) -> LibManager:
@@ -127,8 +132,7 @@ def _fresh_mgr(method: MethodConfig) -> LibManager:
 # ---------------------------------------------------------------------------
 def test_extract_writes_q_initial_to_q_table(tmp_path: Path, monkeypatch):
     """After lib.add(new_skill), the bridge writes
-    mgr.update_q(intent_hash, new_skill.skill_id, new_skill_initial_q).
-    Default value 0.5.
+    mgr.set_q(new_skill.skill_id, new_skill_initial_q). Default 0.5.
     """
     _patch_litellm_backends(monkeypatch)
     new_skill = Skill(skill_id="auto-extracted", body="x" * 200)
@@ -153,6 +157,7 @@ def test_extract_writes_q_initial_to_q_table(tmp_path: Path, monkeypatch):
         n_explore=2,
         enable_auto_extract=True,
         extract_every_n_trials=1,       # flush on the first qualifying trial
+        seed_initial_q=0.0,             # seed skill Q=0 so auto-extract fires
     )
     _seed_lib(method)
     job = _MockJob()
@@ -163,13 +168,11 @@ def test_extract_writes_q_initial_to_q_table(tmp_path: Path, monkeypatch):
     asyncio.run(job.on_ended(event))
 
     state = json.loads(method.resolved_state_path().read_text(encoding="utf-8"))
-    # Q-table is stored as [intent, skill_id, q] triples
-    auto_rows = [row for row in state["q_table"] if row[1] == "auto-extracted"]
+    # Q-table is stored as [skill_id, q] pairs (global-Q refactor)
+    auto_rows = [row for row in state["q_table"] if row[0] == "auto-extracted"]
     assert auto_rows, "auto-extracted skill should have a Q-table entry"
-    # The intent_hash recorded is the trial's task_name hash; we
-    # just check the Q value is 0.5, not 0.
     for row in auto_rows:
-        assert abs(row[2] - 0.5) < 1e-9, f"expected Q=0.5, got {row[2]}"
+        assert abs(row[1] - 0.5) < 1e-9, f"expected Q=0.5, got {row[1]}"
 
 
 def test_extract_uses_configured_initial_q(tmp_path: Path, monkeypatch):
@@ -198,6 +201,7 @@ def test_extract_uses_configured_initial_q(tmp_path: Path, monkeypatch):
         enable_auto_extract=True,
         extract_every_n_trials=1,       # flush on the first qualifying trial
         new_skill_initial_q=0.3,
+        seed_initial_q=0.0,             # seed skill Q=0 so auto-extract fires
     )
     _seed_lib(method)
     job = _MockJob()
@@ -207,7 +211,7 @@ def test_extract_uses_configured_initial_q(tmp_path: Path, monkeypatch):
     asyncio.run(job.on_ended(event))
 
     state = json.loads(method.resolved_state_path().read_text(encoding="utf-8"))
-    auto_qs = [row[2] for row in state["q_table"] if row[1] == "auto"]
+    auto_qs = [row[1] for row in state["q_table"] if row[0] == "auto"]
     assert auto_qs, "expected an auto-extracted Q entry"
     for q in auto_qs:
         assert abs(q - 0.3) < 1e-9
@@ -215,7 +219,7 @@ def test_extract_uses_configured_initial_q(tmp_path: Path, monkeypatch):
 
 def test_seed_skill_load_into_gets_q_initial(tmp_path: Path):
     """When QlibState.load_into runs and a seed skill has no
-    Q-table entry, it gets a synthetic (0, skill_id) → 0.5 entry.
+    Q-table entry, it gets a synthetic skill_id → 0.5 entry.
     """
     lib = Qlib(b_max=10)
     lib.add(Skill(skill_id="seed-skill-A", body="body A"))
@@ -234,8 +238,7 @@ def test_seed_skill_load_into_gets_q_initial(tmp_path: Path):
     state2 = QlibState(tmp_path / "method_state.json")
     state2.load_into(lib2, mgr2, lib_root=tmp_path)
     for sid in ("seed-skill-A", "seed-skill-B"):
-        assert mgr2.q_for(0, sid) == 0.5
-        assert mgr2.q_for(42, sid) == 0.0  # other intents are 0
+        assert mgr2.q_for(sid) == 0.5
 
 
 def test_seed_initial_q_0_disables_seeding(tmp_path: Path):
@@ -254,11 +257,11 @@ def test_seed_initial_q_0_disables_seeding(tmp_path: Path):
     )
     state2 = QlibState(tmp_path / "method_state.json")
     state2.load_into(lib2, mgr2, lib_root=tmp_path)
-    assert mgr2.q_for(0, "seed") == 0.0
+    assert mgr2.q_for("seed") == 0.0
 
 
 def test_resume_does_not_overwrite_existing_q(tmp_path: Path):
-    """If a skill already has a (0, skill_id) Q entry in the saved
+    """If a skill already has a skill_id → q entry in the saved
     state, load_into must NOT overwrite it (resume is idempotent).
     """
     lib = Qlib(b_max=10)
@@ -267,7 +270,7 @@ def test_resume_does_not_overwrite_existing_q(tmp_path: Path):
         b_max=10, theta_admit=0.3, theta_evict=0.1, n_explore=5, n_stale=80
     )
     # Pre-populate with a custom Q
-    mgr.update_q(0, "seed", 0.7)
+    mgr.update_q("seed", 0.7)
     state = QlibState(tmp_path / "method_state.json")
     state.save(lib, mgr, lib_root=tmp_path, seed_initial_q=0.5)
 
@@ -277,7 +280,7 @@ def test_resume_does_not_overwrite_existing_q(tmp_path: Path):
     )
     state2 = QlibState(tmp_path / "method_state.json")
     state2.load_into(lib2, mgr2, lib_root=tmp_path)
-    assert mgr2.q_for(0, "seed") == 0.7  # not 0.5
+    assert mgr2.q_for("seed") == 0.7  # not 0.5
 
 
 def test_method_config_default_for_new_skill_initial_q():

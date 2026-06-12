@@ -156,7 +156,7 @@ def test_library_manager_deprecates_low_q_after_exploration():
 
     # Simulate n_explore retrievals with low Q
     for _ in range(5):
-        mgr.update_q(intent_hash=42, skill_id="low", delta=-0.1)
+        mgr.update_q(skill_id="low", delta=-0.1)
 
     events = mgr.maintain(lib, current_step=10)
     assert any("deprecate:low" in e for e in events)
@@ -175,7 +175,7 @@ def test_library_manager_evicts_to_maintain_b_max():
     # Add three skills with different Q-values
     for sid, q in [("a", 0.8), ("b", 0.2), ("c", 0.5)]:
         lib.add(Skill(skill_id=sid))
-        mgr.update_q(intent_hash=1, skill_id=sid, delta=q)
+        mgr.update_q(skill_id=sid, delta=q)
 
     events = mgr.maintain(lib, current_step=1)
     # One of the lower-Q skills should have been evicted
@@ -198,7 +198,7 @@ def test_library_manager_marks_stale_skills():
     events = mgr.maintain(lib, current_step=21)
     # Need n_explore updates to mark as stale-evict candidate
     for _ in range(5):
-        mgr.update_q(intent_hash=1, skill_id="old", delta=0.0)
+        mgr.update_q(skill_id="old", delta=0.0)
     events = mgr.maintain(lib, current_step=22)
     assert any("stale:old" in e for e in events) or any("lowq:old" in e for e in events)
 

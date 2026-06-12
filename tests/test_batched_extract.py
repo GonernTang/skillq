@@ -131,6 +131,7 @@ def _seed_lib(method: MethodConfig) -> None:
             n_stale=method.n_stale,
         ),
         lib_root=method.library_root,
+        seed_initial_q=method.seed_initial_q,
     )
 
 
@@ -167,6 +168,7 @@ def test_buffer_accumulates_until_threshold(tmp_path: Path, monkeypatch):
         b_max=4,
         n_explore=2,
         enable_auto_extract=True,
+        seed_initial_q=0.0,
         extract_every_n_trials=4,       # > #trials
         # Disable the "retrieved skill has high Q" skip so the
         # extract path runs even after a new skill is added.
@@ -203,6 +205,7 @@ def test_threshold_hit_aggregates_n_records(tmp_path: Path, monkeypatch):
         b_max=4,
         n_explore=2,
         enable_auto_extract=True,
+        seed_initial_q=0.0,
         extract_every_n_trials=4,
         theta_consider_used=0.0,
         new_skill_initial_q=0.0,
@@ -239,6 +242,7 @@ def test_two_batches_in_eight_trials(tmp_path: Path, monkeypatch):
         b_max=10,
         n_explore=2,
         enable_auto_extract=True,
+        seed_initial_q=0.0,
         extract_every_n_trials=4,
         theta_consider_used=0.0,
         new_skill_initial_q=0.0,
@@ -275,6 +279,7 @@ def test_force_flush_on_last_trial_drains_partial(tmp_path: Path, monkeypatch):
         b_max=10,
         n_explore=2,
         enable_auto_extract=True,
+        seed_initial_q=0.0,
         extract_every_n_trials=4,       # > #trials → no threshold hit
         theta_consider_used=0.0,
         new_skill_initial_q=0.0,
@@ -310,6 +315,7 @@ def test_no_force_flush_when_more_trials_remain(tmp_path: Path, monkeypatch):
         b_max=10,
         n_explore=2,
         enable_auto_extract=True,
+        seed_initial_q=0.0,
         extract_every_n_trials=4,
         theta_consider_used=0.0,
         new_skill_initial_q=0.0,
@@ -343,6 +349,7 @@ def test_threshold_n_2_flushes_every_2_trials(tmp_path: Path, monkeypatch):
         b_max=10,
         n_explore=2,
         enable_auto_extract=True,
+        seed_initial_q=0.0,
         extract_every_n_trials=2,
         theta_consider_used=0.0,
         new_skill_initial_q=0.0,

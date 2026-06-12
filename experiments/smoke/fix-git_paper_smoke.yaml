@@ -1,0 +1,100 @@
+# Smoke-test config: ONE TB 2.0 task, paper mode.
+#
+# Task: fix-git (TB 2.0, easy, 5-min expert time, prebuilt image present)
+#   - prebuilt image:  skills_vote/fix-git:20260604  (lqrl tag, already on disk)
+#   - dataset cache:   input/tb2/fix-git/  (symlinked to lqrl's input/terminal-bench)
+#   - seed skills:     experiments/smoke/seed_skills/  (lqrl .local_seed stub)
+#
+# This config is the minimum needed to validate that the paper method
+# end-to-end pipeline boots, the agent runs in the prebuilt container,
+# the trial trajectory is saved, and the on_trial_ended hook fires.
+#
+# Resolver note: stock OmegaConf 2.3 only ships the `oc.*` resolvers.
+# The existing experiments/configs/tb2_paper.yaml references
+# `${abspath:...}` and `${now:...}` which are NOT registered in mg's
+# CLI today — that file has never been exercised end-to-end. We avoid
+# those by hardcoding absolute paths and a stable job_name; the smoke
+# script handles cleanup of the output dir on each run.
+
+jobs_dir: output
+# Stable name; the smoke script `rm -rf`s this before each run.
+job_name: smoke_5tasks_v3
+n_attempts: 1
+n_concurrent_trials: 1
+quiet: false
+retry:
+  max_retries: 0
+  exclude_exceptions:
+    - VerifierTimeoutError
+    - RewardFileNotFoundError
+    - RewardFileEmptyError
+    - VerifierOutputParseError
+agent_timeout_multiplier: 4.0
+environment:
+  type: docker
+  force_build: false          # use prebuilt skills_vote/<task>:20260604 images
+  delete: false               # keep containers after the run for debugging
+  mounts_json:
+    # Bind-mount the host's seed-skill library into the container at
+    # /skills. SkillsVote's step_recommend does
+    #   cp -R <skills_dir> "$CLAUDE_CONFIG_DIR/skills"
+    # inside the container, so the path in `recommend.skills_dir` must
+    # be the *container-side* mount path (/skills), not the host path.
+    - type: bind
+      source: /home/gonern/workspace/mg/experiments/smoke/seed_skills
+      target: /skills
+      read_only: true
+agents:
+  - import_path: paper.paper_mode.agent:PaperClaudeCodeAgent
+    # oc.env is a built-in OmegaConf resolver; falls back to Sonnet 4.5
+    # if ANTHROPIC_MODEL is unset.
+    model_name: ${oc.env:ANTHROPIC_MODEL,anthropic/claude-sonnet-4-5}
+    kwargs:
+      allowed_skills: []
+      # recommend: null — skip lqrl's LLM-based step_recommend entirely.
+      # The paper method's design replaces the LLM-based recommend
+      # with embedding+Q retrieval (TwoStageRanker). Calling
+      # step_recommend would (1) make a redundant LLM call
+      # (`claude --print` in the agent container — this hung on
+      # gcode-to-text in the first 5-task run) and (2) append an
+      # LLM-curated skill list to the system prompt, which the
+      # paper method already does via PaperClaudeCodeAgent's
+      # `rerank_with_ucb` (appending a [mg UCB re-rank breakdown]
+      # block to the instruction). Setting `recommend: null` makes
+      # SkillsVoteClaudeCode.__init__ set self.recommend_config = None,
+      # so `step_recommend` is never called inside super().run().
+      # The seed skills are still bind-mounted at /skills in the
+      # container (mounts_json above), and the mg UCB header in
+      # rerank_with_ucb lists them for the agent's reference.
+      recommend: null
+      paper_retrieval:
+        enabled: true           # the new piece vs lqrl — client-side UCB rerank
+        k1: 10
+        k2: 3
+        c_ucb: 0.5
+        lambda_: 0.5
+datasets:
+  # Use Harbor's local-task path (LocalTaskId) instead of the
+  # terminal-bench@2.0 registry. The registry path would trigger a
+  # git clone of https://github.com/laude-institute/terminal-bench-2
+  # inside Job.create, even with `download_dir` set — and we want the
+  # smoke to be offline / reproducible. lqrl's input/terminal-bench
+  # has all 95 task subdirs in export layout; we filter with
+  # `task_names`.
+  #
+  # Five small TB 2.0 tasks, all lqrl-smoke-tested and prebuilt
+  # (skills_vote/<task>:20260604 exists for each).
+  - path: /home/gonern/workspace/lqrl/input/terminal-bench
+    task_names:
+      # Five small TB 2.0 tasks, all lqrl-smoke-tested and prebuilt
+      # (skills_vote/<task>:20260604 exists for each). Picked to
+      # favour short junior_time_estimate_min (rough proxy for LLM
+      # agent complexity) — earlier 5-task attempt with
+      # gcode-to-text / extract-elf / vulnerable-secret hung on the
+      # deepseek-v4-flash recommend step (gcode-to-text at >25 min
+      # without producing recommendation.json).
+      - fix-git                       # easy,    20 min
+      - crack-7z-hash                 # medium,  10 min
+      - merge-diff-arc-agi-task       # medium,  40 min
+      - dna-insert                    # medium, 120 min
+      - code-from-image               # medium, 120 min

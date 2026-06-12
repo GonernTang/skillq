@@ -116,7 +116,12 @@ def _seed_lib(method: MethodConfig) -> None:
     lib = Qlib(b_max=method.b_max)
     lib.add(Skill(skill_id="seed", body="seed body"))
     state = QlibState(method.resolved_state_path())
-    state.save(lib, _fresh_mgr(method), lib_root=method.library_root)
+    state.save(
+        lib,
+        _fresh_mgr(method),
+        lib_root=method.library_root,
+        seed_initial_q=method.seed_initial_q,
+    )
 
 
 def _fresh_mgr(method: MethodConfig) -> LibManager:
@@ -159,6 +164,7 @@ def test_bridge_extracts_on_success_no_skill_seen(tmp_path: Path, monkeypatch):
         b_max=4,
         n_explore=2,
         enable_auto_extract=True,
+        seed_initial_q=0.0,
         extract_every_n_trials=1,       # flush on the first qualifying trial
     )
     _seed_lib(method)
@@ -201,6 +207,7 @@ def test_bridge_skips_extract_on_failure(tmp_path: Path, monkeypatch):
 
     method = MethodConfig(
         library_root=tmp_path / "lib", b_max=4, n_explore=2, enable_auto_extract=True,
+        seed_initial_q=0.0,
         extract_every_n_trials=1,       # flush on the first qualifying trial
     )
     _seed_lib(method)
@@ -238,6 +245,7 @@ def test_bridge_skips_extract_on_skill_used(tmp_path: Path, monkeypatch):
 
     method = MethodConfig(
         library_root=tmp_path / "lib", b_max=4, n_explore=2, enable_auto_extract=True,
+        seed_initial_q=0.0,
         extract_every_n_trials=1,       # flush on the first qualifying trial
     )
     _seed_lib(method)
@@ -321,7 +329,7 @@ def test_viewed_but_not_used_bumps_q(tmp_path: Path, monkeypatch):
     asyncio.run(job.on_ended(event))
 
     state = json.loads(method.resolved_state_path().read_text(encoding="utf-8"))
-    seed_qs = [row[2] for row in state["q_table"] if row[1] == "seed"]
+    seed_qs = [row[1] for row in state["q_table"] if row[0] == "seed"]
     assert seed_qs, "seed skill should have a Q-table entry"
     # The Q-bump is +0.05; the regular β-Q update also runs.
     # We just check that the bump is positive.
