@@ -9,8 +9,8 @@
 # theta_admit=0.25, theta_evict=0.15, theta_near_miss=0.5,
 # b_max=50, n_explore=8, n_stale=80, enable_auto_extract=False.
 
-library_root: /home/gonern/workspace/mg/output/smoke_5tasks_v3/.mg_library
-state_path: /home/gonern/workspace/mg/output/smoke_5tasks_v3/.mg_library/.state/method_state.json
+library_root: /home/gonern/workspace/mg/output/smoke_wiring_v1/.mg_library
+state_path: /home/gonern/workspace/mg/output/smoke_wiring_v1/.mg_library/.state/method_state.json
 
 # Default attribution_model is `openai/gpt-4o`, which needs an
 # OPENAI_API_KEY. This host's .env only ships ANTHROPIC_* (with

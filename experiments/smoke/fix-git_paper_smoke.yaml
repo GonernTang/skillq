@@ -18,7 +18,7 @@
 
 jobs_dir: output
 # Stable name; the smoke script `rm -rf`s this before each run.
-job_name: smoke_5tasks_v3
+job_name: smoke_wiring_v1
 n_attempts: 1
 n_concurrent_trials: 1
 quiet: false
@@ -50,7 +50,11 @@ agents:
     # if ANTHROPIC_MODEL is unset.
     model_name: ${oc.env:ANTHROPIC_MODEL,anthropic/claude-sonnet-4-5}
     kwargs:
-      allowed_skills: []
+      # allowed_skills unset (None) — leave lqrl's default ("no
+      # restriction"). Setting it to [] would force lqrl to write
+      # its default settings.json at $CLAUDE_CONFIG_DIR/settings.json
+      # before our mount takes effect, causing a "Is a directory"
+      # collision. The paper method doesn't need skill allowlisting.
       # recommend: null — skip lqrl's LLM-based step_recommend entirely.
       # The paper method's design replaces the LLM-based recommend
       # with embedding+Q retrieval (TwoStageRanker). Calling
@@ -86,15 +90,9 @@ datasets:
   # (skills_vote/<task>:20260604 exists for each).
   - path: /home/gonern/workspace/lqrl/input/terminal-bench
     task_names:
-      # Five small TB 2.0 tasks, all lqrl-smoke-tested and prebuilt
-      # (skills_vote/<task>:20260604 exists for each). Picked to
-      # favour short junior_time_estimate_min (rough proxy for LLM
-      # agent complexity) — earlier 5-task attempt with
-      # gcode-to-text / extract-elf / vulnerable-secret hung on the
-      # deepseek-v4-flash recommend step (gcode-to-text at >25 min
-      # without producing recommendation.json).
-      - fix-git                       # easy,    20 min
-      - crack-7z-hash                 # medium,  10 min
-      - merge-diff-arc-agi-task       # medium,  40 min
-      - dna-insert                    # medium, 120 min
-      - code-from-image               # medium, 120 min
+      # Single task smoke for the container-wiring refactor
+      # (issue #2). gcode-to-text is the smallest prebuilt task;
+      # we verify the per-subtask hook fires, the Q-table gets
+      # the trial's reward, and the container sees the MG_*
+      # env vars + bind-mounted state files.
+      - gcode-to-text                 # medium, 300 min (LLM usually 1-2 min)

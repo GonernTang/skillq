@@ -42,6 +42,28 @@ logger = logging.getLogger("paper.method.embedding_service")
 
 
 # ---------------------------------------------------------------------------
+# Public type alias — the bridge / container_wiring passes this handle
+# through start → stop. Defined here so callers don't have to use
+# the untyped dict shape.
+# ---------------------------------------------------------------------------
+from typing import TypedDict  # noqa: E402
+
+
+class EmbeddingServiceHandle(TypedDict):
+    """Return type of :func:`start_embedding_service_background`.
+
+    The dict shape is fixed; the TypedDict makes the API
+    self-documenting and IDE-friendly without forcing callers
+    through an extra import.
+    """
+
+    thread: Any
+    server: Any
+    port: int
+    stop_event: Any
+
+
+# ---------------------------------------------------------------------------
 # Configuration from env
 # ---------------------------------------------------------------------------
 def get_embedder_config_from_env() -> dict[str, Any]:
@@ -131,7 +153,7 @@ def start_embedding_service_background(
     port: int | None = None,
     host: str | None = None,
     embedder=None,
-) -> dict[str, Any]:
+) -> "EmbeddingServiceHandle":
     """Start the embedding daemon in a daemon thread.
 
     Returns a handle dict: ``{"thread", "server", "port", "stop_event"}``.

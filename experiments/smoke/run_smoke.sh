@@ -26,15 +26,11 @@ set -o pipefail
 
 # -------- config --------
 TASKS=(
-  fix-git
-  crack-7z-hash
-  merge-diff-arc-agi-task
-  dna-insert
-  code-from-image
+  gcode-to-text
 )
 IMAGE_TAG="20260604"
 CONFIG="experiments/smoke/fix-git_paper_smoke.yaml"
-JOB_DIR="output/smoke_5tasks_v3"
+JOB_DIR="output/smoke_wiring_v1"
 SEED_SKILLS="experiments/smoke/seed_skills"
 METHOD_CONFIG="experiments/smoke/method.yaml"
 LQRL_INPUT="/home/gonern/workspace/lqrl/input/terminal-bench"

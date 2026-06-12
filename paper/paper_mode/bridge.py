@@ -3,11 +3,13 @@
 
 Two public functions:
 
-- :func:`attach_paper_registers` — wires a single
-  :class:`harbor.trial.hooks.TrialEvent.END` callback that runs the
-  per-subtask Q-update + library maintenance pipeline.
+- :func:`attach_paper_registers` — wires Harbor's per-trial lifecycle
+  hooks for the paper method: ``on_trial_started`` (container
+  wiring — see :mod:`paper.paper_mode.container_wiring`) and
+  ``on_trial_ended`` (per-subtask Q-update + library maintenance).
 - :func:`run_paper_job` — high-level orchestrator that creates a Harbor
-  :class:`Job`, attaches the hook, and runs it.
+  :class:`Job`, starts the host-side embedding daemon, attaches both
+  hooks, runs the job, and tears down the daemon in a try/finally.
 
 **Global-Q + per-subtask refactor**:
 
@@ -23,18 +25,16 @@ Two public functions:
                            + w_task    * r_task
                            - Q(skill))
 
-- The pre-trial ``retrieve_for_intent`` is no longer used for Q
-  attribution. We still keep the bridge's connection to the lib
-  for **emb_cache refresh** (when the lib mutates) and for the
-  per-skill stats (``n_uses``, ``n_success``). The Eq. 4 retrieval
-  itself is what the hook does at sub-task time.
+**Container wiring lifecycle** (issue #2 fix):
 
-**Per-subtask hook env wiring** (done here, not in the agent class):
-
-The bridge prepares, *at attach time*, the per-job state that the
-agent's container will read at run time. The agent's
-``PaperClaudeCodeAgent.run`` consults the bridge-installed state
-to know what env vars to forward.
+- :func:`run_paper_job` calls :func:`start_container_wiring` BEFORE
+  ``Job.create`` to spin up the FastAPI embed daemon.
+- :func:`attach_paper_registers` registers an ``on_trial_started``
+  hook that calls :func:`wire_one_trial` — re-dumps state, injects
+  ``MG_*`` env vars, bind-mounts hook script + settings.json into
+  the container.
+- :func:`run_paper_job`'s try/finally calls
+  :func:`stop_container_wiring` to stop the daemon cleanly.
 """
 
 from __future__ import annotations
@@ -74,6 +74,12 @@ from paper.method.types import Qlib, Skill
 from paper.method.vector_table import VectorTable
 from paper.method.verifier import IndependentVerifier, LiteLLMVerifierBackend
 from paper.paper_mode.config import MethodConfig
+from paper.paper_mode.container_wiring import (
+    ContainerWiringHandle,
+    start_container_wiring,
+    stop_container_wiring,
+    wire_one_trial,
+)
 
 logger = logging.getLogger("paper.paper.bridge")
 
@@ -289,16 +295,33 @@ def _slice_sub_task_trace(trial_dir: Path, ts: float) -> str:
 # ---------------------------------------------------------------------------
 # Public: hook registration
 # ---------------------------------------------------------------------------
-def attach_paper_registers(job: Job, method: MethodConfig) -> None:
-    """Wire a single ``on_trial_ended`` callback.
+def attach_paper_registers(
+    job: Job,
+    method: MethodConfig,
+    wiring: ContainerWiringHandle | None = None,
+) -> None:
+    """Wire the per-subtask hook and the per-trial Q-update.
 
-    The callback (1) reads the per-subtask hook log, (2) calls the
-    :class:`SubTaskVerifier` for each unique (skill, trial) pair,
-    (3) applies Eq. 6 (global Q variant) with ``w_subtask * r_subtask
-    + w_task * r_task`` as the target, and (4) maintains the lib.
+    Registers two Harbor lifecycle hooks on the job:
 
-    Per-trial attribution + auto-extract are unchanged from the
-    pre-refactor bridge.
+    - ``on_trial_started`` (only if ``wiring`` is provided) — calls
+      :func:`wire_one_trial` to dump fresh state to the trial
+      directory, inject the ``MG_*`` env vars into the agent
+      config, and bind-mount the hook script + ``settings.json``
+      into the container.
+    - ``on_trial_ended`` — reads the per-subtask hook log, calls
+      :class:`SubTaskVerifier` per unique (skill, trial) pair,
+      applies Eq. 6 (global Q variant) with ``w_subtask * r_subtask
+      + w_task * r_task`` as the target, and maintains the lib.
+
+    Both callbacks swallow exceptions (the bridge's safety net so a
+    bug in the method never aborts the trial).
+
+    ``wiring=None`` is the legacy / unit-test mode: per-subtask hook
+    is not registered, so on_trial_started is skipped. The
+    end-of-trial Q-update still runs, but the Q-table won't
+    observe per-Skill-call outcomes (it'll only see the trial's
+    overall reward via r_task).
     """
     lib = Qlib(b_max=method.b_max)
     mgr = LibManager(
@@ -652,6 +675,21 @@ def attach_paper_registers(job: Job, method: MethodConfig) -> None:
                 event.trial_id,
             )
 
+    # ---- on_trial_started: container wiring (issue #2) ----
+    if wiring is not None:
+        async def on_trial_started(event: TrialHookEvent) -> None:
+            try:
+                wire_one_trial(wiring, event)
+            except Exception:
+                # Fail-soft: hook env is nice-to-have, not a hard
+                # dependency. The trial can still run (without the
+                # per-subtask retrieval) if wiring fails.
+                logger.exception(
+                    "Container wiring for trial %s failed; trial will run without hook.",
+                    event.trial_id,
+                )
+
+        job.on_trial_started(on_trial_started)
     job.on_trial_ended(on_ended)
 
 
@@ -659,7 +697,23 @@ def attach_paper_registers(job: Job, method: MethodConfig) -> None:
 # Public: high-level entry
 # ---------------------------------------------------------------------------
 async def run_paper_job(job_config_path: Path, method: MethodConfig) -> int:
-    """Create a Harbor Job, attach the paper hook, and run it."""
+    """Create a Harbor Job, start the embed daemon, attach the
+    per-subtask hook, run, and tear down.
+
+    Issue #2 (container wiring) lifecycle:
+
+    1. :func:`start_container_wiring` boots the host-side FastAPI
+       embed daemon. If the API key is missing we propagate the
+       error.
+    2. :func:`Job.create` instantiates the trial queue.
+    3. :func:`attach_paper_registers` registers both
+       ``on_trial_started`` (per-trial hook wiring) and
+       ``on_trial_ended`` (per-subtask Q-update).
+    4. ``await job.run()`` drives the trial queue.
+    5. ``finally`` - :func:`stop_container_wiring` tears down the
+       daemon and its thread, regardless of whether ``job.run``
+       raised.
+    """
     from harbor import Job
     from harbor.cli.utils import run_async  # type: ignore[attr-defined]
     from harbor.environments.factory import EnvironmentFactory
@@ -676,9 +730,19 @@ async def run_paper_job(job_config_path: Path, method: MethodConfig) -> int:
         import_path=job_cfg.environment.import_path,
     )
 
+    # Start the embed daemon BEFORE creating the Job so the
+    # daemon's host:port is known by the time on_trial_started
+    # runs for the first trial. ``wiring`` is None when
+    # EMBEDDING_API_KEY isn't set — the trial still runs, but the
+    # per-subtask hook is not installed.
+    wiring = start_container_wiring(method)
     job = await Job.create(job_cfg)
-    attach_paper_registers(job, method)
-    result = await job.run()
+    try:
+        attach_paper_registers(job, method, wiring)
+        result = await job.run()
+    finally:
+        if wiring is not None:
+            stop_container_wiring(wiring)
 
     logger.info(
         "Paper method finished: %s trials, %s successes",
