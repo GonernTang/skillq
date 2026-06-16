@@ -1,6 +1,6 @@
 # 跑 TB 2.0 / TB Pro / SWE-Bench Pro 实验 — 完整指南
 
-`paper` 通过两条互斥的 entrypoint 暴露这两个 benchmark:
+`skillq` 通过两条互斥的 entrypoint 暴露这两个 benchmark:
 
 - **`skillq skillsvote run -c X`** —— 包装 `skills_vote.harbor.cli.run_job`,完全走 SkillsVote 上游的 recommend → feedback → evolve 生命周期(SkillsVote 是 **SkillQ 论文对比的 baseline**)。
 - **`skillq paper run -c Y`** —— 在 SkillsVote agent 之上多套一层 UCB rerank,跑 **SkillQ 论文的** β-Q + 库管理 + near-miss 编辑。
@@ -13,9 +13,9 @@
 
 ```bash
 cd /home/gonern/workspace/skillq
-uv sync                                         # 装 paper + skills_vote + harbor + litellm
+uv sync                                         # 装 skillq + skills_vote + harbor + litellm
 
-# 拷贝 lqrl 的 .env 到 paper/ 下(键名完全一致,可直接 cp)
+# 拷贝 lqrl 的 .env 到 skillq/ 下(键名完全一致,可直接 cp)
 cp /home/gonern/workspace/lqrl/.env.example .env
 # 编辑 .env 填入 OPENAI_API_KEY / ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL / ...
 ```
@@ -23,7 +23,7 @@ cp /home/gonern/workspace/lqrl/.env.example .env
 ### `.env` 格式(跟 lqrl 完全一样)
 
 `skillq/.env.example` 已经写好,字段名跟 `lqrl/.env.example` 一致(可直接
-`cp lqrl/.env paper/.env`):
+`cp lqrl/.env skillq/.env`):
 
 ```bash
 # Codex / OpenAI 路径
@@ -54,12 +54,12 @@ uv run skillq paper run -c experiments/configs/tb2_skillq.yaml
 
 ## 0.5. 预构建 Docker 镜像(强烈建议,第一次跑之前做)
 
-**paper 的实验流和 lqrl 一样需要先 prebuild Docker 镜像**。原因:每个 trial 跑在
+**skillq 的实验流和 lqrl 一样需要先 prebuild Docker 镜像**。原因:每个 trial 跑在
 一个全新容器里;如果不预构建,每次 trial 都要 apt-get / pip 装 agent
 + 依赖,5-10 分钟一次。预构建把 agent 装一次,打 tag 成
 `local/<task_name>:<tag>`,后续 trial 直接复用这个 image。
 
-paper 提供 `skillq prebuild` 子命令,内部转调 lqrl 的
+skillq 提供 `skillq prebuild` 子命令,内部转调 lqrl 的
 `scripts/prebuild_images.py`(避免重复实现):
 
 ```bash
@@ -100,10 +100,10 @@ tag,Harbor 在 `Trial.create` 时会优先复用这个 image。
 跑过一次后,`docker images | grep local/` 能看到打好的镜像。下次跑
 `skillq paper run` 直接复用,**不会**重头构建。
 
-**paper 的 prebuild 跟 lqrl 一样吗?** —— 完全一样,只是入口命令不同。lqrl 用
-`uv run python lqrl/scripts/prebuild_images.py --cfg-path ...`,paper 用
+**skillq 的 prebuild 跟 lqrl 一样吗?** —— 完全一样,只是入口命令不同。lqrl 用
+`uv run python lqrl/scripts/prebuild_images.py --cfg-path ...`,skillq 用
 `uv run skillq prebuild run --benchmark ...`。两个最终调的是**同一段
-prebuild 逻辑**(paper 的 prebuild_cli.py 内部 `subprocess.run` 调 lqrl 的
+prebuild 逻辑**(skillq 的 prebuild_cli.py 内部 `subprocess.run` 调 lqrl 的
 `prebuild_images.py`),所以镜像 tag、registry、build args 全部一致。
 
 ---
@@ -134,7 +134,7 @@ uv run skillq skillsvote run -c configs/tb2_skillsvote.yaml
 
 `jobs_dir: output` 字段告诉 Harbor 把 trial 结果写到哪里(默认是
 `output/<job_name>/<trial_name>/result.json`)。每个 trial end 后
-`skillq paper` 的 hook 会写 `<job_dir>/.mg_library/.state/method_state.json`。
+`skillq paper` 的 hook 会写 `<job_dir>/.skillq_library/.state/method_state.json`。
 
 ---
 
@@ -142,30 +142,30 @@ uv run skillq skillsvote run -c configs/tb2_skillsvote.yaml
 
 ```bash
 # TB 2.0, paper 模式, Sonnet 4.5
-uv run python -m paper.experiments.run_benchmark \
+uv run python -m skillq.experiments.run.run_benchmark \
     --benchmark tb2 \
     --mode paper \
     --agent-model anthropic/claude-sonnet-4-5
 
 # TB Pro, SkillsVote 模式, Codex GPT-5.5
-uv run python -m paper.experiments.run_benchmark \
+uv run python -m skillq.experiments.run.run_benchmark \
     --benchmark tb_pro \
     --mode skillsvote \
     --agent-import-path skills_vote.harbor.agents:SkillsVoteCodex \
     --agent-model openai/gpt-5.5
 
 # SWE-Bench Pro, paper 模式, Opus 4.1
-uv run python -m paper.experiments.run_benchmark \
+uv run python -m skillq.experiments.run.run_benchmark \
     --benchmark swebenchpro \
     --mode paper \
     --agent-model anthropic/claude-opus-4-1
 
 # 加 --dry-run 只写 YAML 不跑
-uv run python -m paper.experiments.run_benchmark \
+uv run python -m skillq.experiments.run.run_benchmark \
     --benchmark tb_pro --mode paper --dry-run
 
 # 自定义并发度 / 重试次数 / 子集
-uv run python -m paper.experiments.run_benchmark \
+uv run python -m skillq.experiments.run.run_benchmark \
     --benchmark tb2 --mode paper \
     --n-concurrent 4 --n-attempts 1 \
     --task-subset tb2-001 tb2-002
@@ -199,11 +199,11 @@ environment:
   force_build: false
   delete: false
 agents:
-  - import_path: paper.paper_mode.agent:PaperClaudeCodeAgent   # paper mode
+  - import_path: skillq.paper_mode.agent:SkillQClaudeCodeAgent   # paper mode
     # - import_path: skills_vote.harbor.claude_code:SkillsVoteClaudeCode  # lqrl mode
     model_name: anthropic/claude-sonnet-4-5
     kwargs:
-      recommend: {skills_dir: ${abspath:.mg_library/seed}, prompt_path: ...}
+      recommend: {skills_dir: ${abspath:.skillq_library/seed}, prompt_path: ...}
       paper_retrieval: {enabled: true, k1: 10, k2: 3}
 datasets:
   - name: terminal-bench        # or terminal-bench-pro / swebenchpro
@@ -214,7 +214,7 @@ datasets:
 ```
 
 OmegaConf 的 `${now:%Y-%m-%d__%H-%M-%S}` / `${abspath:...}` 解析 lqrl 自己也用,
-(paper) 自动支持。
+(skillq) 自动支持。
 
 ---
 
@@ -231,10 +231,10 @@ ls output/tb2_skillq__2026-06-05__14-30-00/trial-001/
 ```
 
 `skillq paper` 模式额外写:
-- `output/<job_name>/.mg_library/.state/method_state.json` — Q-table 持久化
-- `output/<job_name>/.mg_library/<skill_name>/` — 被 near-miss 改写的 skill
+- `output/<job_name>/.skillq_library/.state/method_state.json` — Q-table 持久化
+- `output/<job_name>/.skillq_library/<skill_name>/` — 被 near-miss 改写的 skill
 
-`skillq skillsvote` 模式额外写(由 SkillsVote 自己写,paper 不参与):
+`skillq skillsvote` 模式额外写(由 SkillsVote 自己写,skillq 不参与):
 - `output/<job_name>/feedback.json`(每 trial)
 - `output/<job_name>/skills_vote_evolve_state.json`
 - `output/<job_name>/working_skills/`
@@ -252,15 +252,15 @@ uv run harbor view output/      # Harbor 自带 viewer
 
 ```bash
 # β sweep: 7 个 β 值 × 同一份 job config
-uv run python -m paper.experiments.beta_sweep \
+uv run python -m skillq.experiments.run.beta_sweep \
     --job-config experiments/configs/tb2_skillq.yaml
 
 # Ablation: 6 个 cell(with/without UCB, with/without verifier, with/without near-miss)
-uv run python -m paper.experiments.ablation \
+uv run python -m skillq.experiments.run.ablation \
     --job-config experiments/configs/tb2_skillq.yaml
 
 # Inter-rater κ: 用三个 verifier 后端跑同样的 (old, new) 对
-uv run python -m paper.experiments.kappa_sweep \
+uv run python -m skillq.experiments.run.kappa_sweep \
     --n-pairs 50 --backends stub gpt-4o claude-sonnet-4-5
 ```
 
@@ -271,7 +271,7 @@ shell 循环调 `run_benchmark.py` 5 次即可,每次改 `--agent-model`
 
 ```bash
 for seed in 0 1 2 3 4; do
-    uv run python -m paper.experiments.run_benchmark \
+    uv run python -m skillq.experiments.run.run_benchmark \
         --benchmark tb2 --mode paper \
         --job-name tb2_skillq_seed${seed}__$(date +%H%M%S)
 done
@@ -288,7 +288,7 @@ done
 | trial 跑到一半挂 `Docker daemon not running` | 本地 docker 没起;或者改用 `--env e2b` / `--env daytona` |
 | `litellm.AuthenticationError` | 缺 `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`,`export` 一下 |
 | 第一次 `skillq paper run` 跑得很慢 | Docker image 在拉(`terminal-bench` image ≈ 1-2 GB);用 lqrl 的 `prebuild_images.py` 预热 |
-| paper 模式写不进 `state.json` | 检查 `output/<job_name>/.mg_library/.state/` 目录权限,bridge 不会自己 `chmod` |
+| paper 模式写不进 `state.json` | 检查 `output/<job_name>/.skillq_library/.state/` 目录权限,bridge 不会自己 `chmod` |
 | `qhash()` 跑出大整数 | 正常;`int(hashlib.sha1(text).hexdigest()[:16], 16)` 是设计上的 64-bit key |
 
 ---
@@ -408,11 +408,11 @@ grep "Extracted new skill" output/<job_name>/logs.txt
 grep "extractor" output/<job_name>/logs.txt
 
 # admission 8 次 retrieval 后,新 skill 还在不在?
-cat output/<job_name>/.mg_library/.state/method_state.json | python3 -c "
+cat output/<job_name>/.skillq_library/.state/method_state.json | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
 for sid, skill in data['library']['skills'].items():
-    if skill.get('metadata', {}).get('source') == 'mg_paper_extract':
+    if skill.get('metadata', {}).get('source') == 'skillq_extract':
         print(sid, 'still in library')
 "
 ```
