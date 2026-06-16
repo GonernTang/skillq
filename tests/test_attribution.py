@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from paper.method.attribution import (  # noqa: E402
+from skillq.method.attribution import (  # noqa: E402
     Attribution,
     AttributionAnalyzer,
     LiteLLMAttributionBackend,

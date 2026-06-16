@@ -19,10 +19,10 @@ from unittest.mock import MagicMock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from paper.method.library import LibManager  # noqa: E402
-from paper.method.state import QlibState  # noqa: E402
-from paper.method.types import Qlib, Skill  # noqa: E402
-from paper.paper_mode.config import MethodConfig  # noqa: E402
+from skillq.method.library import LibManager  # noqa: E402
+from skillq.method.state import QlibState  # noqa: E402
+from skillq.method.types import Qlib, Skill  # noqa: E402
+from skillq.paper_mode.config import MethodConfig  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -46,15 +46,9 @@ class _MockJob:
 
 
 def _patch_litellm_backends(monkeypatch) -> None:
-    from paper.paper_mode import bridge as bridge_mod
-    from paper.method.attribution import StubAttributionBackend
-    from paper.method.retrieval import StubEmbedder
-    from paper.method.verifier import StubVerifierBackend
-
-    class _StubVerifierShim(StubVerifierBackend):
-        def __init__(self, *args, **kwargs) -> None:
-            kwargs.pop("model", None)
-            super().__init__(*args, **kwargs)
+    from skillq.paper_mode import bridge as bridge_mod
+    from skillq.method.attribution import StubAttributionBackend
+    from skillq.method.retrieval import StubEmbedder
 
     class _StubEmbedderShim(StubEmbedder):
         def __init__(self, *args, **kwargs) -> None:
@@ -68,20 +62,15 @@ def _patch_litellm_backends(monkeypatch) -> None:
             super().__init__(*args, **kwargs)
 
     monkeypatch.setattr(bridge_mod, "LiteLLMEmbedder", _StubEmbedderShim)
-    monkeypatch.setattr(bridge_mod, "LiteLLMVerifierBackend", _StubVerifierShim)
     monkeypatch.setattr(bridge_mod, "LiteLLMAttributionBackend", _StubAttributionShim)
 
 
 def _patch_extractor_to_return(monkeypatch, skill: Skill | None) -> None:
-    from paper.paper_mode import bridge as bridge_mod
-
-    async def fake_extract(self, **kwargs) -> Skill | None:
-        return skill
+    from skillq.paper_mode import bridge as bridge_mod
 
     async def fake_extract_batch(self, **kwargs) -> Skill | None:
         return skill
 
-    monkeypatch.setattr(bridge_mod.SkillExtractor, "extract", fake_extract)
     monkeypatch.setattr(bridge_mod.SkillExtractor, "extract_batch", fake_extract_batch)
 
 
@@ -138,8 +127,8 @@ def test_extract_writes_q_initial_to_q_table(tmp_path: Path, monkeypatch):
     new_skill = Skill(skill_id="auto-extracted", body="x" * 200)
     _patch_extractor_to_return(monkeypatch, new_skill)
 
-    from paper.paper_mode import bridge as bridge_mod
-    from paper.method.attribution import Attribution, TrialAttribution
+    from skillq.paper_mode import bridge as bridge_mod
+    from skillq.method.attribution import Attribution, TrialAttribution
 
     monkeypatch.setattr(
         bridge_mod.AttributionAnalyzer,
@@ -181,8 +170,8 @@ def test_extract_uses_configured_initial_q(tmp_path: Path, monkeypatch):
     new_skill = Skill(skill_id="auto", body="x" * 200)
     _patch_extractor_to_return(monkeypatch, new_skill)
 
-    from paper.paper_mode import bridge as bridge_mod
-    from paper.method.attribution import Attribution, TrialAttribution
+    from skillq.paper_mode import bridge as bridge_mod
+    from skillq.method.attribution import Attribution, TrialAttribution
 
     monkeypatch.setattr(
         bridge_mod.AttributionAnalyzer,

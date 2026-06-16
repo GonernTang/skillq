@@ -8,15 +8,15 @@ Usage:
         --benchmark tb2 \
         --n-tasks 15 \
         --n-seeds 5 \
-        --jobs-dir output/tb2_paper
+        --jobs-dir output/tb2_skillq
 
-    # Run the upstream lqrl mode for comparison.
+    # Run the vendored skillsvote mode for comparison.
     uv run python -m paper.experiments.run_terminalbench \
-        --mode lqrl \
+        --mode skillsvote \
         --benchmark tb2 \
         --n-tasks 15 \
         --n-seeds 5 \
-        --jobs-dir output/tb2_lqrl
+        --jobs-dir output/tb2_skillsvote
 
 The driver writes one Harbor job-config YAML per (seed, mode) cell
 under ``--jobs-dir/configs/`` and then calls the corresponding
@@ -79,17 +79,13 @@ def build_job_config(
     n_concurrent: int,
 ) -> dict[str, Any]:
     """Construct a Harbor-compatible JobConfig dict for a given (mode, tasks)."""
-    # Both modes use the same agent import_path. ``paper paper`` mode
-    # additionally reads ``paper_retrieval``; ``paper lqrl`` mode
-    # additionally reads ``recommend``. The ``agent_kwargs`` dict
-    # carries both; the runtime agent picks the relevant one.
     return {
         "job_name": f"tb2_{mode}_seed{42}",
         "n_concurrent_trials": n_concurrent,
         "agents": [
             {
                 "import_path": (
-                    "paper.paper_mode.agent:PaperClaudeCodeAgent"
+                    "skillq.paper_mode.agent:SkillQClaudeCodeAgent"
                     if mode == "paper"
                     else "skills_vote.harbor.claude_code:SkillsVoteClaudeCode"
                 ),
@@ -99,11 +95,6 @@ def build_job_config(
                         "prompt_path": "prompts/recommend.j2",
                         "skills_dir": "./.skills",
                         "default_top_k": 5,
-                    },
-                    "paper_retrieval": {
-                        "enabled": True,
-                        "k1": 10,
-                        "k2": 3,
                     },
                 },
             }
@@ -122,7 +113,7 @@ def build_job_config(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="run_terminalbench")
-    parser.add_argument("--mode", choices=["lqrl", "paper"], required=True)
+    parser.add_argument("--mode", choices=["skillsvote", "paper"], required=True)
     parser.add_argument("--benchmark", choices=["tb2", "tbpro"], default="tb2")
     parser.add_argument("--n-tasks", type=int, default=15)
     parser.add_argument("--n-seeds", type=int, default=5)

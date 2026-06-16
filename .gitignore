@@ -35,4 +35,4 @@ htmlcov/
 # Local experiment output
 output/
 input/
-.mg_library/
+.skillq_library/

@@ -1,0 +1,104 @@
+# Smoke-test config: ONE TB 2.0 task, paper mode.
+#
+# Task: fix-git (TB 2.0, easy, 5-min expert time, prebuilt image present)
+#   - prebuilt image:  skills_vote/fix-git:20260604  (lqrl tag, already on disk)
+#   - dataset cache:   input/tb2/fix-git/  (symlinked to lqrl's input/terminal-bench)
+#   - seed skills:     experiments/smoke/seed_skills/  (lqrl .local_seed stub)
+#
+# This config is the minimum needed to validate that the paper method
+# end-to-end pipeline boots, the agent runs in the prebuilt container,
+# the trial trajectory is saved, and the on_trial_ended hook fires.
+#
+# Resolver note: stock OmegaConf 2.3 only ships the `oc.*` resolvers.
+# The existing experiments/configs/tb2_skillq.yaml references
+# `${abspath:...}` and `${now:...}` which are NOT registered in mg's
+# CLI today — that file has never been exercised end-to-end. We avoid
+# those by hardcoding absolute paths and a stable job_name; the smoke
+# script handles cleanup of the output dir on each run.
+
+jobs_dir: output
+# Stable name; the smoke script `rm -rf`s this before each run.
+job_name: smoke_wiring_v2
+n_attempts: 1
+n_concurrent_trials: 1
+quiet: false
+retry:
+  max_retries: 0
+  exclude_exceptions:
+    - VerifierTimeoutError
+    - RewardFileNotFoundError
+    - RewardFileEmptyError
+    - VerifierOutputParseError
+agent_timeout_multiplier: 4.0
+environment:
+  type: docker
+  # Tell Harbor to actually use the prebuilt image. Without this,
+  # Harbor falls back to the task's environment/Dockerfile (a
+  # bare `FROM python:3.13-slim-bookworm`) and the trial
+  # container has no `claude` binary.
+  docker_image: skills_vote/gcode-to-text:20260604
+  force_build: false
+  delete: false               # keep containers after the run for debugging
+  mounts_json:
+    # Bind-mount the host's seed-skill library into the container at
+    # /skills. SkillsVote's step_recommend does
+    #   cp -R <skills_dir> "$CLAUDE_CONFIG_DIR/skills"
+    # inside the container, so the path in `recommend.skills_dir` must
+    # be the *container-side* mount path (/skills), not the host path.
+    - type: bind
+      source: /home/gonern/workspace/skillq/experiments/smoke/seed_skills
+      target: /skills
+      read_only: true
+agents:
+  - import_path: skillq.paper_mode.agent:SkillQClaudeCodeAgent
+    # oc.env is a built-in OmegaConf resolver; falls back to Sonnet 4.5
+    # if ANTHROPIC_MODEL is unset.
+    model_name: ${oc.env:ANTHROPIC_MODEL,anthropic/claude-sonnet-4-5}
+    kwargs:
+      # allowed_skills unset (None) — leave lqrl's default ("no
+      # restriction"). Setting it to [] would force lqrl to write
+      # its default settings.json at $CLAUDE_CONFIG_DIR/settings.json
+      # before our mount takes effect, causing a "Is a directory"
+      # collision. The paper method doesn't need skill allowlisting.
+      # recommend: null — skip lqrl's LLM-based step_recommend entirely.
+      # The paper method's design replaces the LLM-based recommend
+      # with embedding+Q retrieval (TwoStageRanker). Calling
+      # step_recommend would (1) make a redundant LLM call
+      # (`claude --print` in the agent container — this hung on
+      # gcode-to-text in the first 5-task run) and (2) append an
+      # LLM-curated skill list to the system prompt, which the
+      # paper method already does via SkillQClaudeCodeAgent's
+      # `rerank_with_ucb` (appending a [mg UCB re-rank breakdown]
+      # block to the instruction). Setting `recommend: null` makes
+      # SkillsVoteClaudeCode.__init__ set self.recommend_config = None,
+      # so `step_recommend` is never called inside super().run().
+      # The seed skills are still bind-mounted at /skills in the
+      # container (mounts_json above), and the mg UCB header in
+      # rerank_with_ucb lists them for the agent's reference.
+      recommend: null
+      paper_retrieval:
+        enabled: true           # the new piece vs lqrl — client-side UCB rerank
+        k1: 10
+        k2: 3
+        c_ucb: 0.5
+        lambda_: 0.5
+datasets:
+  # Use Harbor's local-task path (LocalTaskId) instead of the
+  # terminal-bench@2.0 registry. The registry path would trigger a
+  # git clone of https://github.com/laude-institute/terminal-bench-2
+  # inside Job.create, even with `download_dir` set — and we want the
+  # smoke to be offline / reproducible. lqrl's input/terminal-bench
+  # has all 95 task subdirs in export layout; we filter with
+  # `task_names`.
+  #
+  # Five small TB 2.0 tasks, all smoke-tested and prebuilt
+  # (skillq/<task>:20260604 exists for each). Set SkillQ_INPUT
+  # env var to override the default ./input path.
+  - path: ${SkillQ_INPUT:-./input/terminal-bench}
+    task_names:
+      # Single task smoke for the container-wiring refactor
+      # (issue #2). gcode-to-text is the smallest prebuilt task;
+      # we verify the per-subtask hook fires, the Q-table gets
+      # the trial's reward, and the container sees the SKILLQ_*
+      # env vars + bind-mounted state files.
+      - gcode-to-text                 # medium, 300 min (LLM usually 1-2 min)

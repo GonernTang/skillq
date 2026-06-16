@@ -12,10 +12,10 @@ Usage:
         --mode paper \\
         --agent-model anthropic/claude-sonnet-4-5
 
-    # TB Pro, lqrl mode, Codex GPT-5.5
+    # TB Pro, skillsvote mode, Codex GPT-5.5
     uv run python -m paper.experiments.run_benchmark \\
         --benchmark tb_pro \\
-        --mode lqrl \\
+        --mode skillsvote \\
         --agent-import-path skills_vote.harbor.agents:SkillsVoteCodex \\
         --agent-model openai/gpt-5.5 \\
         --agent-version 0.125.0
@@ -104,23 +104,23 @@ def build_job_config(
     """Construct a Harbor-compatible JobConfig dict."""
     spec = BENCHMARKS[benchmark]
     if mode == "paper":
-        # Paper mode re-uses the lqrl SkillsVoteClaudeCode agent subclass.
-        # If the user supplied a non-lqrl import path, fall back to it
-        # and skip the paper-specific kwargs.
+        # Paper mode uses SkillQClaudeCodeAgent directly (no upstream
+        # base class). If the user supplied a non-skills_vote import
+        # path, fall back to it and skip the paper-specific kwargs.
         if "skills_vote" not in agent_import_path:
             raise ValueError(
                 "paper mode requires a skills_vote-backed agent (got "
                 f"{agent_import_path!r}). Either pass a skills_vote import "
-                "path or use --mode lqrl."
+                "path or use --mode skillsvote."
             )
         agent_block: dict[str, Any] = {
-            "import_path": "paper.paper_mode.agent:PaperClaudeCodeAgent",
+            "import_path": "skillq.paper_mode.agent:SkillQClaudeCodeAgent",
             "model_name": agent_model,
             "kwargs": {
                 "allowed_skills": [],
                 "recommend": {
-                    "skills_dir": "${abspath:.mg_library/seed}",
-                    # Intentionally no prompt_path here. lqrl's
+                    "skills_dir": "${abspath:.skillq_library/seed}",
+                    # Intentionally no prompt_path here. skillsvote's
                     # step_recommend calls prompt_path(**kwargs) with
                     # extra kwargs (notably key=...) that
                     # paper.paper_mode.retrieval_step.rerank_with_ucb
@@ -129,27 +129,20 @@ def build_job_config(
                     # rerank_with_ucb on the instruction. The mg UCB
                     # rerank is invoked directly from
                     # PaperClaudeCodeAgent.run, not via prompt_path;
-                    # leaving prompt_path unset lets lqrl fall back
+                    # leaving prompt_path unset lets skillsvote fall back
                     # to its own DEFAULT_PROMPT_PATH
                     # (skills_vote.recommend.prompt:build).
                 },
-                "paper_retrieval": {
-                    "enabled": True,
-                    "k1": 10,
-                    "k2": 3,
-                    "c_ucb": 0.5,
-                    "lambda_": 0.5,
-                },
             },
         }
-    else:  # lqrl mode
+    else:  # skillsvote mode
         agent_block = {
             "import_path": agent_import_path,
             "model_name": agent_model,
             "kwargs": {
                 "allowed_skills": [],
                 "recommend": {
-                    "skills_dir": "${abspath:.mg_library/seed}",
+                    "skills_dir": "${abspath:.skillq_library/seed}",
                     "prompt_path": "skills_vote.recommend.prompt:build",
                 },
             },
@@ -195,11 +188,11 @@ def main(argv: list[str] | None = None) -> int:
         choices=list(BENCHMARKS.keys()),
         required=True,
     )
-    parser.add_argument("--mode", choices=["lqrl", "paper"], default="paper")
+    parser.add_argument("--mode", choices=["skillsvote", "paper"], default="paper")
     parser.add_argument(
         "--agent-import-path",
         default="skills_vote.harbor.claude_code:SkillsVoteClaudeCode",
-        help="Only used in --mode lqrl.",
+        help="Only used in --mode skillsvote.",
     )
     parser.add_argument(
         "--agent-model",

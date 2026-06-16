@@ -21,8 +21,8 @@ from typing import Sequence
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from paper.method.types import Skill, Verdict  # noqa: E402
-from paper.method.verifier import (  # noqa: E402
+from skillq.method.types import Skill, Verdict  # noqa: E402
+from skillq.method.verifier import (  # noqa: E402
     IndependentVerifier,
     LiteLLMVerifierBackend,
     StubVerifierBackend,

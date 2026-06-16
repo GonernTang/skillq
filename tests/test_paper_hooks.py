@@ -22,10 +22,10 @@ from unittest.mock import MagicMock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from paper.method.library import LibManager  # noqa: E402
-from paper.method.state import QlibState  # noqa: E402
-from paper.method.types import Qlib, Skill  # noqa: E402
-from paper.paper_mode.config import MethodConfig  # noqa: E402
+from skillq.method.library import LibManager  # noqa: E402
+from skillq.method.state import QlibState  # noqa: E402
+from skillq.method.types import Qlib, Skill  # noqa: E402
+from skillq.paper_mode.config import MethodConfig  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +117,7 @@ def test_attach_paper_registers_wires_on_trial_ended(tmp_path: Path, monkeypatch
     state.save(lib, _fresh_manager(method), lib_root=method.library_root)
 
     job = _MockJob()
-    from paper.paper_mode import bridge as bridge_mod
+    from skillq.paper_mode import bridge as bridge_mod
     bridge_mod.attach_paper_registers(job, method)
     assert job.on_ended is not None
 
@@ -146,7 +146,7 @@ def test_attach_paper_registers_skips_failed_trials(tmp_path: Path, monkeypatch)
     state.save(Qlib(b_max=4), _fresh_manager(method), lib_root=method.library_root)
 
     job = _MockJob()
-    from paper.paper_mode import bridge as bridge_mod
+    from skillq.paper_mode import bridge as bridge_mod
     bridge_mod.attach_paper_registers(job, method)
 
     # Failed trial — exception_info is set.
@@ -168,15 +168,9 @@ def _patch_litellm_backends(monkeypatch) -> None:
     """Replace LiteLLM embedder/verifier/attribution with stub shims
     that accept the ``model=`` kwarg the bridge passes.
     """
-    from paper.paper_mode import bridge as bridge_mod
-    from paper.method.attribution import StubAttributionBackend
-    from paper.method.retrieval import StubEmbedder
-    from paper.method.verifier import StubVerifierBackend
-
-    class _StubVerifierShim(StubVerifierBackend):
-        def __init__(self, *args, **kwargs) -> None:
-            kwargs.pop("model", None)
-            super().__init__(*args, **kwargs)
+    from skillq.paper_mode import bridge as bridge_mod
+    from skillq.method.attribution import StubAttributionBackend
+    from skillq.method.retrieval import StubEmbedder
 
     class _StubEmbedderShim(StubEmbedder):
         def __init__(self, *args, **kwargs) -> None:
@@ -190,7 +184,6 @@ def _patch_litellm_backends(monkeypatch) -> None:
             super().__init__(*args, **kwargs)
 
     monkeypatch.setattr(bridge_mod, "LiteLLMEmbedder", _StubEmbedderShim)
-    monkeypatch.setattr(bridge_mod, "LiteLLMVerifierBackend", _StubVerifierShim)
     monkeypatch.setattr(bridge_mod, "LiteLLMAttributionBackend", _StubAttributionShim)
 
 

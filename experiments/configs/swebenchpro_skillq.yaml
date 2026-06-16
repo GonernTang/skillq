@@ -1,0 +1,71 @@
+# Example mg paper config for SWE-Bench Pro (1.0)
+#
+# Run with:
+#   uv run paper paper run -c paper/experiments/configs/swebenchpro_skillq.yaml
+#
+# SWE-Bench Pro is the largest of the three benchmarks (~700+ tasks).
+# Default: 20-task subset (matches lqrl's scripts/configs/swebenchpro).
+# The full corpus is downloadable but takes hours to build Docker images.
+
+jobs_dir: output
+job_name: swebenchpro_skillq__${now:%Y-%m-%d__%H-%M-%S}
+n_attempts: 1
+n_concurrent_trials: 2
+quiet: false
+
+retry:
+  max_retries: 0
+  exclude_exceptions:
+    - VerifierTimeoutError
+    - RewardFileNotFoundError
+    - RewardFileEmptyError
+    - VerifierOutputParseError
+
+agent_timeout_multiplier: 4.0
+
+environment:
+  type: docker
+  force_build: false
+  delete: false
+  mounts_json:
+    - type: bind
+      source: ${abspath:.skillq_library/seed}
+      target: /skills
+      read_only: true
+
+agents:
+  - import_path: skillq.paper_mode.agent:SkillQClaudeCodeAgent
+    model_name: anthropic/claude-sonnet-4-5
+    kwargs:
+      allowed_skills: []
+      recommend:
+        # /skills is the in-container path; the bind mount in
+        # `environment.mounts_json` above maps the host's
+        # ${abspath:.skillq_library/seed} to /skills (read-only).
+        skills_dir: /skills
+        # Do NOT set prompt_path to
+        # paper.paper_mode.retrieval_step:rerank_with_ucb. lqrl's
+        # step_recommend calls it with extra kwargs (notably key=...)
+        # that rerank_with_ucb does not accept, and the agent would
+        # TypeError before the agent ever runs. The mg UCB rerank is
+        # invoked directly from PaperClaudeCodeAgent.run, not via
+        # this prompt_path. Leaving prompt_path unset makes lqrl fall
+        # back to its own DEFAULT_PROMPT_PATH
+        # (skills_vote.recommend.prompt:build).
+      paper_retrieval:
+        enabled: true
+        k1: 10
+        k2: 3
+        c_ucb: 0.5
+        lambda_: 0.5
+
+datasets:
+  - name: swebenchpro
+    version: "1.0"
+    download_dir: input/swebenchpro
+    task_names:
+      # 20-instance subset (matches lqrl's default). Replace with the
+      # full task list (or remove ``task_names`` entirely) for the full
+      # corpus.
+      - instance_protonmail__webclients-0200ce0fc1d4dbd35178c10d440a284c82ecc858
+      - instance_qutebrowser__qutebrowser-b8c93a8a3a64e2c6cdc2ddde2c6b1ade4dd3cbe9

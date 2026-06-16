@@ -1,10 +1,10 @@
-"""Tests for the ``paper skillsvote_mode`` pass-through entrypoint.
+"""Tests for the ``skillq skillsvote_mode`` pass-through entrypoint.
 
 These tests verify that the entrypoint is a *pure* pass-through:
 - ``SkillsVoteModeConfig`` accepts arbitrary extra fields.
-- ``paper.skillsvote_mode.cli._run_command`` dispatches to
-  ``skills_vote.harbor.cli.main`` (mocked here, since the upstream
-  package's CLI exits the interpreter).
+- ``skillq.skillsvote_mode.cli._run_command`` dispatches to
+  ``skills_vote.harbor.cli.main`` (mocked here, since the
+  vendored skillsvote package's CLI exits the interpreter).
 """
 
 from __future__ import annotations
@@ -15,11 +15,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from paper.skillsvote_mode.config import SkillsVoteModeConfig  # noqa: E402
+from skillq.skillsvote_mode.config import SkillsVoteModeConfig  # noqa: E402
 
 
 def test_skillsvote_mode_config_accepts_arbitrary_extra_fields():
-    """SkillsVoteConfig is permissive; mg's marker class should be too."""
+    """SkillsVoteConfig is permissive; skillq's marker class should be too."""
     cfg = SkillsVoteModeConfig(
         feedback_prompt_path="prompts/feedback.j2",
         evolve_prompt_path="prompts/evolve.j2",
@@ -31,9 +31,9 @@ def test_skillsvote_mode_config_accepts_arbitrary_extra_fields():
     assert dumped["register_import_paths"] == ["my_pkg.bridge:register"]
 
 
-def test_skillsvote_mode_cli_run_dispatches_to_upstream(monkeypatch, tmp_path):
-    """``paper skillsvote run -c X`` should call ``skills_vote.harbor.cli.main``."""
-    from paper.skillsvote_mode import cli as skillsvote_cli
+def test_skillsvote_mode_cli_run_dispatches_to_vendored(monkeypatch, tmp_path):
+    """``skillq skillsvote run -c X`` should call ``skills_vote.harbor.cli.main``."""
+    from skillq.skillsvote_mode import cli as skillsvote_cli
 
     captured: dict = {}
 

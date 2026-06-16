@@ -10,9 +10,9 @@
 #   1. verify all 5 tasks exist in lqrl's input/terminal-bench
 #   2. verify all 5 skills_vote/<task>:20260604 prebuilt images
 #   3. ensure experiments/smoke/seed_skills/ has the seed stub
-#   4. run `uv run paper paper run -c .../fix-git_paper_smoke.yaml`
+#   4. run `uv run paper paper run -c .../fix-git_skillq_smoke.yaml`
 #   5. for each task, parse result.json -> reward
-#   6. verify .mg_library/method_state.json: step = number of trials
+#   6. verify .skillq_library/method_state.json: step = number of trials
 #   7. print trajectory / verifier paths
 #
 # Cleanup
@@ -29,11 +29,11 @@ TASKS=(
   gcode-to-text
 )
 IMAGE_TAG="20260604"
-CONFIG="experiments/smoke/fix-git_paper_smoke.yaml"
+CONFIG="experiments/smoke/fix-git_skillq_smoke.yaml"
 JOB_DIR="output/smoke_wiring_v2"
 SEED_SKILLS="experiments/smoke/seed_skills"
 METHOD_CONFIG="experiments/smoke/method.yaml"
-LQRL_INPUT="/home/gonern/workspace/lqrl/input/terminal-bench"
+SkillQ_INPUT="${SkillQ_INPUT:-./input}"
 N_TASKS=${#TASKS[@]}
 
 # -------- helpers --------
@@ -63,10 +63,10 @@ ok "smoke config: $CONFIG"
 
 # -------- 1. verify tasks exist --------
 for t in "${TASKS[@]}"; do
-    [ -d "$LQRL_INPUT/$t" ] || fail "lqrl input task not found at $LQRL_INPUT/$t"
-    [ -f "$LQRL_INPUT/$t/task.toml" ] || fail "$LQRL_INPUT/$t/task.toml missing"
+    [ -d "$SkillQ_INPUT/$t" ] || fail "lqrl input task not found at $SkillQ_INPUT/$t"
+    [ -f "$SkillQ_INPUT/$t/task.toml" ] || fail "$SkillQ_INPUT/$t/task.toml missing"
 done
-ok "all $N_TASKS task defs present in $LQRL_INPUT/"
+ok "all $N_TASKS task defs present in $SkillQ_INPUT/"
 
 # -------- 2. verify prebuilt images --------
 for t in "${TASKS[@]}"; do
@@ -158,10 +158,10 @@ log ""
 log "  solved: $n_solved / $N_TASKS"
 
 # -------- 6. paper-mode artifacts --------
-[ -d "$JOB_DIR/.mg_library" ] || fail ".mg_library not present in $JOB_DIR"
-ok "paper method wrote $JOB_DIR/.mg_library/"
+[ -d "$JOB_DIR/.skillq_library" ] || fail ".skillq_library not present in $JOB_DIR"
+ok "paper method wrote $JOB_DIR/.skillq_library/"
 
-[ -f "$JOB_DIR/.mg_library/.state/method_state.json" ] \
+[ -f "$JOB_DIR/.skillq_library/.state/method_state.json" ] \
     || fail "method_state.json missing (bridge did not save state)"
 ok "method_state.json present"
 
@@ -169,7 +169,7 @@ log ""
 log "=== method_state.json ==="
 python3 <<EOF
 import json
-d = json.load(open("$JOB_DIR/.mg_library/.state/method_state.json"))
+d = json.load(open("$JOB_DIR/.skillq_library/.state/method_state.json"))
 print(f"  step:           {d.get('step')}")
 print(f"  q_table:        {len(d.get('q_table', []))} entries")
 print(f"  probation:      {len(d.get('probation', {}).get('count', {}))} skills")
@@ -202,7 +202,7 @@ log "  ✓ SMOKE TEST PASSED: $N_TASKS trials, $n_solved solved"
 log "============================================================"
 log ""
 log "  job dir:       $JOB_DIR"
-log "  mg_library:    $JOB_DIR/.mg_library/"
-log "  state:         $JOB_DIR/.mg_library/.state/method_state.json"
+log "  skillq_library:    $JOB_DIR/.skillq_library/"
+log "  state:         $JOB_DIR/.skillq_library/.state/method_state.json"
 log "  cleanup:       rm -rf $JOB_DIR"
 log ""

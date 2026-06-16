@@ -29,7 +29,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from paper.paper_mode.config import MethodConfig  # noqa: E402
+from skillq.paper_mode.config import MethodConfig  # noqa: E402
 
 
 def _config_diff(base: MethodConfig, **overrides: Any) -> MethodConfig:

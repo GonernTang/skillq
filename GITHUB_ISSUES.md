@@ -2,6 +2,14 @@
 
 Copy each `<-- ISSUE -->` block to GitHub → New Issue.
 
+> **2026-06-16 — Project rename**: The repo was renamed from `mg`
+> → `skillq`. The issues below still reference the old names
+> (`paper/`, `mg_*`, `[paper]` labels) because they were authored
+> against the pre-rename codebase. If you re-open any of these,
+> please update the path/label references in the new issue text
+> (or add a comment pointing to the rename PR). For a summary of
+> what changed, see the top entry in `CHANGELOG.md`.
+
 ---
 
 <!-- ISSUE 1 -->
@@ -137,11 +145,11 @@ Add a unit test that verifies `bridge.hook_env(...)` reads from `MethodConfig` a
 ---
 
 <!-- ISSUE 10 -->
-**Title**: [test] Full `pytest tests/` hangs at `test_q_initial.py` after `test_paper_method_layers.py` — likely asyncio event loop / httpx connection leak across test files
+**Title**: [test] Full `pytest tests/` hangs at `test_q_initial.py` after `test_skillq_method_layers.py` — likely asyncio event loop / httpx connection leak across test files
 
 **Labels**: testing, flaky
 
-Per-file runs: all 59 tests pass in <2s. Full `pytest tests/`: hangs reproducibly at the first test of `test_q_initial.py` after `test_paper_method_layers.py` finishes. Multiple `asyncio.run(job.on_ended(event))` calls in sync test functions likely leave httpx / litellm global connection pools in a bad state.
+Per-file runs: all 59 tests pass in <2s. Full `pytest tests/`: hangs reproducibly at the first test of `test_q_initial.py` after `test_skillq_method_layers.py` finishes. Multiple `asyncio.run(job.on_ended(event))` calls in sync test functions likely leave httpx / litellm global connection pools in a bad state.
 
 Reproduce: `pkill -9 pytest; uv run pytest tests/` → hangs at ~86% mark.
 

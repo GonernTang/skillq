@@ -21,7 +21,7 @@ agents:
   kwargs:
     allowed_skills: []
     recommend:
-      skills_dir: ${abspath:.mg_library/seed}
+      skills_dir: ${abspath:.skillq_library/seed}
       prompt_path: skills_vote.recommend.prompt:build
 datasets:
 - name: terminal-bench-pro

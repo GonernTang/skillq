@@ -1,9 +1,9 @@
 """Tests for the ``paper.env`` dotenv loader.
 
 These tests focus on the contract: a single ``.env`` file is shared
-between ``paper lqrl`` (which forwards to ``skills_vote.harbor.cli``) and
-``paper paper`` / ``paper prebuild`` (which use this module's loader). The
-keys / values are exactly lqrl's, so a user can copy ``lqrl/.env`` to
+between ``skillq skillsvote`` (which forwards to ``skills_vote.harbor.cli``) and
+``skillq paper`` / ``skillq prebuild`` (which use this module's loader). The
+keys / values are exactly skillsvote's, so a user can copy ``skillsvote/.env`` to
 ``mg/.env`` and have it work.
 """
 
@@ -16,11 +16,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from paper.env import load_env_file, load_mg_yaml_env  # noqa: E402
+from skillq.env import load_env_file, load_mg_yaml_env  # noqa: E402
 
 
 def test_load_env_file_reads_lqrl_compatible_keys(tmp_path: Path, monkeypatch):
-    """Loader must read OPENAI_*/ANTHROPIC_*/CODEX_* the way lqrl does."""
+    """Loader must read OPENAI_*/ANTHROPIC_*/CODEX_* the way skillsvote does."""
     env = tmp_path / ".env"
     env.write_text(
         "OPENAI_API_KEY=sk-test-123\n"
@@ -59,7 +59,7 @@ def test_load_env_file_missing_explicit_path_raises(tmp_path: Path):
 
 
 def test_load_env_file_override_true(monkeypatch, tmp_path: Path):
-    """Explicit env vars should be overridden by .env values (lqrl parity)."""
+    """Explicit env vars should be overridden by .env values (skillsvote parity)."""
     monkeypatch.setenv("OPENAI_API_KEY", "preexisting-value")
     env = tmp_path / ".env"
     env.write_text("OPENAI_API_KEY=from-dotenv\n", encoding="utf-8")

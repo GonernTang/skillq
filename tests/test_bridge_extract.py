@@ -17,11 +17,11 @@ from unittest.mock import MagicMock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from paper.method.attribution import Attribution, TrialAttribution  # noqa: E402
-from paper.method.library import LibManager  # noqa: E402
-from paper.method.state import QlibState  # noqa: E402
-from paper.method.types import Qlib, Skill  # noqa: E402
-from paper.paper_mode.config import MethodConfig  # noqa: E402
+from skillq.method.attribution import Attribution, TrialAttribution  # noqa: E402
+from skillq.method.library import LibManager  # noqa: E402
+from skillq.method.state import QlibState  # noqa: E402
+from skillq.method.types import Qlib, Skill  # noqa: E402
+from skillq.paper_mode.config import MethodConfig  # noqa: E402
 
 
 class _MockJob:
@@ -47,15 +47,9 @@ def _patch_litellm_backends(monkeypatch) -> None:
     """Replace LiteLLM + subprocess with stub shims that accept the
     kwargs the bridge passes and return predictable outputs.
     """
-    from paper.paper_mode import bridge as bridge_mod
-    from paper.method.attribution import StubAttributionBackend
-    from paper.method.retrieval import StubEmbedder
-    from paper.method.verifier import StubVerifierBackend
-
-    class _StubVerifierShim(StubVerifierBackend):
-        def __init__(self, *args, **kwargs) -> None:
-            kwargs.pop("model", None)
-            super().__init__(*args, **kwargs)
+    from skillq.paper_mode import bridge as bridge_mod
+    from skillq.method.attribution import StubAttributionBackend
+    from skillq.method.retrieval import StubEmbedder
 
     class _StubEmbedderShim(StubEmbedder):
         def __init__(self, *args, **kwargs) -> None:
@@ -71,23 +65,18 @@ def _patch_litellm_backends(monkeypatch) -> None:
             super().__init__(*args, **kwargs)
 
     monkeypatch.setattr(bridge_mod, "LiteLLMEmbedder", _StubEmbedderShim)
-    monkeypatch.setattr(bridge_mod, "LiteLLMVerifierBackend", _StubVerifierShim)
     monkeypatch.setattr(bridge_mod, "LiteLLMAttributionBackend", _StubAttributionShim)
 
 
 def _patch_extractor_to_return(monkeypatch, skill: Skill | None) -> None:
-    """Replace :class:`SkillExtractor.extract` and ``extract_batch``
-    with coroutines that immediately return ``skill`` (no subprocess).
+    """Replace :class:`SkillExtractor.extract_batch` with a coroutine
+    that immediately returns ``skill`` (no subprocess).
     """
-    from paper.paper_mode import bridge as bridge_mod
-
-    async def fake_extract(self, **kwargs) -> Skill | None:
-        return skill
+    from skillq.paper_mode import bridge as bridge_mod
 
     async def fake_extract_batch(self, **kwargs) -> Skill | None:
         return skill
 
-    monkeypatch.setattr(bridge_mod.SkillExtractor, "extract", fake_extract)
     monkeypatch.setattr(bridge_mod.SkillExtractor, "extract_batch", fake_extract_batch)
 
 
@@ -145,8 +134,8 @@ def test_bridge_extracts_on_success_no_skill_seen(tmp_path: Path, monkeypatch):
     _patch_extractor_to_return(monkeypatch, new_skill)
 
     # Make the attribution analyzer return SUCCESS_NO_SKILL_SEEN
-    from paper.paper_mode import bridge as bridge_mod
-    from paper.method.attribution import Attribution, StubAttributionBackend
+    from skillq.paper_mode import bridge as bridge_mod
+    from skillq.method.attribution import Attribution, StubAttributionBackend
 
     def returning_no_skill_seen(self, **kwargs):
         return TrialAttribution(
@@ -189,12 +178,12 @@ def test_bridge_skips_extract_on_failure(tmp_path: Path, monkeypatch):
     called = {"n": 0}
     new_skill = Skill(skill_id="x", body="x" * 200)
 
-    async def fake_extract(self, **kwargs):
+    async def fake_extract_batch(self, **kwargs):
         called["n"] += 1
         return new_skill
 
-    from paper.paper_mode import bridge as bridge_mod
-    monkeypatch.setattr(bridge_mod.SkillExtractor, "extract", fake_extract)
+    from skillq.paper_mode import bridge as bridge_mod
+    monkeypatch.setattr(bridge_mod.SkillExtractor, "extract_batch", fake_extract_batch)
     monkeypatch.setattr(
         bridge_mod.AttributionAnalyzer,
         "analyze",
@@ -227,12 +216,12 @@ def test_bridge_skips_extract_on_skill_used(tmp_path: Path, monkeypatch):
     called = {"n": 0}
     new_skill = Skill(skill_id="x", body="x" * 200)
 
-    async def fake_extract(self, **kwargs):
+    async def fake_extract_batch(self, **kwargs):
         called["n"] += 1
         return new_skill
 
-    from paper.paper_mode import bridge as bridge_mod
-    monkeypatch.setattr(bridge_mod.SkillExtractor, "extract", fake_extract)
+    from skillq.paper_mode import bridge as bridge_mod
+    monkeypatch.setattr(bridge_mod.SkillExtractor, "extract_batch", fake_extract_batch)
     monkeypatch.setattr(
         bridge_mod.AttributionAnalyzer,
         "analyze",
@@ -272,7 +261,7 @@ def test_bridge_skips_extract_when_disabled(tmp_path: Path, monkeypatch):
     _seed_lib(method)
     job = _MockJob()
 
-    from paper.paper_mode import bridge as bridge_mod
+    from skillq.paper_mode import bridge as bridge_mod
 
     bridge_mod.attach_paper_registers(job, method)
     # The hook closes over an `extractor` var; if it's None the extract
@@ -292,7 +281,7 @@ def test_viewed_but_not_used_bumps_q(tmp_path: Path, monkeypatch):
     _patch_litellm_backends(monkeypatch)
     _patch_extractor_to_return(monkeypatch, None)
 
-    from paper.paper_mode import bridge as bridge_mod
+    from skillq.paper_mode import bridge as bridge_mod
 
     def returning_viewed(self, **kwargs):
         # Use a plain dict for the subtask; TrialAttribution is
@@ -334,3 +323,112 @@ def test_viewed_but_not_used_bumps_q(tmp_path: Path, monkeypatch):
     # The Q-bump is +0.05; the regular β-Q update also runs.
     # We just check that the bump is positive.
     assert all(q > 0 for q in seed_qs)
+
+
+# ---------------------------------------------------------------------------
+# Rule 5: failure + no good skill → new skill from failure attribution
+# ---------------------------------------------------------------------------
+def test_bridge_extracts_on_failure_no_skill(tmp_path: Path, monkeypatch):
+    """r_task=0 + FAIL_AGENT_ISSUE + no skill has Q > theta_consider_used
+    + non-empty knowledge_to_extract → extractor called with mode='failure'.
+
+    Mirrors test_bridge_extracts_on_success_no_skill_seen but on the
+    failure path.
+    """
+    _patch_litellm_backends(monkeypatch)
+    # Set extract_mode on the mock Skill to mirror what the real
+    # SkillExtractor would write (see paper/method/extractor.py).
+    new_skill = Skill(
+        skill_id="guard-rail",
+        body="x" * 200,
+        metadata={"source": "skillq_extract", "extract_mode": "failure"},
+    )
+    _patch_extractor_to_return(monkeypatch, new_skill)
+
+    from skillq.paper_mode import bridge as bridge_mod
+    from skillq.method.attribution import Attribution, TrialAttribution
+
+    def returning_failure(self, **kwargs):
+        return TrialAttribution(
+            overall_attribution=Attribution.FAIL_AGENT_ISSUE,
+            overall_rationale="test",
+            knowledge_to_extract="avoid doing X without first checking Y",
+        )
+
+    monkeypatch.setattr(
+        bridge_mod.AttributionAnalyzer, "analyze", returning_failure
+    )
+
+    method = MethodConfig(
+        library_root=tmp_path / "lib",
+        b_max=4,
+        n_explore=2,
+        enable_auto_extract=True,
+        seed_initial_q=0.0,
+        extract_every_n_trials=1,       # flush on the first qualifying trial
+        theta_consider_used=0.0,
+        # Disable the incremental-edit path (it would call the LLM
+        # to propose a SKILL.md edit; we don't have a stub for
+        # that in this test file).
+        theta_near_miss=1.0,
+    )
+    _seed_lib(method)
+    job = _MockJob()
+    bridge_mod.attach_paper_registers(job, method)
+
+    result = _fake_trial_result(reward=0.0, trial_uri=str(tmp_path / "trial-x"))
+    event = _fake_hook_event("trial-x", result=result)
+    asyncio.run(job.on_ended(event))
+
+    state = json.loads(method.resolved_state_path().read_text(encoding="utf-8"))
+    assert "guard-rail" in state["library"]["skills"]
+    # The new skill was created from a failure path, so its
+    # extract_mode metadata should be "failure".
+    new_meta = state["library"]["skills"]["guard-rail"]["metadata"]
+    assert new_meta.get("extract_mode") == "failure"
+
+
+def test_bridge_skips_extract_on_failure_when_skill_exists(tmp_path: Path, monkeypatch):
+    """r_task=0 but a skill already has Q > theta_consider_used → no
+    new skill (existing skill is good enough; the bridge will try
+    the incremental edit path instead).
+    """
+    _patch_litellm_backends(monkeypatch)
+    called = {"n": 0}
+    new_skill = Skill(skill_id="x", body="x" * 200)
+
+    async def fake_extract_batch(self, **kwargs):
+        called["n"] += 1
+        return new_skill
+
+    from skillq.paper_mode import bridge as bridge_mod
+    from skillq.method.attribution import Attribution, TrialAttribution
+
+    monkeypatch.setattr(bridge_mod.SkillExtractor, "extract_batch", fake_extract_batch)
+    monkeypatch.setattr(
+        bridge_mod.AttributionAnalyzer,
+        "analyze",
+        lambda self, **kwargs: TrialAttribution(
+            overall_attribution=Attribution.FAIL_AGENT_ISSUE,
+            overall_rationale="won't extract",
+            knowledge_to_extract="x",
+        ),
+    )
+
+    method = MethodConfig(
+        library_root=tmp_path / "lib",
+        b_max=4,
+        n_explore=2,
+        enable_auto_extract=True,
+        seed_initial_q=0.5,  # seed Q > theta_consider_used (default 0.3)
+        extract_every_n_trials=1,
+    )
+    _seed_lib(method)
+    job = _MockJob()
+    bridge_mod.attach_paper_registers(job, method)
+
+    result = _fake_trial_result(reward=0.0, trial_uri=str(tmp_path / "trial-x"))
+    event = _fake_hook_event("trial-x", result=result)
+    asyncio.run(job.on_ended(event))
+
+    assert called["n"] == 0

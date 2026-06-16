@@ -17,7 +17,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from paper.paper_mode.config import MethodConfig  # noqa: E402
+from skillq.paper_mode.config import MethodConfig  # noqa: E402
 
 BETA_VALUES = [0.0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0]
 

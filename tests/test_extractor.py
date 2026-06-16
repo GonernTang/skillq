@@ -3,6 +3,12 @@
 The extractor is a ``claude --print`` subprocess wrapper, so the tests
 stub the subprocess at the ``asyncio.to_thread`` boundary. We don't
 spawn a real Claude CLI in unit tests.
+
+Note: the bridge only ever calls :meth:`SkillExtractor.extract_batch`
+(the per-trial ``extract()`` method was removed in the cleanup —
+per-trial prompts produced too task-specific skills). The tests
+below wrap a single trial into a one-element list and call
+``extract_batch``.
 """
 
 from __future__ import annotations
@@ -15,7 +21,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from paper.method.extractor import SkillExtractor  # noqa: E402
+from skillq.method.extractor import SkillExtractor  # noqa: E402
 
 
 def _fake_proc(*, returncode: int = 0, stdout: str = "", stderr: str = ""):
@@ -24,6 +30,31 @@ def _fake_proc(*, returncode: int = 0, stdout: str = "", stderr: str = ""):
     proc.stdout = stdout
     proc.stderr = stderr
     return proc
+
+
+async def _call_extractor_batch(
+    extractor: SkillExtractor,
+    *,
+    task: str,
+    knowledge: str,
+    intent_hash: int,
+    sandbox_root: Path,
+    available_skill_names: list[str] | None = None,
+):
+    """Wrap the (task, knowledge) record into the one-trial list
+    shape :meth:`SkillExtractor.extract_batch` expects."""
+    return await extractor.extract_batch(
+        trials=[
+            {
+                "task": task,
+                "knowledge": knowledge,
+                "intent_hash": intent_hash,
+            }
+        ],
+        available_skill_names=available_skill_names,
+        sandbox_root=sandbox_root,
+        aggregated_intent_hash=intent_hash,
+    )
 
 
 def test_extract_happy_path_writes_skill_md(tmp_path: Path, monkeypatch):
@@ -55,7 +86,8 @@ def test_extract_happy_path_writes_skill_md(tmp_path: Path, monkeypatch):
 
     extractor = SkillExtractor(claude_cli="claude", timeout_sec=10)
     skill = asyncio.run(
-        extractor.extract(
+        _call_extractor_batch(
+            extractor,
             task="parse fixed-width COBOL records",
             knowledge="Use awk to slice bytes 1-6 of each line.",
             intent_hash=0xDEADBEEF,
@@ -66,7 +98,7 @@ def test_extract_happy_path_writes_skill_md(tmp_path: Path, monkeypatch):
     assert skill is not None
     assert skill.skill_id == "parse-cobol"
     assert "awk" in skill.body
-    assert skill.metadata["source"] == "mg_paper_extract"
+    assert skill.metadata["source"] == "skillq_extract"
     assert skill.metadata["intent_hash"] == "00000000deadbeef"
     assert skill.metadata["has_scripts"] is False
 
@@ -83,8 +115,12 @@ def test_extract_rejects_undersized_body(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("asyncio.to_thread", fake_to_thread)
     extractor = SkillExtractor(body_min_tokens=50, body_max_tokens=2000)
     skill = asyncio.run(
-        extractor.extract(
-            task="t", knowledge="k", intent_hash=1, sandbox_root=tmp_path
+        _call_extractor_batch(
+            extractor,
+            task="t",
+            knowledge="k",
+            intent_hash=1,
+            sandbox_root=tmp_path,
         )
     )
     assert skill is None
@@ -104,8 +140,12 @@ def test_extract_rejects_oversized_body(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("asyncio.to_thread", fake_to_thread)
     extractor = SkillExtractor(body_min_tokens=50, body_max_tokens=2000)
     skill = asyncio.run(
-        extractor.extract(
-            task="t", knowledge="k", intent_hash=1, sandbox_root=tmp_path
+        _call_extractor_batch(
+            extractor,
+            task="t",
+            knowledge="k",
+            intent_hash=1,
+            sandbox_root=tmp_path,
         )
     )
     assert skill is None
@@ -127,8 +167,12 @@ def test_extract_rejects_bad_name_length(tmp_path: Path, monkeypatch):
         name_min_words=1, name_max_words=4, body_min_tokens=10, body_max_tokens=5000
     )
     skill = asyncio.run(
-        extractor.extract(
-            task="t", knowledge="k", intent_hash=1, sandbox_root=tmp_path
+        _call_extractor_batch(
+            extractor,
+            task="t",
+            knowledge="k",
+            intent_hash=1,
+            sandbox_root=tmp_path,
         )
     )
     assert skill is None
@@ -141,8 +185,12 @@ def test_extract_returns_none_on_subprocess_failure(tmp_path: Path, monkeypatch)
     monkeypatch.setattr("asyncio.to_thread", fake_to_thread)
     extractor = SkillExtractor()
     skill = asyncio.run(
-        extractor.extract(
-            task="t", knowledge="k", intent_hash=1, sandbox_root=tmp_path
+        _call_extractor_batch(
+            extractor,
+            task="t",
+            knowledge="k",
+            intent_hash=1,
+            sandbox_root=tmp_path,
         )
     )
     assert skill is None
@@ -157,8 +205,12 @@ def test_extract_returns_none_on_timeout(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("asyncio.to_thread", fake_to_thread)
     extractor = SkillExtractor()
     skill = asyncio.run(
-        extractor.extract(
-            task="t", knowledge="k", intent_hash=1, sandbox_root=tmp_path
+        _call_extractor_batch(
+            extractor,
+            task="t",
+            knowledge="k",
+            intent_hash=1,
+            sandbox_root=tmp_path,
         )
     )
     assert skill is None
@@ -171,8 +223,12 @@ def test_extract_returns_none_on_missing_claude_cli(tmp_path: Path, monkeypatch)
     monkeypatch.setattr("asyncio.to_thread", fake_to_thread)
     extractor = SkillExtractor()
     skill = asyncio.run(
-        extractor.extract(
-            task="t", knowledge="k", intent_hash=1, sandbox_root=tmp_path
+        _call_extractor_batch(
+            extractor,
+            task="t",
+            knowledge="k",
+            intent_hash=1,
+            sandbox_root=tmp_path,
         )
     )
     assert skill is None
