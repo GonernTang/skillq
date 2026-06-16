@@ -1,4 +1,4 @@
-"""``paper/experiments/kappa_sweep.py`` — inter-rater agreement audit.
+"""``skillq/experiments/run/kappa_sweep.py`` — inter-rater agreement audit.
 
 The paper's Sec. 4.7 reports κ agreement across three verifier
 backends. This driver runs the same (50) skill-delta audits with

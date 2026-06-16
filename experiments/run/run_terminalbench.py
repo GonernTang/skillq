@@ -1,4 +1,4 @@
-"""``paper/experiments/run_terminalbench.py`` — main TB 2.0 / TB Pro driver.
+"""``skillq/experiments/run/run_terminalbench.py`` — main TB 2.0 / TB Pro driver.
 
 Usage:
 

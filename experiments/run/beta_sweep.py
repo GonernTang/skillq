@@ -1,4 +1,4 @@
-"""``paper/experiments/beta_sweep.py`` — sweep the β hyperparameter of Eq. 6.
+"""``skillq/experiments/run/beta_sweep.py`` — sweep the β hyperparameter of Eq. 6.
 
 The paper's Sec. 4.5 reports a sweet spot at ``β ≈ 0.3-0.5``; this
 driver runs the same Terminal-Bench 2.0 job with seven β values

@@ -49,8 +49,9 @@ from datetime import datetime
 from pathlib import Path
 
 # Vendored skillsvote package root. The prebuild script lives at
-# ``$SkillQ_ROOT/prebuild_images.py``. Override via ``$SkillQ_ROOT``
-# env var or ``--skillsvote-root`` CLI flag.
+# ``$SkillQ_ROOT/experiments/prebuild/prebuild_images.py`` (mirrors
+# the upstream ``lqrl/scripts/prebuild_images.py`` location).
+# Override via ``$SkillQ_ROOT`` env var or ``--skillsvote-root`` CLI flag.
 SkillQ_ROOT = Path(os.environ.get("SkillQ_ROOT", "./skillsvote"))
 
 
@@ -118,7 +119,7 @@ def _run_command(args: argparse.Namespace) -> int:
         )
         return 2
 
-    prebuild_script = skillsvote_root / "prebuild_images.py"
+    prebuild_script = skillsvote_root / "experiments" / "prebuild" / "prebuild_images.py"
     if not prebuild_script.exists():
         print(
             f"[skillq prebuild] prebuild script not found at {prebuild_script}.",

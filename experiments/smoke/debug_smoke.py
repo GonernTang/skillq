@@ -9,8 +9,8 @@ inspect ``echo $PATH``, ``env``, etc.
 
 Usage::
 
-    # terminal A: run the debug smoke (it blocks for 5 min at the end)
-    bash experiments/smoke/run_debug.sh
+    # terminal A: run the smoke trial (it blocks at the end of the trial)
+    bash experiments/smoke/run_smoke.sh
 
     # terminal B: while terminal A is still alive
     docker ps                                       # find the trial container

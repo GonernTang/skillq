@@ -110,17 +110,17 @@ prebuild 逻辑**(paper 的 prebuild_cli.py 内部 `subprocess.run` 调 lqrl 的
 
 ## 1. 直接用现成 config 跑(最快)
 
-`paper/experiments/configs/` 下已经准备好三份 paper-mode YAML:
+`experiments/configs/` 下已经准备好三份 paper-mode YAML:
 
 ```bash
 # Terminal-Bench 2.0(89 tasks,默认全跑)
-uv run skillq paper run -c paper/experiments/configs/tb2_skillq.yaml
+uv run skillq paper run -c experiments/configs/tb2_skillq.yaml
 
 # Terminal-Bench Pro(48 tasks,默认 1 个 task 做冒烟)
-uv run skillq paper run -c paper/experiments/configs/tb_pro_skillq.yaml
+uv run skillq paper run -c experiments/configs/tb_pro_skillq.yaml
 
 # SWE-Bench Pro(700+ tasks,默认 2 个 instance 做冒烟)
-uv run skillq paper run -c paper/experiments/configs/swebenchpro_skillq.yaml
+uv run skillq paper run -c experiments/configs/swebenchpro_skillq.yaml
 ```
 
 **SkillsVote 模式**只是入口不同,配置类似:
@@ -176,14 +176,14 @@ uv run python -m paper.experiments.run_benchmark \
 1. 把 benchmark 默认配置(dataset name/version + 合理并发度)合并进
    JobConfig;
 2. 根据 `--mode` 注入正确的 agent `import_path` 和 `kwargs`;
-3. 写 YAML 到 `paper/experiments/configs/<benchmark>_<mode>.yaml`;
+3. 写 YAML 到 `experiments/configs/<benchmark>_<mode>.yaml`;
 4. 调用 `uv run skillq <mode> run -c <yaml>` 启动。
 
 ---
 
 ## 3. 手工写 YAML(最高自由度)
 
-参考 `paper/experiments/configs/tb2_skillq.yaml` 的结构:
+参考 `experiments/configs/tb2_skillq.yaml` 的结构:
 
 ```yaml
 jobs_dir: output
@@ -248,16 +248,16 @@ uv run harbor view output/      # Harbor 自带 viewer
 
 ## 5. 跑多 seed / 跑 β sweep / 跑 ablation
 
-`paper/experiments/` 下还有三个 driver:
+`experiments/` 下还有三个 driver:
 
 ```bash
 # β sweep: 7 个 β 值 × 同一份 job config
 uv run python -m paper.experiments.beta_sweep \
-    --job-config paper/experiments/configs/tb2_skillq.yaml
+    --job-config experiments/configs/tb2_skillq.yaml
 
 # Ablation: 6 个 cell(with/without UCB, with/without verifier, with/without near-miss)
 uv run python -m paper.experiments.ablation \
-    --job-config paper/experiments/configs/tb2_skillq.yaml
+    --job-config experiments/configs/tb2_skillq.yaml
 
 # Inter-rater κ: 用三个 verifier 后端跑同样的 (old, new) 对
 uv run python -m paper.experiments.kappa_sweep \

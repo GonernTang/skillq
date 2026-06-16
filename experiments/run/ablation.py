@@ -1,4 +1,4 @@
-"""``paper/experiments/ablation.py`` — ablation matrix for the four-layer method.
+"""``skillq/experiments/run/ablation.py`` — ablation matrix for the four-layer method.
 
 Each cell of the ablation matrix toggles a single component of the
 paper method. The driver writes the corresponding ``MethodConfig`` to
