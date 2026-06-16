@@ -1,8 +1,56 @@
 # Changelog
 
-All notable changes to `paper` (the branch-style entrypoint that re-uses
-the upstream `skills_vote` lifecycle AND runs the LQRL paper's
+All notable changes to `skillq` (the branch-style entrypoint that re-uses
+the upstream `skills_vote` lifecycle AND runs the SkillQ paper's
 four-layer method on top of Harbor) are documented here.
+
+> **2026-06-16 — Decouple from upstream `lqrl`**: The repository was
+> previously a sibling of `/home/gonern/workspace/lqrl` and depended
+> on it as an editable Python dependency (`skills_vote`) plus a
+> sibling-repo source for `prebuild_images.py` and benchmark input
+> data. After this change:
+>
+> - `lqrl/src/skills_vote/` is **vendored in-tree** at
+>   `./skillsvote/` (572KB; 30 Python files). `pyproject.toml`
+>   points `skills_vote` at `./skillsvote` instead of `../lqrl`.
+> - `prebuild_images.py` is vendored at `./skillsvote/prebuild_images.py`.
+>   The `skillq prebuild` wrapper CLI no longer reaches into a sibling
+>   repo (`--lqrl-root` flag renamed to `--skillsvote-root`,
+>   default `./skillsvote`).
+> - The benchmark input data path is now configurable via
+>   `MethodConfig.benchmark_input_path` (or `$SkillQ_INPUT` env var,
+>   or `./input` fallback) instead of the hard-coded
+>   `/home/gonern/workspace/lqrl/input/terminal-bench`.
+> - `PaperClaudeCodeAgent` (which inherited from the upstream
+>   `SkillsVoteClaudeCode`) is replaced by `SkillQClaudeCodeAgent`,
+>   a direct subclass of `harbor.agents.installed.claude_code.ClaudeCode`
+>   with no upstream base class. The legacy `PaperClaudeCodeAgent`
+>   name is kept as an alias for backwards compatibility.
+> - The `--mode lqrl` argparse choice in experiment runners was
+>   renamed to `--mode skillsvote` to match the CLI subcommand
+>   (`skillq skillsvote`).
+>
+> Result: `uv sync` resolves everything from `./skillsvote/` and
+> the project no longer depends on any sibling-repo source path.
+
+> **2026-06-16 — Project rename**: The repo was renamed from
+> `mg` → `skillq` and the project rename cascaded through:
+> - Python package: `paper/` → `skillq/` (`paper_mode` and
+>   `skillsvote_mode` sub-packages kept their names as logical
+>   sub-modes; class names like `PaperClaudeCodeAgent` and
+>   `MethodConfig` are unchanged).
+> - CLI entry point: `paper` → `skillq`
+>   (`uv run paper paper run …` is now `uv run skillq paper run …`).
+> - Env-var prefix: `MG_*` → `SKILLQ_*`.
+> - Path prefixes: `.mg_library/`, `mg_state/`, `mg_skills/`,
+>   `mg_skill_hook.py`, `mg_skill_calls.jsonl`,
+>   `mg_extract_<hash>/`, `mg_lib.json`, `mg_q_table.json`,
+>   `mg_emb_cache.json` → `skillq_*`.
+> - The user's paper was also renamed (LQRL → SkillQ); references
+>   to the upstream `lqrl` package (sibling at `../lqrl`,
+>   `LQRL_ROOT` env var, `implementation_guide/lqrl/...` skeleton
+>   citations) are **preserved** because they point at an
+>   external dependency.
 
 This first entry covers everything built during the initial
 implementation: the two-mode dispatch, the paper four-layer
@@ -142,7 +190,7 @@ and the developer ergonomics (`.env`, `prebuild`, `RUNNING.md`).
   `--cfg-path`, `--image-tag`, `--max-workers`, `--lqrl-root`,
   `--download-only`.
 
-#### `integration/skills/paper-method/`
+#### `integration/skills/skillq-method/`
 
 - `SKILL.md` — Claude-Code-style skill description for the
   paper-mode lifecycle. Reads only this file first, runs
@@ -167,8 +215,8 @@ and the developer ergonomics (`.env`, `prebuild`, `RUNNING.md`).
 - `kappa_sweep.py` — inter-rater κ audit with 3 verifier
   backends.
 - `run_terminalbench.py` — older stub kept for reference.
-- `configs/tb2_paper.yaml` / `tb_pro_paper.yaml` /
-  `swebenchpro_paper.yaml` — three ready-to-run paper-mode
+- `configs/tb2_skillq.yaml` / `tb_pro_skillq.yaml` /
+  `swebenchpro_skillq.yaml` — three ready-to-run paper-mode
   templates.
 - `configs/tb_pro_lqrl.yaml` — auto-generated lqrl-mode
   template.
@@ -180,7 +228,7 @@ and the developer ergonomics (`.env`, `prebuild`, `RUNNING.md`).
 
 #### `tests/` — 45 unit tests, all passing
 
-- `test_paper_method_layers.py` — 14 paper-method unit
+- `test_skillq_method_layers.py` — 14 skillq-method unit
   tests (the same 14 from `implementation_guide/lqrl/tests/
   test_core.py`, ported with renamed classes).
 - `test_paper_hooks.py` — QlibState round-trip, bridge

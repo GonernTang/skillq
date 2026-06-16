@@ -1355,45 +1355,6 @@ wheels = [
 ]
 
 [[package]]
-name = "paper"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "claude-agent-sdk" },
-    { name = "harbor" },
-    { name = "litellm" },
-    { name = "omegaconf" },
-    { name = "pydantic" },
-    { name = "python-dotenv" },
-    { name = "skills-vote" },
-    { name = "tomlkit" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "claude-agent-sdk", specifier = ">=0.1.50,<0.2.0" },
-    { name = "harbor", specifier = "==0.5.0" },
-    { name = "litellm", specifier = ">=1.40.0,<2.0.0" },
-    { name = "omegaconf", specifier = "==2.3.0" },
-    { name = "pydantic", specifier = ">=2.13.3,<3.0.0" },
-    { name = "python-dotenv", specifier = ">=1.2.2,<2.0.0" },
-    { name = "skills-vote", editable = "../lqrl" },
-    { name = "tomlkit", specifier = ">=0.14.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=8.0.0" },
-    { name = "pytest-asyncio", specifier = ">=0.23.0" },
-]
-
-[[package]]
 name = "pathspec"
 version = "1.1.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2171,9 +2132,48 @@ wheels = [
 ]
 
 [[package]]
+name = "skillq"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "claude-agent-sdk" },
+    { name = "harbor" },
+    { name = "litellm" },
+    { name = "omegaconf" },
+    { name = "pydantic" },
+    { name = "python-dotenv" },
+    { name = "skills-vote" },
+    { name = "tomlkit" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "claude-agent-sdk", specifier = ">=0.1.50,<0.2.0" },
+    { name = "harbor", specifier = "==0.5.0" },
+    { name = "litellm", specifier = ">=1.40.0,<2.0.0" },
+    { name = "omegaconf", specifier = "==2.3.0" },
+    { name = "pydantic", specifier = ">=2.13.3,<3.0.0" },
+    { name = "python-dotenv", specifier = ">=1.2.2,<2.0.0" },
+    { name = "skills-vote", editable = "skillsvote" },
+    { name = "tomlkit", specifier = ">=0.14.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", specifier = ">=0.23.0" },
+]
+
+[[package]]
 name = "skills-vote"
 version = "1.2.0"
-source = { editable = "../lqrl" }
+source = { editable = "skillsvote" }
 dependencies = [
     { name = "claude-agent-sdk" },
     { name = "harbor" },
