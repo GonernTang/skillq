@@ -52,6 +52,15 @@ class SkillQClaudeCodeAgent(ClaudeCode):
     recommend step, no skill whitelisting, no plugin-dir handling
     — the PreToolUse hook in :mod:`skillq.paper_mode.hook` does
     the retrieval ranking instead.
+
+    The :meth:`setup` override mirrors
+    ``skills_vote.harbor.claude_code.SkillsVoteClaudeCode.setup``:
+    it skips Harbor's default ``curl https://claude.ai/install.sh``
+    install path (which fails for offline / prebuilt images) and
+    instead just verifies the preinstalled CLI with
+    ``claude --version``. Required because every
+    ``skills_vote/<task>:<tag>`` prebuilt image already has the
+    Claude Code CLI baked in.
     """
 
     @staticmethod
@@ -60,6 +69,47 @@ class SkillQClaudeCodeAgent(ClaudeCode):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
+
+    async def setup(self, environment: "BaseEnvironment") -> None:
+        """Skip Harbor's install path; verify the preinstalled CLI."""
+        await environment.exec(command="mkdir -p /installed-agent", user="root")
+
+        setup_dir = self.logs_dir / "setup"
+        setup_dir.mkdir(parents=True, exist_ok=True)
+        (setup_dir / "mode.txt").write_text(
+            "skip install script; use preinstalled claude CLI in image\n",
+            encoding="utf-8",
+        )
+
+        if self._version is not None:
+            return
+
+        version_command = self.get_version_command()
+        if version_command is None:
+            return
+
+        try:
+            result = await environment.exec(command=version_command)
+        except Exception as exc:
+            (setup_dir / "version-error.txt").write_text(str(exc), encoding="utf-8")
+            return
+
+        (setup_dir / "version-return-code.txt").write_text(
+            str(result.return_code),
+            encoding="utf-8",
+        )
+        if result.stdout:
+            (setup_dir / "version-stdout.txt").write_text(
+                result.stdout,
+                encoding="utf-8",
+            )
+        if result.stderr:
+            (setup_dir / "version-stderr.txt").write_text(
+                result.stderr,
+                encoding="utf-8",
+            )
+        if result.return_code == 0 and result.stdout:
+            self._version = self.parse_version(result.stdout)
 
     async def run(
         self,
