@@ -1,0 +1,40 @@
+# MethodConfig for hook-mode (Method B) configure-git-webserver smoke.
+#
+# Differences from method_git_smoke.yaml:
+#   - retrieval_mode: "hook"     (force PreToolUse hook path, not auto/agentic)
+#   - user_claude_md_path: ...   (bridge appends skillq snippet to a CLAUDE.md
+#                                and bind-mounts it at $CLAUDE_CONFIG_DIR/CLAUDE.md
+#                                — required for the agent to know about Skill())
+#   - hook_top_k: 3              (default, just for clarity)
+#   - hook_lambda / hook_c_ucb:  default 0.5 / 0.5
+
+library_root: /home/gonern/workspace/skillq/output/tb2_git_smoke_hook/.skillq_library
+state_path: /home/gonern/workspace/skillq/output/tb2_git_smoke_hook/.skillq_library/.state/method_state.json
+# Plan D: auto-seed library from disk on first boot. Same dir the
+# smoke config bind-mounts into the container at /skills, so the
+# paper method's library and the agent's Skill tool see the same
+# 32 skills.
+seed_skills_dir: /home/gonern/workspace/skillq/experiments/smoke/seed_skills
+retrieval_mode: hook
+hook_top_k: 3
+hook_lambda: 0.5
+hook_c_ucb: 0.5
+# Make the bridge synthesize a CLAUDE.md containing the skillq-method
+# instructions and bind-mount it. The path doesn't have to exist —
+# the bridge creates CLAUDE.md.merged in the trial dir even if
+# user_path doesn't exist.
+user_claude_md_path: /home/gonern/workspace/skillq/experiments/smoke/_user_claude_md_stub.md
+attribution_model: anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-flash}
+# Per-subtask LLM judge (used by bridge._q_update_from_subtask).
+# Default in MethodConfig is "openai/gpt-4o" which would require
+# OPENAI_API_KEY; this smoke env only has ANTHROPIC_API_KEY, so
+# reuse the same model the agent uses. The judge just needs a
+# chat model — model identity doesn't affect Eq. 6.
+q_subtask_verifier_model: anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-flash}
+# Plan D (cont.): pre-compute emb_cache for the seeded skills.
+# Our .env points EMBEDDING_BASE_URL at DashScope (OpenAI-compatible),
+# so we need the ``openai/`` prefix for litellm to pick the right
+# provider. The model name is whatever EMBEDDING_MODEL is set to
+# in .env (default: text-embedding-v4, dim=1024).
+embedder_model: openai/${oc.env:EMBEDDING_MODEL,text-embedding-v4}
+embedder_dim: 1024

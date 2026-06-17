@@ -1,0 +1,51 @@
+# Smoke-test config: ONE TB 2.0 task (configure-git-webserver), paper mode,
+# with the full lqrl skill library seeded into /skills.
+#
+# Task: configure-git-webserver (TB 2.0, hard, 15-min expert time)
+#   - prebuilt image:  skills_vote/configure-git-webserver:20260604
+#   - dataset cache:   input/terminal-bench/configure-git-webserver  (symlinked
+#                       to lqrl's tree so we don't re-export)
+#   - seed skills:     experiments/smoke/seed_skills/  (36 lqrl skills + stub)
+#
+# Why configure-git-webserver:  clearly matches git / nginx / sysadmin skills
+# in the seed library — we can see whether paper_retrieval surfaces them and
+# whether the agent actually consumes them.
+
+jobs_dir: output
+job_name: tb2_git_smoke_with_skills
+n_attempts: 1
+n_concurrent_trials: 1
+quiet: false
+retry:
+  max_retries: 0
+  exclude_exceptions:
+    - VerifierTimeoutError
+    - RewardFileNotFoundError
+    - RewardFileEmptyError
+    - VerifierOutputParseError
+agent_timeout_multiplier: 4.0
+environment:
+  type: docker
+  docker_image: skills_vote/configure-git-webserver:20260604
+  force_build: false
+  delete: false
+  mounts_json:
+    - type: bind
+      source: /home/gonern/workspace/skillq/experiments/smoke/seed_skills
+      target: /skills
+      read_only: true
+agents:
+  - import_path: skillq.paper_mode.agent:SkillQClaudeCodeAgent
+    model_name: ${oc.env:ANTHROPIC_MODEL,anthropic/claude-sonnet-4-5}
+    kwargs:
+      recommend: null
+      paper_retrieval:
+        enabled: true
+        k1: 10
+        k2: 3
+        c_ucb: 0.5
+        lambda_: 0.5
+datasets:
+  - path: ${oc.env:SkillQ_INPUT,./input/terminal-bench}
+    task_names:
+      - configure-git-webserver
