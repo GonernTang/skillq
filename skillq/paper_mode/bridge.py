@@ -852,6 +852,7 @@ def attach_paper_registers(
             task=intent_text,
             trial_dir=trial_dir,
             skills_root=_find_skills_dir(event),
+            r_task=r_task,
         )
         knowledge = attribution.knowledge_to_extract.strip()
         triggered = False

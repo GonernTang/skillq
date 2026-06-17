@@ -124,6 +124,34 @@ attribute the trial's outcome to one of six categories AND, when
 the trial succeeded, extract the *reusable procedural knowledge*
 the agent discovered.
 
+## Trial outcome (GROUND TRUTH from the verifier)
+
+r_task = {r_task}
+  - 1 = the trial-level verifier confirmed the agent solved the task
+  - 0 = the trial-level verifier reported the agent did NOT solve the task
+
+## HARD CONSTRAINTS — violations make the verdict unusable
+
+- If r_task = 1: ``overall_attribution`` MUST be one of the three
+  ``success_*`` enum values. NEVER return a ``fail_*`` value.
+  Choose between:
+    - ``success_skill_used``: a skill materially shaped the solution
+    - ``success_viewed_skill_but_not_used``: agent viewed skills but
+      solved via own exploration
+    - ``success_no_skill_seen``: agent solved via own exploration
+      without even viewing any relevant skill
+- If r_task = 0: ``overall_attribution`` MUST be one of the three
+  ``fail_*`` enum values. NEVER return a ``success_*`` value.
+  Choose between:
+    - ``fail_skill_issue``: a skill the agent relied on was wrong
+    - ``fail_agent_issue``: agent reasoning / action error
+    - ``fail_env_issue``: environment / external / network error
+- ``knowledge_to_extract`` MUST be non-empty when r_task = 1 (a
+  reusable procedure is the whole point of this attribution step).
+  When r_task = 0, also provide a non-empty knowledge string
+  unless the failure was strictly env-only (``fail_env_issue``);
+  Rule 5 needs a guard-rail to extract.
+
 ## Available skills
 
 The agent had access to the following skill folders (paths relative
@@ -178,9 +206,11 @@ Return a JSON object with these fields:
       capability, used_for}}` (may be empty)
 - `knowledge_to_extract`: a *concrete* procedural description of
   what made the trial succeed (or, for failures, what went
-  wrong). Empty string if nothing reusable. DO NOT include
-  task-specific facts, paths, or one-off values; only the
-  reusable *procedure*.
+  wrong). MUST be non-empty when r_task = 1; the whole point of
+  this step is to harvest a reusable procedure. For r_task = 0,
+  also provide a non-empty string unless the failure was strictly
+  env-only. DO NOT include task-specific facts, paths, or one-off
+  values; only the reusable *procedure*.
 
 TASK INSTRUCTION
 ----------------

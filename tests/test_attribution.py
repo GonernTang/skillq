@@ -96,7 +96,7 @@ def test_analyze_reads_session_jsonl(tmp_path: Path):
     )
     analyzer = AttributionAnalyzer(backend=backend, model="m")
     attribution = analyzer.analyze(
-        task="the thing", trial_dir=trial_dir, skills_root=None
+        task="the thing", trial_dir=trial_dir, skills_root=None, r_task=1
     )
     assert attribution.overall_attribution == Attribution.SUCCESS_VIEWED_SKILL_BUT_NOT_USED
 
@@ -151,3 +151,81 @@ def test_litellm_backend_imports_only_when_called():
     backend = LiteLLMAttributionBackend(model="openai/gpt-4o")
     assert backend.model == "openai/gpt-4o"
     # No actual LLM call here — just verify the class is constructable.
+
+
+# ---------------------------------------------------------------------------
+# Consistency clamp: r_task ↔ overall_attribution invariant
+# ---------------------------------------------------------------------------
+def test_consistency_clamp_r_task_1_with_fail_enum(tmp_path: Path):
+    """r_task=1 with a fail_* enum from the LLM should be clamped to
+    SUCCESS_NO_SKILL_SEEN (most conservative success enum). This is
+    the exact bug shape that surfaced in the auto-extract smoke.
+    """
+    backend = StubAttributionBackend(
+        overall_attribution=Attribution.FAIL_AGENT_ISSUE,
+        knowledge_to_extract="",  # empty — the original bug signature
+    )
+    analyzer = AttributionAnalyzer(backend=backend, model="m")
+    attribution = analyzer.analyze(
+        task="the thing", trial_dir=tmp_path, skills_root=None, r_task=1
+    )
+    assert attribution.overall_attribution == Attribution.SUCCESS_NO_SKILL_SEEN
+    assert "[consistency-clamp]" in attribution.overall_rationale
+    # NB: knowledge is still empty here — the clamp only fixes the
+    # enum. The prompt's hard constraint is what populates
+    # knowledge_to_extract in production.
+    assert attribution.knowledge_to_extract == ""
+
+
+def test_consistency_clamp_r_task_0_with_success_enum(tmp_path: Path):
+    """r_task=0 with a success_* enum from the LLM should be clamped
+    to FAIL_SKILL_ISSUE (most conservative fail enum). Previously
+    silently ignored; now routes into Rule 5.
+    """
+    backend = StubAttributionBackend(
+        overall_attribution=Attribution.SUCCESS_SKILL_USED,
+        knowledge_to_extract="some failure-mode knowledge",
+    )
+    analyzer = AttributionAnalyzer(backend=backend, model="m")
+    attribution = analyzer.analyze(
+        task="the thing", trial_dir=tmp_path, skills_root=None, r_task=0
+    )
+    assert attribution.overall_attribution == Attribution.FAIL_SKILL_ISSUE
+    assert "[consistency-clamp]" in attribution.overall_rationale
+    # knowledge passes through (no fabrication)
+    assert attribution.knowledge_to_extract == "some failure-mode knowledge"
+
+
+def test_consistency_clamp_no_op_when_consistent(tmp_path: Path):
+    """When the LLM and r_task agree, the clamp is a no-op and the
+    rationale is *not* prefixed with the marker.
+    """
+    backend = StubAttributionBackend(
+        overall_attribution=Attribution.SUCCESS_NO_SKILL_SEEN,
+        knowledge_to_extract="x",
+    )
+    analyzer = AttributionAnalyzer(backend=backend, model="m")
+    attribution = analyzer.analyze(
+        task="t", trial_dir=tmp_path, skills_root=None, r_task=1
+    )
+    assert attribution.overall_attribution == Attribution.SUCCESS_NO_SKILL_SEEN
+    assert "[consistency-clamp]" not in attribution.overall_rationale
+
+
+def test_prompt_includes_r_task_placeholder():
+    """ATTRIBUTION_PROMPT must accept r_task and surface it in the
+    rendered string — guards against regressions where someone
+    reformats the template and drops the new placeholder.
+    """
+    from skillq.method.prompts import ATTRIBUTION_PROMPT
+
+    rendered = ATTRIBUTION_PROMPT.format(
+        r_task=1, task="x", cwd="/", trial_dir="/",
+        available_skills="[]", trace="(truncated)",
+    )
+    assert "r_task = 1" in rendered
+    rendered_0 = ATTRIBUTION_PROMPT.format(
+        r_task=0, task="x", cwd="/", trial_dir="/",
+        available_skills="[]", trace="(truncated)",
+    )
+    assert "r_task = 0" in rendered_0

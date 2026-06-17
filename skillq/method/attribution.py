@@ -164,6 +164,7 @@ class AttributionAnalyzer:
         task: str,
         trial_dir: Path,
         skills_root: Path | None = None,
+        r_task: int,
     ) -> TrialAttribution:
         """Run the attribution step for one trial.
 
@@ -173,6 +174,12 @@ class AttributionAnalyzer:
         e.g. ``$CLAUDE_CONFIG_DIR/skills``). Falls back to
         :class:`TrialAttribution` with empty subtasks if the trace
         file is missing.
+
+        ``r_task`` is the ground-truth trial reward (1 = succeeded,
+        0 = failed) from the harbor verifier. It is interpolated
+        into ``ATTRIBUTION_PROMPT`` as a hard constraint and is
+        also enforced post-parse by :meth:`_enforce_consistency` as
+        a safety net.
         """
         trace = self._load_session_trace(trial_dir)
         available_skills = self._list_available_skills(skills_root) if skills_root else {}
@@ -182,9 +189,11 @@ class AttributionAnalyzer:
             cwd=str(trial_dir),
             available_skills=json.dumps(available_skills, ensure_ascii=False, indent=2),
             trace=trace[: self.trace_max_chars],
+            r_task=r_task,
         )
         raw = self.backend(prompt, self.model)
-        return self._parse(raw)
+        att = self._parse(raw)
+        return self._enforce_consistency(att, r_task)
 
     @staticmethod
     def _load_session_trace(trial_dir: Path) -> str:
@@ -268,6 +277,53 @@ class AttributionAnalyzer:
                 overall_attribution=Attribution.FAIL_AGENT_ISSUE,
                 overall_rationale="attribution validation failed; defaulting to FAIL_AGENT_ISSUE",
             )
+
+    @staticmethod
+    def _enforce_consistency(
+        att: TrialAttribution, r_task: int
+    ) -> TrialAttribution:
+        """Safety net for the prompt's hard constraints.
+
+        If the LLM returned an ``overall_attribution`` inconsistent
+        with ``r_task`` (e.g. ``FAIL_AGENT_ISSUE`` despite a successful
+        trial), coerce the enum to a consistent value rather than
+        crash the bridge. The ``[consistency-clamp]`` marker in the
+        rationale makes coercion events greppable in logs.
+
+        ``knowledge_to_extract`` is passed through unchanged — we
+        never fabricate knowledge (fake knowledge would let the
+        extractor synthesize low-quality SKILL.md files, which is
+        worse than skipping extraction).
+        """
+        success_enums = {
+            Attribution.SUCCESS_SKILL_USED,
+            Attribution.SUCCESS_VIEWED_SKILL_BUT_NOT_USED,
+            Attribution.SUCCESS_NO_SKILL_SEEN,
+        }
+        fail_enums = {
+            Attribution.FAIL_SKILL_ISSUE,
+            Attribution.FAIL_AGENT_ISSUE,
+            Attribution.FAIL_ENV_ISSUE,
+        }
+        if r_task == 1 and att.overall_attribution in fail_enums:
+            return att.model_copy(update={
+                "overall_attribution": Attribution.SUCCESS_NO_SKILL_SEEN,
+                "overall_rationale": (
+                    f"[consistency-clamp] r_task=1 but LLM returned "
+                    f"{att.overall_attribution.value}; coerced to "
+                    f"success_no_skill_seen. {att.overall_rationale}"
+                ),
+            })
+        if r_task == 0 and att.overall_attribution in success_enums:
+            return att.model_copy(update={
+                "overall_attribution": Attribution.FAIL_SKILL_ISSUE,
+                "overall_rationale": (
+                    f"[consistency-clamp] r_task=0 but LLM returned "
+                    f"{att.overall_attribution.value}; coerced to "
+                    f"fail_skill_issue. {att.overall_rationale}"
+                ),
+            })
+        return att
 
 
 # ---------------------------------------------------------------------------
