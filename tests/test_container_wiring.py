@@ -84,9 +84,12 @@ def test_write_state_files_produces_four_files(tmp_path: Path):
     assert lib_p.exists() and lib_p.name == "lib.json"
     assert q_p.exists() and q_p.name == "q_table.json"
     assert emb_p.exists() and emb_p.name == "emb_cache.json"
-    assert log_p.exists() and log_p.name == "calls_log.jsonl"
-    # calls_log starts empty (truncate semantics)
-    assert log_p.read_text() == ""
+    # calls_log path is now under Harbor's auto-injected
+    # ``agent_dir`` bind mount (see Bug 2 fix); the wiring only
+    # returns the path, it doesn't create the file. The hook
+    # creates it on first Skill() call.
+    assert log_p.name == "skillq_skill_calls.jsonl"
+    assert log_p.parent == tmp_path / "agent" / "sessions"
 
 
 def test_write_state_files_lib_has_skill_bodies(tmp_path: Path):
@@ -191,48 +194,41 @@ def test_wire_one_trial_populates_env_and_mounts(tmp_path: Path):
     assert env["SKILLQ_HOOK_LAMBDA"].startswith("0.")
     assert env["SKILLQ_HOOK_C_UCB"].startswith("0.")
 
-    # environment.mounts_json should have 6 entries (4 state +
-    # settings + hook script)
+    # environment.mounts_json should have 5 entries (3 read-only
+    # state files + settings + hook script). The calls_log no
+    # longer needs a SkillQ-injected mount — it relies on
+    # Harbor's auto-injected ``agent_dir`` read-write mount
+    # (see Bug 2 fix).
     mounts = event.config.environment.mounts_json
-    assert len(mounts) == 6
+    assert len(mounts) == 5
+    # No mount should have ``read_only: False`` (would violate
+    # Harbor's ``ServiceVolumeConfig.read_only: Literal[True]``
+    # TypedDict and break ``--resume``).
+    assert not any(m.get("read_only") is False for m in mounts)
 
     # And the state files actually got written
     assert (trial_dir / "skillq_state" / "lib.json").exists()
     assert (trial_dir / "skillq_state" / "q_table.json").exists()
     assert (trial_dir / "skillq_state" / "emb_cache.json").exists()
-    assert (trial_dir / "skillq_state" / "calls_log.jsonl").exists()
+    # calls_log.jsonl is no longer staged by SkillQ — it lives in
+    # Harbor's auto-mounted ``agent_dir`` (see Bug 2 fix) and is
+    # created by the hook on first Skill() call.
     assert (trial_dir / "skillq_state" / "settings.json").exists()
 
-    # All state-file mounts are read-only EXCEPT calls_log.jsonl,
-    # which the hook must be able to append to. Harbor's
-    # ServiceVolumeConfig is annotated ``read_only: Literal[True]``
-    # but the dict is passed verbatim into a docker-compose override
-    # file and TypedDict is not runtime-enforced, so we route the
-    # calls_log mount through ``cast()`` and use read_only=False.
+    # All SkillQ-injected mounts are read-only. The calls_log is
+    # written into Harbor's auto-injected ``agent_dir`` mount,
+    # which is read-write by default (no ``read_only`` key — the
+    # TypedDict allows this; Docker treats it as read-write).
     rw = [m for m in mounts if not m["read_only"]]
-    assert len(rw) == 1
-    assert rw[0]["target"] == CONTAINER_CALLS_LOG_PATH
-    assert rw[0]["type"] == "bind"
+    assert rw == []
 
     # Verify the container-side targets are what hook.py reads
     targets = {m["target"] for m in mounts}
     assert CONTAINER_LIB_PATH in targets
     assert CONTAINER_Q_TABLE_PATH in targets
     assert CONTAINER_EMB_CACHE_PATH in targets
-    assert CONTAINER_CALLS_LOG_PATH in targets
     assert CONTAINER_SETTINGS_PATH in targets
     assert CONTAINER_HOOK_PATH in targets
-
-    # calls_log is the only read-write mount (the hook appends).
-    # Harbor's ServiceVolumeConfig is annotated ``read_only:
-    # Literal[True]`` but the dict is passed verbatim into a
-    # docker-compose override file and TypedDict is not
-    # runtime-enforced, so we route the calls_log mount through
-    # ``cast()`` and use read_only=False.
-    rw = [m for m in mounts if not m["read_only"]]
-    assert len(rw) == 1
-    assert rw[0]["target"] == CONTAINER_CALLS_LOG_PATH
-    assert rw[0]["type"] == "bind"
 
 
 def test_wire_one_trial_uses_method_config_tunables(tmp_path: Path):

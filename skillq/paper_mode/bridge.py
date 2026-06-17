@@ -694,19 +694,23 @@ def attach_paper_registers(
         pair via the LLM-as-judge.
         """
         r_task_bin = _binarize_r_task(r_task)
-        # The wiring writes the hook output to
-        # ``<trial_dir>/skillq_state/calls_log.jsonl`` (see
-        # :func:`paper.paper_mode.container_wiring._dump_staging_state`).
-        # Earlier versions of this function read
-        # ``<trial_dir>/skillq_skill_calls.jsonl`` (the in-container
-        # path), which is a separate bind-mount and was usually
-        # empty by trial end — the bridge then fell back to the
-        # session-jsonl scanner, which is brittle (the jsonl can be
-        # truncated by container teardown). Reading from the same
-        # staging dir the wiring wrote to fixes the silent no-update
-        # bug for trials that successfully fired the hook.
+        # The hook writes its per-call log to
+        # ``/logs/agent/sessions/skillq_skill_calls.jsonl`` inside
+        # the container, which is inside Harbor's auto-injected
+        # ``agent_dir`` bind mount (``trial_dir/agent`` →
+        # ``/logs/agent``, see
+        # ``harbor/trial/trial.py::_agent_env_mounts``). That mount
+        # is read-write, so the hook appends freely and the file
+        # is visible on the host at
+        # ``<trial_dir>/agent/sessions/skillq_skill_calls.jsonl``
+        # by the time we get here. This replaces the old approach
+        # of writing into a SkillQ-staged
+        # ``<trial_dir>/skillq_state/calls_log.jsonl`` via a custom
+        # ``read_only=False`` bind mount, which violated Harbor's
+        # ``ServiceVolumeConfig.read_only: Literal[True]`` TypedDict
+        # and broke ``--resume`` (Bug 2).
         calls_log = _read_skill_calls_log(
-            trial_dir / "skillq_state" / "calls_log.jsonl"
+            trial_dir / "agent" / "sessions" / "skillq_skill_calls.jsonl"
         )
         if not calls_log:
             # Fallback: the PreToolUse hook may not have fired (agentic

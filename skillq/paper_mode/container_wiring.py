@@ -42,9 +42,7 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
-
-from harbor.models.trial.config import ServiceVolumeConfig
+from typing import Any
 
 from skillq.method.embedding_service import (
     EmbeddingServiceHandle,
@@ -190,7 +188,6 @@ def _write_state_files(
     lib_path = staging / "lib.json"
     q_path = staging / "q_table.json"
     emb_path = staging / "emb_cache.json"
-    calls_log_path = staging / "calls_log.jsonl"
 
     # lib.json — list of skills with description (the hook only
     # needs the body and id, but we include description for
@@ -229,9 +226,19 @@ def _write_state_files(
         encoding="utf-8",
     )
 
-    # calls_log.jsonl — start empty (truncate if it exists from a
-    # prior trial of the same name; e.g., resume).
-    calls_log_path.write_text("", encoding="utf-8")
+    # calls_log.jsonl — we no longer stage this file ourselves.
+    # The hook writes directly to
+    # ``/logs/agent/sessions/skillq_skill_calls.jsonl`` inside the
+    # container, and Harbor's auto-injected ``agent_dir`` bind
+    # mount (``trial_dir/agent`` → ``/logs/agent``) makes the
+    # write visible on the host at the same path with no extra
+    # mount. This sidesteps Bug 2: the old approach used a custom
+    # ``read_only=False`` bind mount that violated Harbor's
+    # ``ServiceVolumeConfig.read_only: Literal[True]`` TypedDict,
+    # so any path that re-validated the saved ``result.json``
+    # (e.g. ``--resume``) crashed on Pydantic ``literal_error``.
+    calls_log_path = (trial_dir / "agent" / "sessions"
+                      / "skillq_skill_calls.jsonl")
 
     return lib_path, q_path, emb_path, calls_log_path
 
@@ -533,25 +540,20 @@ def _wire_hook_trial(
     mounts.append(_bind_mount(str(lib_path), CONTAINER_LIB_PATH, read_only=True))
     mounts.append(_bind_mount(str(q_path), CONTAINER_Q_TABLE_PATH, read_only=True))
     mounts.append(_bind_mount(str(emb_path), CONTAINER_EMB_CACHE_PATH, read_only=True))
-    # Make this mount writable. Harbor's ServiceVolumeConfig is
-    # annotated ``read_only: NotRequired[Literal[True]]`` but the
-    # dict is passed verbatim into a docker-compose override file
-    # (see harbor/environments/docker/docker.py::
-    # _write_mounts_compose_file) and TypedDict is not
-    # runtime-enforced. Docker honors ``read_only: false`` here, so
-    # the hook's ``_append_jsonl(SKILLQ_CALLS_LOG, ...)`` can
-    # actually append. The ``cast()`` silences mypy; the runtime
-    # contract matches the lqrl smoke config.
-    mounts.append(
-        cast(
-            ServiceVolumeConfig,
-            _bind_mount(
-                str(calls_log_path),
-                CONTAINER_CALLS_LOG_PATH,
-                read_only=False,
-            ),
-        )
-    )
+    # calls_log is intentionally NOT mounted here. Harbor's
+    # ``agent_dir`` bind mount (``trial_dir/agent`` → ``/logs/agent``,
+    # see harbor/trial/trial.py:_agent_env_mounts) already exposes
+    # ``/logs/agent/sessions/`` as a read-write directory inside the
+    # container. The hook writes to
+    # ``$CONTAINER_CALLS_LOG_PATH`` (i.e.
+    # ``/logs/agent/sessions/skillq_skill_calls.jsonl``) and the write
+    # shows up on the host at
+    # ``trial_dir/agent/sessions/skillq_skill_calls.jsonl`` with no
+    # extra mount. This sidesteps Bug 2: the previous
+    # ``read_only=False`` mount violated Harbor's
+    # ``ServiceVolumeConfig.read_only: Literal[True]`` TypedDict and
+    # broke ``--resume`` (Pydantic re-validated the saved
+    # ``result.json`` and crashed on ``literal_error``).
     # Settings.json (the container's settings.json — mounted over the
     # prebuilt image's default).
     mounts.append(_bind_mount(str(settings_path), CONTAINER_SETTINGS_PATH, read_only=True))
