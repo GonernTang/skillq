@@ -68,7 +68,63 @@ class SkillQClaudeCodeAgent(ClaudeCode):
         return "SkillQClaudeCodeAgent"
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        # Inject the SKILLQ_* env vars that the hook reads into
+        # ``self._extra_env`` so they actually reach the agent's
+        # process. The bridge updates ``cfg.agent.env`` at
+        # ``on_trial_started`` time, but Harbor's ``AgentFactory``
+        # already snapshotted ``config.env`` into ``extra_env`` at
+        # agent-construction time (which happens BEFORE
+        # ``on_trial_started`` fires), so the bridge's later
+        # update is invisible to the base class. By writing to
+        # ``self._extra_env`` here at __init__ time we go through
+        # the standard ``BaseInstalledAgent._exec`` merge path so
+        # every ``exec_as_agent`` call carries the SKILLQ_* vars
+        # to the agent's bash.
+        #
+        # The container-side paths are FIXED — they are bind-mount
+        # targets set by ``_wire_hook_trial`` — so we can hardcode
+        # them here. The container import is deferred to avoid a
+        # circular import (container_wiring imports back from this
+        # module for the hook helpers).
+        from skillq.paper_mode.container_wiring import (
+            CONTAINER_CALLS_LOG_PATH,
+            CONTAINER_EMB_CACHE_PATH,
+            CONTAINER_LIB_PATH,
+            CONTAINER_Q_TABLE_PATH,
+        )
+
         super().__init__(*args, **kwargs)
+
+        # Merge SKILLQ_* into ``self._extra_env`` (created by
+        # BaseInstalledAgent.__init__). Don't clobber anything
+        # already in there (e.g. from the bridge's late updates).
+        skillq_hook_env = {
+            "SKILLQ_LIB": str(CONTAINER_LIB_PATH),
+            "SKILLQ_Q_TABLE": str(CONTAINER_Q_TABLE_PATH),
+            "SKILLQ_EMB_CACHE": str(CONTAINER_EMB_CACHE_PATH),
+            "SKILLQ_CALLS_LOG": str(CONTAINER_CALLS_LOG_PATH),
+            "SKILLQ_EMBED_HOST": "host.docker.internal",
+            "SKILLQ_EMBED_PORT": "8765",
+            "SKILLQ_USER_TASK": "",  # filled in at run() time if available
+            "SKILLQ_HOOK_TOP_K": "3",
+            "SKILLQ_HOOK_LAMBDA": "0.500000",
+            "SKILLQ_HOOK_C_UCB": "0.500000",
+        }
+        # Read paper_retrieval kwargs if present so the dynamic
+        # values (lambda, c_ucb, top_k) match the trial.
+        paper = self._flag_kwargs.get("paper_retrieval") or {}
+        if isinstance(paper, dict):
+            if "k2" in paper:
+                skillq_hook_env["SKILLQ_HOOK_TOP_K"] = str(paper["k2"])
+            if "lambda_" in paper:
+                skillq_hook_env["SKILLQ_HOOK_LAMBDA"] = f"{float(paper['lambda_']):.6f}"
+            if "c_ucb" in paper:
+                skillq_hook_env["SKILLQ_HOOK_C_UCB"] = f"{float(paper['c_ucb']):.6f}"
+
+        # Merge into _extra_env (created by super().__init__).
+        # We can't access self._extra_env before super().__init__,
+        # so the merge happens after super() above.
+        self._extra_env.update(skillq_hook_env)
 
     async def setup(self, environment: "BaseEnvironment") -> None:
         """Skip Harbor's install path; verify the preinstalled CLI."""
@@ -79,6 +135,23 @@ class SkillQClaudeCodeAgent(ClaudeCode):
         (setup_dir / "mode.txt").write_text(
             "skip install script; use preinstalled claude CLI in image\n",
             encoding="utf-8",
+        )
+
+        # Claude Code creates ``$CLAUDE_CONFIG_DIR/CLAUDE.md/`` as a
+        # directory at startup for project-level memory (it expects
+        # the file ``CLAUDE.md`` to not already exist as a dir).
+        # When the paper method bind-mounts a merged
+        # ``CLAUDE.md.merged`` onto ``CLAUDE.md``, the runtime
+        # directory shadows the bind mount and the snippet never
+        # reaches the agent's system prompt. Clearing the path
+        # before Claude Code starts lets the bind mount take
+        # precedence (the mount creates a file at that path; we
+        # then never re-create the dir because we don't use
+        # project memory). Idempotent — no-op when the path does
+        # not exist.
+        await environment.exec(
+            command='rm -rf "${CLAUDE_CONFIG_DIR:-/root/.claude}/CLAUDE.md" 2>/dev/null || true',
+            user="root",
         )
 
         if self._version is not None:
@@ -155,11 +228,29 @@ def hook_env(
     c_ucb: float,
 ) -> dict[str, str]:
     """Build the env dict the agent container needs for the hook."""
+    # The hook runs INSIDE the agent container, so all of these
+    # paths must be the in-container bind-mount targets, not the
+    # host-side paths the bridge wrote them to. The earlier revision
+    # passed host paths for ``SKILLQ_LIB`` / ``SKILLQ_Q_TABLE`` /
+    # ``SKILLQ_EMB_CACHE`` (and only the calls_log got fixed
+    # first) — the hook's ``_read_json`` then FileNotFoundErrored
+    # on those host paths, the try/except returned 0 (pass-through)
+    # *before* the log call, and the host's calls_log stayed empty
+    # for the second-order reason. Import the constants lazily to
+    # avoid a circular import (container_wiring imports back from
+    # this module for the hook helpers).
+    from skillq.paper_mode.container_wiring import (
+        CONTAINER_CALLS_LOG_PATH,
+        CONTAINER_EMB_CACHE_PATH,
+        CONTAINER_LIB_PATH,
+        CONTAINER_Q_TABLE_PATH,
+    )
+
     return {
-        "SKILLQ_LIB": str(lib_path),
-        "SKILLQ_Q_TABLE": str(q_table_path),
-        "SKILLQ_EMB_CACHE": str(emb_cache_path),
-        "SKILLQ_CALLS_LOG": str(calls_log_path),
+        "SKILLQ_LIB": str(CONTAINER_LIB_PATH),
+        "SKILLQ_Q_TABLE": str(CONTAINER_Q_TABLE_PATH),
+        "SKILLQ_EMB_CACHE": str(CONTAINER_EMB_CACHE_PATH),
+        "SKILLQ_CALLS_LOG": str(CONTAINER_CALLS_LOG_PATH),
         "SKILLQ_EMBED_HOST": embed_host,
         "SKILLQ_EMBED_PORT": str(embed_port),
         "SKILLQ_USER_TASK": user_task[:2000],

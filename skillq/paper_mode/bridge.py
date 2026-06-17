@@ -49,6 +49,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -486,8 +487,80 @@ def attach_paper_registers(
     # State + emb_cache load
     state = QlibState(method.resolved_state_path())
     state.load_into(lib, mgr, lib_root=method.library_root)
+    # Plan D: if the in-memory library is still empty (no prior
+    # method_state.json, or one with empty library.skills), seed it
+    # from the on-disk seed library. This is the auto-load path so
+    # users don't have to hand-write method_state.json. No-op when
+    # ``method.seed_skills_dir`` is unset, when the dir doesn't
+    # exist, or when ``lib.skills`` already has entries.
+    if not lib.skills and method.seed_skills_dir is not None:
+        seeded = state.ensure_seeded(
+            lib=lib,
+            mgr=mgr,
+            seed_dir=method.seed_skills_dir,
+            seed_initial_q=method.seed_initial_q,
+        )
+        if seeded:
+            logger.info(
+                "Plan D: seeded %d skills from %s into %s",
+                len(lib.skills),
+                method.seed_skills_dir,
+                method.resolved_state_path(),
+            )
     emb_cache = VectorTable(method.resolved_state_path().parent / "emb_cache.json")
     emb_cache.load()
+
+    # Plan D (cont.): pre-compute emb_cache for the seeded skills.
+    # The hook ranks Skill() calls by cosine(subtask_emb, skill_emb)
+    # + Q + UCB (Eq. 4). With an empty emb_cache, every skill's
+    # cosine is 0 → all scores tie → top-3 is just file-system order,
+    # not semantic match. So the first time the seed library is
+    # loaded (here), we embed every seeded skill's description and
+    # write the result to emb_cache.json. Subsequent trials just
+    # load the existing cache; only add/remove/replace events
+    # (handled by the per-trial ``_refresh_emb_cache`` path below)
+    # touch it.
+    #
+    # No-op when (a) the cache already has every skill in lib
+    # (subsequent trials — incremental path covers delta) or (b)
+    # the host embed service is unavailable (the hook then falls
+    # back to Q+UCB-only ranking, which still works; the cosine
+    # term is what gets dropped). Errors are logged and swallowed
+    # — the trial must still run even if pre-compute fails.
+    if lib.skills and len(emb_cache) < len(lib.skills):
+        try:
+            missing = [
+                sid for sid in lib.skills
+                if sid not in emb_cache
+            ]
+            if missing:
+                embedder = LiteLLMEmbedder(
+                    model=method.embedder_model,
+                    dim=int(getattr(method, "embedder_dim", 1536)),
+                )
+                added = [
+                    (sid, lib.skills[sid].body) for sid in missing
+                ]
+                sync_lib_to_vector_table(
+                    added=added,
+                    removed=[],
+                    replaced=[],
+                    vector_table=emb_cache,
+                    embedder=embedder,
+                )
+                emb_cache.save()
+                logger.info(
+                    "Plan D (cont.): pre-computed emb_cache for %d skills "
+                    "(%d already cached) → %s",
+                    len(added),
+                    len(emb_cache) - len(added),
+                    emb_cache.cache_path,
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "emb_cache pre-compute failed; continuing with Q+UCB-only "
+                "ranking. The hook will still work but cosine will be 0."
+            )
 
     refiner = NearMissRefiner(
         backend=LiteLLMEditBackend(model=method.editor_model),
@@ -621,7 +694,20 @@ def attach_paper_registers(
         pair via the LLM-as-judge.
         """
         r_task_bin = _binarize_r_task(r_task)
-        calls_log = _read_skill_calls_log(trial_dir / "skillq_skill_calls.jsonl")
+        # The wiring writes the hook output to
+        # ``<trial_dir>/skillq_state/calls_log.jsonl`` (see
+        # :func:`paper.paper_mode.container_wiring._dump_staging_state`).
+        # Earlier versions of this function read
+        # ``<trial_dir>/skillq_skill_calls.jsonl`` (the in-container
+        # path), which is a separate bind-mount and was usually
+        # empty by trial end — the bridge then fell back to the
+        # session-jsonl scanner, which is brittle (the jsonl can be
+        # truncated by container teardown). Reading from the same
+        # staging dir the wiring wrote to fixes the silent no-update
+        # bug for trials that successfully fired the hook.
+        calls_log = _read_skill_calls_log(
+            trial_dir / "skillq_state" / "calls_log.jsonl"
+        )
         if not calls_log:
             # Fallback: the PreToolUse hook may not have fired (agentic
             # mode) or its log was unreadable. Extract the per-skill
@@ -714,6 +800,22 @@ def attach_paper_registers(
                 q_old,
                 q_old + delta,
             )
+        # Per-trial trace: write the Q-update entries to a
+        # trial-local file so the trail survives even if the
+        # later ``state.save()`` in ``on_ended`` fails. The file
+        # is small (one JSONL line per (skill, trial)) and lives
+        # next to the other trial state dumps in
+        # ``<trial_dir>/skillq_state/``.
+        if method.debug_keep_subtask_log and out:
+            try:
+                q_path = trial_dir / "skillq_state" / "q_updates.jsonl"
+                q_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(q_path, "w", encoding="utf-8") as f:
+                    for entry in out:
+                        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            except Exception:  # noqa: BLE001
+                # Best-effort: never let the trace writer abort Q-update.
+                logger.exception("failed to write q_updates.jsonl for %s", trial_id)
         return out
 
     async def _attribution_and_extract_dispatch(
@@ -944,12 +1046,42 @@ def attach_paper_registers(
                 trial_dir=trial_dir,
                 trial_id=event.trial_id,
             )
-        except Exception:
-            # Never let a method bug abort the trial.
+        except Exception as exc:
+            # Never let a method bug abort the trial. But do write a
+            # per-trial record so users can diagnose what broke —
+            # ``trial.log`` does not always capture the bridge's
+            # stderr (different streams depending on the launcher),
+            # so the previous bare ``logger.exception`` was
+            # effectively silent. Writing to
+            # ``<trial_dir>/skillq_state/method_errors.jsonl`` lands
+            # the failure in the trial's host-side artifacts dir,
+            # which is always preserved.
             logger.exception(
                 "Paper method on_ended failed for trial %s; swallowed.",
                 event.trial_id,
             )
+            try:
+                err_path = trial_dir / "skillq_state" / "method_errors.jsonl"
+                err_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(err_path, "a", encoding="utf-8") as f:
+                    f.write(
+                        json.dumps(
+                            {
+                                "ts": time.time(),
+                                "trial_id": event.trial_id,
+                                "phase": "on_ended",
+                                "error_type": type(exc).__name__,
+                                "error": str(exc),
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+            except Exception:  # noqa: BLE001
+                # Last-resort: never let the diagnostic writer itself
+                # raise. If we can't write the error file the
+                # ``logger.exception`` line above is the only signal.
+                pass
 
     # ---- on_trial_started: container wiring (issue #2) ----
     if wiring is not None:

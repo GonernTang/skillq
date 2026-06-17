@@ -332,6 +332,59 @@ def render_claude_md(*, skills_dir_name: str, top_k: int) -> str:
     return render_instructions(skills_dir_name=skills_dir_name, top_k=top_k)
 
 
+# Method B (hook) — the PreToolUse hook intercepts every Skill()
+# call and re-ranks it against the paper-method library using
+# Eq. 4 (cosine + Q + UCB). The agent does not need to pre-sort
+# skills; it just needs to know that the Skill tool is wired up
+# and where to find the SKILL.md files. The host process handles
+# the ranking; the agent should just call Skill("<name>") when
+# the description matches the current task.
+HOOK_INSTRUCTIONS_SNIPPET = """\
+# Curated skills are available (Method B) — REQUIRED USAGE
+
+You have a curated library of skills at `$CLAUDE_CONFIG_DIR/skills/`.
+Each subdirectory contains a `SKILL.md` describing one skill.
+
+**Required: before running any shell command, edit, or write, you
+MUST call the Skill tool at least once with the skill whose
+description best matches the current task.** This is not optional
+— the host process records every Skill() call, re-ranks them
+against the curated library, and updates the Q-table. Trials
+without a Skill() call produce no attribution signal and the
+host has nothing to learn from.
+
+Concretely:
+
+1. Before your first shell action, do
+   `Skill("<name>")` for the best-matching skill. To inspect
+   the catalog, run `ls $CLAUDE_CONFIG_DIR/skills/` or
+   `cat $CLAUDE_CONFIG_DIR/skills/*/SKILL.md`.
+2. Pick the skill whose `SKILL.md` description most directly
+   covers the user's request. If multiple apply, prefer the one
+   whose description is most specific to the current step.
+3. After loading the skill, follow its instructions before
+   continuing with shell or edit actions. Do not skip the
+   skill call.
+
+The host process re-ranks skill calls on a per-trial basis; you
+do not need to pre-sort or evaluate skills yourself. Calling
+the wrong skill is fine — the hook will allow it and update
+the ranking on the next trial.
+"""
+
+
+def render_hook_instructions() -> str:
+    """Render the skillq-method instructions snippet for hook (Method B).
+
+    Unlike :func:`render_instructions` (Method A) this snippet has
+    no template variables — the curated skills always live at the
+    same path (``$CLAUDE_CONFIG_DIR/skills/``) and the agent is
+    expected to call the Skill tool directly rather than going
+    through a search script.
+    """
+    return HOOK_INSTRUCTIONS_SNIPPET
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator: write everything for one trial
 # ---------------------------------------------------------------------------
@@ -414,4 +467,5 @@ __all__ = [
     "render_search_sh",
     "render_instructions",
     "render_claude_md",  # backwards-compat alias
+    "render_hook_instructions",
 ]

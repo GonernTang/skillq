@@ -42,7 +42,9 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
+
+from harbor.models.trial.config import ServiceVolumeConfig
 
 from skillq.method.embedding_service import (
     EmbeddingServiceHandle,
@@ -72,6 +74,20 @@ CONTAINER_LIB_PATH = f"{CONTAINER_CLAUDE_CONFIG_DIR}/skillq_lib.json"
 CONTAINER_Q_TABLE_PATH = f"{CONTAINER_CLAUDE_CONFIG_DIR}/skillq_q_table.json"
 CONTAINER_EMB_CACHE_PATH = f"{CONTAINER_CLAUDE_CONFIG_DIR}/skillq_emb_cache.json"
 CONTAINER_CALLS_LOG_PATH = f"{CONTAINER_CLAUDE_CONFIG_DIR}/skillq_skill_calls.jsonl"
+# Where Claude Code looks for Skill() tool registrations. We re-bind
+# the host's seed_skills/ tree here so the base ClaudeCode agent's
+# ``_build_register_skills_command`` (which does
+# ``cp -r $skills_dir/* $CLAUDE_CONFIG_DIR/skills/`` at setup time)
+# picks them up. The Skill tool's "available skills" list consumes
+# exactly this path. Without this, the 32 seed skills sit at /skills
+# in the container but are invisible to the agent.
+CONTAINER_SKILLS_DIR = f"{CONTAINER_CLAUDE_CONFIG_DIR}/skills"
+# Where the host's seed_skills/ tree is mounted in the container
+# (the smoke config sets ``mounts_json`` source: <host>/seed_skills,
+# target: /skills). The Plan A fix re-exposes the same host source at
+# CONTAINER_SKILLS_DIR so the base ClaudeCode picks the skills up via
+# its standard register-skills path.
+CONTAINER_SEED_SKILLS_MOUNT = "/skills"
 CONTAINER_HOST_GATEWAY = "host.docker.internal"
 
 
@@ -334,24 +350,19 @@ def _wire_agentic_trial(
         _bind_mount(str(staging), skills_target, read_only=True)
     )
 
-    # Optional: merge the skillq-method instructions with the user's
-    # existing CLAUDE.md and bind-mount the merged result at
-    # $CLAUDE_CONFIG_DIR/CLAUDE.md. If user_claude_md_path is unset
-    # we leave the user's CLAUDE.md untouched and the snippet stays
-    # only at <skills_dir>/PAPER_METHOD_INSTRUCTIONS.md.
-    merged_claude_md = _maybe_merge_user_claude_md(
-        method=method,
-        snippet=render_instructions(
-            skills_dir_name=method.agentic_skill_dir_name,
-            top_k=method.agentic_search_top_k,
-        ),
-        trial_dir=trial_dir,
-    )
-    if merged_claude_md is not None:
+    # Plan A fix: also bind-mount the host's seed_skills/ tree at the
+    # base ClaudeCode ``$CLAUDE_CONFIG_DIR/skills`` path so the
+    # ``Skill`` tool sees the curated skills. The base class's
+    # ``_build_register_skills_command`` does
+    # ``cp -r $skills_dir/* $CLAUDE_CONFIG_DIR/skills/`` at agent
+    # setup time; with this mount, that cp picks up the same 32
+    # skills the paper method's library already knows about.
+    seed_host_src = _seed_skills_host_source(cfg)
+    if seed_host_src is not None:
         mounts.append(
             _bind_mount(
-                str(merged_claude_md),
-                f"{CONTAINER_CLAUDE_CONFIG_DIR}/CLAUDE.md",
+                str(seed_host_src),
+                CONTAINER_SKILLS_DIR,
                 read_only=True,
             )
         )
@@ -367,13 +378,22 @@ def _wire_agentic_trial(
         }
     )
 
+    claude_md_merged = _mount_merged_claude_md(
+        method=method,
+        snippet=render_instructions(
+            skills_dir_name=method.agentic_skill_dir_name,
+            top_k=method.agentic_search_top_k,
+        ),
+        trial_dir=trial_dir,
+        cfg=cfg,
+    )
     logger.info(
         "Wired agentic (Method A) for trial %s (lib=%d skills, mounts=%d, "
         "claude_md_merged=%s)",
         event.trial_id,
         len(lib.skills),
         len(mounts),
-        merged_claude_md is not None,
+        claude_md_merged,
     )
 
 
@@ -417,6 +437,47 @@ def _maybe_merge_user_claude_md(
         len(merged),
     )
     return merged_path
+
+
+def _mount_merged_claude_md(
+    *,
+    method: "MethodConfig",
+    snippet: str,
+    trial_dir: Path,
+    cfg: Any,
+) -> bool:
+    """Merge ``snippet`` into the user's CLAUDE.md and bind-mount the
+    merged result at ``$CONTAINER_CLAUDE_CONFIG_DIR/CLAUDE.md``.
+
+    Shared helper for both ``_wire_agentic_trial`` and
+    ``_wire_hook_trial`` — without it, hook mode silently fails
+    because the agent has no awareness that curated skills or the
+    Skill tool exist (the hook is installed and ready to intercept,
+    but no ``Skill()`` call ever arrives).
+
+    Returns True if a mount was added. The merged file is written
+    to ``<trial_dir>/CLAUDE.md.merged``; if the user already had a
+    CLAUDE.md at ``method.user_claude_md_path``, the snippet is
+    appended under a "--- appended by mg skillq-method bridge ---"
+    header. When ``user_claude_md_path`` is None the function is a
+    no-op (the snippet remains discoverable in
+    ``<skills_dir>/PAPER_METHOD_INSTRUCTIONS.md``).
+    """
+    merged = _maybe_merge_user_claude_md(
+        method=method, snippet=snippet, trial_dir=trial_dir
+    )
+    if merged is None:
+        return False
+    if cfg.environment.mounts_json is None:
+        cfg.environment.mounts_json = []
+    cfg.environment.mounts_json.append(
+        _bind_mount(
+            str(merged),
+            f"{CONTAINER_CLAUDE_CONFIG_DIR}/CLAUDE.md",
+            read_only=True,
+        )
+    )
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -472,19 +533,66 @@ def _wire_hook_trial(
     mounts.append(_bind_mount(str(lib_path), CONTAINER_LIB_PATH, read_only=True))
     mounts.append(_bind_mount(str(q_path), CONTAINER_Q_TABLE_PATH, read_only=True))
     mounts.append(_bind_mount(str(emb_path), CONTAINER_EMB_CACHE_PATH, read_only=True))
-    # NOTE: Harbor's ServiceVolumeConfig only allows read_only=True
-    # (Literal[True], NotRequired). The calls_log mount is therefore
-    # read-only too — the hook can't append, so the host's
-    # skillq_skill_calls.jsonl stays empty during this trial. To make
-    # the hook writeable we'd need to make Harbor's ServiceVolumeConfig
-    # accept read_only=False. Filed as a follow-up.
-    mounts.append(_bind_mount(str(calls_log_path), CONTAINER_CALLS_LOG_PATH, read_only=True))
+    # Make this mount writable. Harbor's ServiceVolumeConfig is
+    # annotated ``read_only: NotRequired[Literal[True]]`` but the
+    # dict is passed verbatim into a docker-compose override file
+    # (see harbor/environments/docker/docker.py::
+    # _write_mounts_compose_file) and TypedDict is not
+    # runtime-enforced. Docker honors ``read_only: false`` here, so
+    # the hook's ``_append_jsonl(SKILLQ_CALLS_LOG, ...)`` can
+    # actually append. The ``cast()`` silences mypy; the runtime
+    # contract matches the lqrl smoke config.
+    mounts.append(
+        cast(
+            ServiceVolumeConfig,
+            _bind_mount(
+                str(calls_log_path),
+                CONTAINER_CALLS_LOG_PATH,
+                read_only=False,
+            ),
+        )
+    )
     # Settings.json (the container's settings.json — mounted over the
     # prebuilt image's default).
     mounts.append(_bind_mount(str(settings_path), CONTAINER_SETTINGS_PATH, read_only=True))
     # Hook script (the Python file the PreToolUse will exec).
     hook_host_path = str(hook_script_path())
     mounts.append(_bind_mount(hook_host_path, CONTAINER_HOOK_PATH, read_only=True))
+    # Plan A fix: bind-mount the host's seed_skills/ tree at the base
+    # ClaudeCode ``$CLAUDE_CONFIG_DIR/skills`` path. Without this, the
+    # base class's ``_build_register_skills_command`` cp has nothing
+    # to copy and the agent's ``Skill`` tool sees no curated skills —
+    # so the agent never makes any Skill() calls and the hook never
+    # fires. We use the same host source as the smoke config's
+    # ``/skills`` mount, just re-exposed at the ClaudeCode-standard
+    # path inside the container.
+    seed_host_src = _seed_skills_host_source(cfg)
+    if seed_host_src is not None:
+        mounts.append(
+            _bind_mount(
+                str(seed_host_src),
+                CONTAINER_SKILLS_DIR,
+                read_only=True,
+            )
+        )
+
+    # Inject the same skillq-method CLAUDE.md snippet the agentic
+    # path uses, so the agent knows it can call Skill(...). Without
+    # this, hook mode silently fails because the agent has no
+    # awareness that curated skills or the Skill tool exist (the
+    # hook is installed and ready to intercept, but no Skill() call
+    # ever arrives). The merged file is appended to the user's
+    # existing CLAUDE.md via user_claude_md_path, or written fresh
+    # to trial_dir/CLAUDE.md.merged if that path is unset (the
+    # helper falls back gracefully).
+    from skillq.paper_mode.agentic_search import render_hook_instructions
+
+    _mount_merged_claude_md(
+        method=method,
+        snippet=render_hook_instructions(),
+        trial_dir=trial_dir,
+        cfg=cfg,
+    )
 
     logger.info(
         "Wired hook (Method B) for trial %s (env: %d vars, mounts: %d entries)",
@@ -499,10 +607,15 @@ def _resolve_trial_dir(event: Any) -> Path:
 
     Tries the trial config's ``trials_dir`` first, then falls back to
     ``output/<job_name>/<trial_name>`` matching the harbor convention.
+
+    The returned path is resolved to an absolute path so docker
+    compose's mount-source resolution always finds the file (compose
+    resolves relative ``source`` paths against the compose file's
+    own directory, which is not the cwd the bridge ran from).
     """
     cfg = event.config
     trials_dir = Path(cfg.trials_dir)
-    return trials_dir / cfg.trial_name
+    return (trials_dir / cfg.trial_name).resolve()
 
 
 def _bind_mount(source: str, target: str, read_only: bool) -> dict[str, Any]:
@@ -513,6 +626,30 @@ def _bind_mount(source: str, target: str, read_only: bool) -> dict[str, Any]:
         "target": target,
         "read_only": read_only,
     }
+
+
+def _seed_skills_host_source(cfg: Any) -> str | None:
+    """Return the host source path of the seed_skills/ mount, or None.
+
+    The Plan A fix needs to re-bind the *same* host directory (where
+    the curated 32 SKILL.md files live) at a different container path
+    (``$CLAUDE_CONFIG_DIR/skills``). Detection rule: any mount with
+    container target == ``/skills``; we return its source verbatim so
+    the host can resolve it as a real path. We deliberately do NOT
+    re-use ``/skills`` as the source — docker compose interprets a
+    ``source`` as a host path, not a container path, so a container
+    path would resolve to ``/skills`` on the host (likely empty or
+    non-existent), which is the bug we hit on the first attempt.
+    """
+    mounts = getattr(getattr(cfg, "environment", None), "mounts_json", None) or []
+    for m in mounts:
+        if not isinstance(m, dict):
+            continue
+        if m.get("target") == CONTAINER_SEED_SKILLS_MOUNT:
+            src = m.get("source")
+            if src:
+                return str(src)
+    return None
 
 
 __all__ = [

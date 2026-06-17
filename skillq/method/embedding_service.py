@@ -29,12 +29,10 @@ pool) warm and serves requests in single-digit ms of overhead.
 3. The daemon shuts down at trial end (``stop_embedding_service``).
 """
 
-from __future__ import annotations
-
 import logging
 import os
 import threading
-from typing import Any
+from typing import Annotated, Any
 
 import numpy as np
 
@@ -71,9 +69,22 @@ def get_embedder_config_from_env() -> dict[str, Any]:
 
     Falls back to defaults that match the existing
     :class:`paper.method.retrieval.LiteLLMEmbedder` defaults.
+
+    Model names without a ``provider/`` prefix are ambiguous to
+    litellm (raises "LLM Provider NOT provided"). The smoke config
+    stores ``openai/<model>`` in the method yaml's
+    ``embedder_model`` field, so by the time the bridge calls
+    ``start_embedding_service_background`` the model already has
+    the right prefix. When this function reads ``EMBEDDING_MODEL``
+    directly (e.g. when the env-only path is used) the prefix is
+    missing — we add it here so the fallback path stays
+    consistent.
     """
+    model = os.environ.get("EMBEDDING_MODEL", "openai/text-embedding-3-small")
+    if "/" not in model:
+        model = f"openai/{model}"
     return {
-        "model": os.environ.get("EMBEDDING_MODEL", "openai/text-embedding-3-small"),
+        "model": model,
         "api_key": os.environ.get("EMBEDDING_API_KEY"),
         "base_url": os.environ.get("EMBEDDING_BASE_URL"),
         "dim": int(os.environ.get("EMBEDDING_DIM", "1536")),
@@ -115,7 +126,7 @@ def build_fastapi_app(embedder):
     Imported lazily so the module loads even if FastAPI isn't
     installed (tests using StubEmbedder don't need it).
     """
-    from fastapi import FastAPI, HTTPException
+    from fastapi import Body, FastAPI, HTTPException
     from pydantic import BaseModel
 
     app = FastAPI(title="mg-embedding-service", version="0.1.0")
@@ -132,7 +143,16 @@ def build_fastapi_app(embedder):
         return {"status": "ok"}
 
     @app.post("/embed", response_model=EmbedResponse)
-    def embed(req: EmbedRequest) -> EmbedResponse:
+    def embed(req: Annotated[EmbedRequest, Body(...)]) -> EmbedResponse:
+        # The Body() annotation is required so FastAPI doesn't treat
+        # the ``req: EmbedRequest`` Pydantic model as a query
+        # parameter (which would 422 with "field 'req' required"
+        # because the hook's POST has no ``?req=`` query string).
+        # We use ``Annotated[..., Body(...)]`` instead of
+        # ``req: EmbedRequest = Body(...)`` because the latter
+        # creates a ForwardRef that Pydantic can't resolve in
+        # some FastAPI versions. Keep this in sync with
+        # :func:`paper.paper_mode.hook._post_embed`.
         if not req.text:
             raise HTTPException(status_code=400, detail="text is empty")
         try:

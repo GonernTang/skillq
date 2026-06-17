@@ -173,15 +173,18 @@ def test_wire_one_trial_populates_env_and_mounts(tmp_path: Path):
 
     wire_one_trial(handle, event)
 
-    # agent.env should now contain the SKILLQ_* keys (paths are
-    # relative to the resolved trial_dir, which is
-    # trials_dir / trial_name)
+    # agent.env should now contain the SKILLQ_* keys. All four
+    # file paths point at the container-side bind-mount targets,
+    # not the host-side paths the bridge wrote them to. The hook
+    # runs inside the agent container, so it needs the in-container
+    # paths; the bind is read-write so ``_append_jsonl`` can
+    # actually write.
     trial_dir = tmp_path / "sample-task__abcd123"
     env = event.config.agent.env
-    assert env["SKILLQ_LIB"] == str(trial_dir / "skillq_state" / "lib.json")
-    assert env["SKILLQ_Q_TABLE"] == str(trial_dir / "skillq_state" / "q_table.json")
-    assert env["SKILLQ_EMB_CACHE"] == str(trial_dir / "skillq_state" / "emb_cache.json")
-    assert env["SKILLQ_CALLS_LOG"] == str(trial_dir / "skillq_state" / "calls_log.jsonl")
+    assert env["SKILLQ_LIB"] == "/logs/agent/sessions/skillq_lib.json"
+    assert env["SKILLQ_Q_TABLE"] == "/logs/agent/sessions/skillq_q_table.json"
+    assert env["SKILLQ_EMB_CACHE"] == "/logs/agent/sessions/skillq_emb_cache.json"
+    assert env["SKILLQ_CALLS_LOG"] == "/logs/agent/sessions/skillq_skill_calls.jsonl"
     assert env["SKILLQ_EMBED_PORT"] == "8765"
     assert env["SKILLQ_USER_TASK"] == "fix-git"
     assert env["SKILLQ_HOOK_TOP_K"] == "3"
@@ -200,12 +203,16 @@ def test_wire_one_trial_populates_env_and_mounts(tmp_path: Path):
     assert (trial_dir / "skillq_state" / "calls_log.jsonl").exists()
     assert (trial_dir / "skillq_state" / "settings.json").exists()
 
-    # All mounts are read-only (Harbor's ServiceVolumeConfig only
-    # accepts read_only=True). The calls_log mount is also RO,
-    # so the hook can't append during this trial — the host's
-    # skillq_skill_calls.jsonl stays empty.
+    # All state-file mounts are read-only EXCEPT calls_log.jsonl,
+    # which the hook must be able to append to. Harbor's
+    # ServiceVolumeConfig is annotated ``read_only: Literal[True]``
+    # but the dict is passed verbatim into a docker-compose override
+    # file and TypedDict is not runtime-enforced, so we route the
+    # calls_log mount through ``cast()`` and use read_only=False.
     rw = [m for m in mounts if not m["read_only"]]
-    assert rw == []
+    assert len(rw) == 1
+    assert rw[0]["target"] == CONTAINER_CALLS_LOG_PATH
+    assert rw[0]["type"] == "bind"
 
     # Verify the container-side targets are what hook.py reads
     targets = {m["target"] for m in mounts}
@@ -216,11 +223,16 @@ def test_wire_one_trial_populates_env_and_mounts(tmp_path: Path):
     assert CONTAINER_SETTINGS_PATH in targets
     assert CONTAINER_HOOK_PATH in targets
 
-    # calls_log is the only read-write mount (the hook appends)
-    # — but Harbor's ServiceVolumeConfig only accepts read_only=True,
-    # so the calls_log mount is also RO and the hook can't append.
+    # calls_log is the only read-write mount (the hook appends).
+    # Harbor's ServiceVolumeConfig is annotated ``read_only:
+    # Literal[True]`` but the dict is passed verbatim into a
+    # docker-compose override file and TypedDict is not
+    # runtime-enforced, so we route the calls_log mount through
+    # ``cast()`` and use read_only=False.
     rw = [m for m in mounts if not m["read_only"]]
-    assert len(rw) == 0
+    assert len(rw) == 1
+    assert rw[0]["target"] == CONTAINER_CALLS_LOG_PATH
+    assert rw[0]["type"] == "bind"
 
 
 def test_wire_one_trial_uses_method_config_tunables(tmp_path: Path):

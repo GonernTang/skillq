@@ -207,6 +207,24 @@ class MethodConfig(BaseModel):
     library_root: Path = Field(default=Path("./.skillq_library"))
     state_path: Optional[Path] = None  # defaults to <library_root>/.state/method_state.json
 
+    # Plan D: optional on-disk seed library. When the paper method
+    # boots and ``library.skills`` is empty, the bridge scans this
+    # directory for ``<skill>/SKILL.md`` files and pre-populates the
+    # library + Q-table from them (every seed skill gets
+    # ``seed_initial_q``). Default None: do nothing on first run.
+    # The smoke config sets this to ``experiments/smoke/seed_skills``
+    # so the 32 lqrl skills get auto-loaded without the user having
+    # to hand-write ``method_state.json``.
+    seed_skills_dir: Optional[Path] = Field(
+        default=None,
+        description=(
+            "On-disk seed library path. When the paper method boots "
+            "with an empty library, it walks this dir for SKILL.md "
+            "files and pre-populates the library. No-op when None "
+            "or when library already has skills."
+        ),
+    )
+
     def resolved_state_path(self) -> Path:
         if self.state_path is not None:
             return self.state_path

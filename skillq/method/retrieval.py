@@ -88,15 +88,47 @@ class LiteLLMEmbedder:
     dim: int = 1536
 
     def __call__(self, texts: Sequence[str]) -> np.ndarray:
+        import os
         import litellm
 
-        response = litellm.embedding(
-            model=self.model,
-            input=list(texts),
-            encoding_format="float",
-        )
-        vectors = [item["embedding"] for item in response.data]
-        return np.asarray(vectors, dtype=np.float32)
+        # Read EMBEDDING_* env vars and translate to the OpenAI-
+        # compatible equivalents litellm expects. The base class
+        # used to read OPENAI_API_KEY / OPENAI_API_BASE only, which
+        # forced callers to mirror the same env under a different
+        # name. We now prefer EMBEDDING_* and fall back to OPENAI_*
+        # so the existing SkillsVote / paper smoke configs that
+        # already set EMBEDDING_BASE_URL keep working.
+        kwargs: dict = {"encoding_format": "float"}
+        emb_key = os.environ.get("EMBEDDING_API_KEY")
+        emb_base = os.environ.get("EMBEDDING_BASE_URL")
+        openai_key = os.environ.get("OPENAI_API_KEY")
+        openai_base = os.environ.get("OPENAI_API_BASE")
+        if emb_key:
+            kwargs["api_key"] = emb_key
+        elif openai_key:
+            kwargs["api_key"] = openai_key
+        if emb_base:
+            kwargs["api_base"] = emb_base
+        elif openai_base:
+            kwargs["api_base"] = openai_base
+
+        # DashScope's text-embedding-v3/v4 endpoints reject batch
+        # sizes > 10. Some OpenAI-compatible endpoints do too. We
+        # chunk into EMBED_BATCH_SIZE windows (default 10) to stay
+        # under the cap. The default matches the DashScope limit
+        # specifically; users on a different provider can bump
+        # EMBED_BATCH_SIZE to push more per call.
+        batch_size = int(os.environ.get("EMBED_BATCH_SIZE", "10"))
+        all_vectors: list[list[float]] = []
+        for i in range(0, len(texts), batch_size):
+            chunk = list(texts[i : i + batch_size])
+            response = litellm.embedding(
+                model=self.model,
+                input=chunk,
+                **kwargs,
+            )
+            all_vectors.extend(item["embedding"] for item in response.data)
+        return np.asarray(all_vectors, dtype=np.float32)
 
 
 # Callable signature for the global-Q refactor: skill_id → raw Q-value.

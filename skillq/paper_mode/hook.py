@@ -123,7 +123,24 @@ def _post_embed(host: str, port: int, text: str) -> list[float] | None:
         )
         r.raise_for_status()
         return r.json()["vec"]
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        # DEBUG: surface the actual failure mode. Without this,
+        # the hook silently returns None and the calls_log
+        # shows "embedding unavailable" with no indication of
+        # why. The previous calls_log trial sequence showed
+        # top-3 with identical scores (0.4163 = UCB only)
+        # because _post_embed was returning None — the embed
+        # endpoint is correct, the response shape is correct,
+        # the request body is correct; the failure is
+        # somewhere in the request itself (host unreachable
+        # from container? timeout? HTTP error from the
+        # service?). This stderr should make the next failure
+        # visible without another round of manual debugging.
+        sys.stderr.write(
+            f"[skillq-hook] _post_embed failed: {type(exc).__name__}: {exc!r} "
+            f"(url=http://{host}:{port}/embed)\n"
+        )
+        sys.stderr.flush()
         return None
 
 
@@ -314,7 +331,16 @@ def main() -> int:
         lib = _read_json(lib_path) if lib_path else {"skills": []}
         q_table = _read_json(q_path) if q_path else {}
         emb_cache = _read_json(emb_path) if emb_path else {"embeddings": {}}
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        # DEBUG: log to stderr so we can see why the hook is bailing
+        sys.stderr.write(
+            f"[skillq-hook] early-return on read failure: {exc!r}\n"
+        )
+        sys.stderr.write(
+            f"[skillq-hook]   lib_path={lib_path!r} q_path={q_path!r} "
+            f"emb_path={emb_path!r}\n"
+        )
+        sys.stderr.flush()
         return 0  # pass through
 
     skills = lib.get("skills", [])
@@ -322,6 +348,21 @@ def main() -> int:
         # Empty lib → nothing to rank → pass through
         return 0
     emb_cache = emb_cache.get("embeddings", emb_cache)  # tolerate flat dict
+
+    # DEBUG
+    import json as _json
+    sys.stderr.write(
+        f"[skillq-hook] lib={len(skills)} skills, emb_cache={len(emb_cache)} embeddings\n"
+    )
+    sys.stderr.write(
+        f"[skillq-hook] requested={requested!r}, requested_in_emb={requested in emb_cache}\n"
+    )
+    if skills:
+        first_sid = skills[0]['skill_id']
+        sys.stderr.write(
+            f"[skillq-hook] first_sid={first_sid!r}, first_sid_in_emb={first_sid in emb_cache}\n"
+        )
+    sys.stderr.flush()
 
     # Embed the sub-task intent
     recent = _read_recent_assistant_messages(transcript_path, k=3)
@@ -360,6 +401,22 @@ def main() -> int:
 
     # Log
     if calls_log_path:
+        # DEBUG: capture a few raw sims so we can verify the
+        # hook's cosine computation matches the externally
+        # computed one. (The previous calls_log entries had
+        # top-3 with identical scores 0.4163, which is the
+        # UCB-only signal — i.e., the cosine term was 0 for
+        # all skills. We want to confirm whether that's a real
+        # failure mode or a stale artifact of an earlier
+        # typo that crashed the hook with NameError.)
+        raw_sims = []
+        for s in skills[:5]:
+            sid = s["skill_id"]
+            cached = emb_cache.get(sid)
+            if subtask_emb is not None and cached is not None:
+                raw_sims.append({"skill_id": sid, "sim": _cosine(subtask_emb, cached)})
+            else:
+                raw_sims.append({"skill_id": sid, "sim": None})
         _append_jsonl(
             calls_log_path,
             {
@@ -369,6 +426,9 @@ def main() -> int:
                 "approved": approved,
                 "embed_ms": embed_ms,
                 "intent_text": intent_text[:500],
+                "_debug_emb_cache_size": len(emb_cache),
+                "_debug_lib_size": len(skills),
+                "_debug_first_5_sims": raw_sims,
             },
         )
 
