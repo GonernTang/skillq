@@ -60,12 +60,12 @@ class NearMissRefiner:
 
     def is_near_miss(
         self,
-        r_task: float,
+        r_task: int,
         q_value: float,
         theta_near_miss: float,
     ) -> bool:
         """Return ``True`` when a failure is a near-miss (Eq. 11)."""
-        return r_task == 0.0 and q_value >= theta_near_miss
+        return r_task == 0 and q_value >= theta_near_miss
 
     def propose_edit(
         self,

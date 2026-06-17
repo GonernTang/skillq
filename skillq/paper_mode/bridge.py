@@ -24,9 +24,9 @@ Two public functions:
   - ``r_subtask`` ∈ {0, 1}: 1 if the sub-task completed in a
     generally correct way (LLM judge), 0 otherwise. All skills
     called within the same sub-task share the same ``r_subtask``.
-  - ``r_task`` ∈ {0, 1}: 1 if the trial-level reward > 0.5,
-    0 otherwise. All skills called within the same trial share
-    the same ``r_task``.
+  - ``r_task`` ∈ {0, 1}: 1 if the trial-level reward is truthy
+    (verifier passed), 0 otherwise. All skills called within
+    the same trial share the same ``r_task``.
 - The Q-update is::
 
       target   = w_subtask * r_subtask_mean  + w_task * r_task
@@ -97,38 +97,31 @@ logger = logging.getLogger("paper.paper.bridge")
 # ---------------------------------------------------------------------------
 # Trial-level helpers
 # ---------------------------------------------------------------------------
-def _harbor_r_task(result: TrialResult) -> float:
-    """Extract the scalar reward from a Harbor TrialResult.
+def _harbor_r_task(result: TrialResult) -> int:
+    """Extract the binary trial reward from a Harbor TrialResult.
 
-    Returns ``0.0`` if the result has no verifier reward yet (e.g. the
-    trial was cancelled). The value is the raw reward — callers that
-    need the binary 0/1 form should pass it through
-    :func:`_binarize_r_task`.
+    Returns ``0`` if the result has no verifier reward (e.g. cancelled),
+    ``1`` if the verifier passed, ``0`` if it failed. The value is
+    rounded to ``int`` at the source — TB 2.0 tasks' ``tests/test.sh``
+    already write ``0`` or ``1`` to ``/logs/verifier/reward.txt``, so
+    we treat the harbor schema's ``float`` type as semantically binary.
+
+    Callers should use the return value directly as a boolean
+    (``if r_task:`` = success).
     """
     if result.verifier_result is None or not result.verifier_result.rewards:
-        return 0.0
+        return 0
     rewards = result.verifier_result.rewards
     reward = rewards.get("reward")
     if reward is None:
         if len(rewards) == 1:
             reward = next(iter(rewards.values()))
         else:
-            return 0.0
+            return 0
     try:
-        return float(reward)
+        return int(round(float(reward)))
     except (TypeError, ValueError):
-        return 0.0
-
-
-def _binarize_r_task(r_task: float, threshold: float = 0.5) -> float:
-    """Binarize a continuous trial reward into {0, 1}.
-
-    All skills called within the same trial share the same
-    ``r_task``. Default threshold 0.5 matches the convention used
-    elsewhere in the bridge (e.g. the extract-trigger and the
-    near-miss gate).
-    """
-    return 1.0 if r_task > threshold else 0.0
+        return 0
 
 
 def resolve_retrieval_mode(method: "MethodConfig", n_lib_skills: int) -> str:
@@ -670,7 +663,7 @@ def attach_paper_registers(
         trial_id: str,
         intent_text: str,
         trial_dir: Path,
-        r_task: float,
+        r_task: int,
     ) -> list[dict[str, Any]]:
         """Apply the per-subtask Q-update (Eq.6 generalised, binary).
 
@@ -679,9 +672,9 @@ def attach_paper_registers(
         - ``r_subtask`` (binary) — per-skill-call LLM-judge verdict.
           Multiple calls to the same skill in a trial are averaged
           → ``r_subtask_mean`` (per-skill success rate ∈ [0, 1]).
-        - ``r_task`` (binary) — binarized from the trial-level
-          reward at threshold 0.5. Shared by every skill called
-          in the trial.
+        - ``r_task`` (binary) — the trial-level verifier reward.
+          Already 0 or 1 from ``_harbor_r_task``. Shared by every
+          skill called in the trial.
 
         The Q-update is::
 
@@ -693,7 +686,6 @@ def attach_paper_registers(
         container-side hook and re-scores each unique (skill, trial)
         pair via the LLM-as-judge.
         """
-        r_task_bin = _binarize_r_task(r_task)
         # The hook writes its per-call log to
         # ``/logs/agent/sessions/skillq_skill_calls.jsonl`` inside
         # the container, which is inside Harbor's auto-injected
@@ -732,7 +724,7 @@ def attach_paper_registers(
                         "calls": 0,
                         "verdicts": [],
                         "r_subtask_mean": 0.0,
-                        "r_task": r_task_bin,
+                        "r_task": r_task,
                         "q_delta": 0.0,
                     }
                 ]
@@ -766,7 +758,7 @@ def attach_paper_registers(
             q_old = mgr.q_for(skill_id)
             target = (
                 method.q_w_subtask * r_subtask_mean
-                + method.q_w_task * r_task_bin
+                + method.q_w_task * r_task
             )
             delta = method.q_alpha * (target - q_old)
             mgr.update_q(skill_id, delta)
@@ -774,7 +766,7 @@ def attach_paper_registers(
             skill_obj = lib.get(skill_id)
             if skill_obj is not None:
                 skill_obj.n_uses += 1
-                if r_task_bin > 0.5:
+                if r_task:
                     skill_obj.n_success += 1
             if method.debug_keep_subtask_log:
                 out.append(
@@ -790,7 +782,7 @@ def attach_paper_registers(
                             for v in verdicts
                         ],
                         "r_subtask_mean": r_subtask_mean,
-                        "r_task": r_task_bin,
+                        "r_task": r_task,
                         "q_delta": delta,
                     }
                 )
@@ -800,7 +792,7 @@ def attach_paper_registers(
                 skill_id,
                 len(calls),
                 r_subtask_mean,
-                int(r_task_bin),
+                int(r_task),
                 q_old,
                 q_old + delta,
             )
@@ -827,20 +819,20 @@ def attach_paper_registers(
         intent_text: str,
         trial_dir: Path,
         event: TrialHookEvent,
-        r_task: float,
+        r_task: int,
     ) -> None:
         """Run the attribution step and feed (task, knowledge) into
         the extract buffer.
 
         Two paper rules trigger a new-skill creation here:
 
-        - **Rule 2** (success path): r_task > 0.5 AND
+        - **Rule 2** (success path): r_task == 1 AND
           attribution ∈ {SUCCESS_NO_SKILL_SEEN,
           SUCCESS_VIEWED_SKILL_BUT_NOT_USED} AND
           ``knowledge_to_extract`` is non-empty. The knowledge is a
           reusable procedure; we add to the buffer with
           ``mode="success"`` so the right prompt is used.
-        - **Rule 5** (failure path): r_task ≤ 0.5 AND
+        - **Rule 5** (failure path): r_task == 0 AND
           attribution ∈ {FAIL_AGENT_ISSUE, FAIL_SKILL_ISSUE} AND
           ``knowledge_to_extract`` is non-empty. The knowledge is a
           failure attribution; we add to the buffer with
@@ -864,7 +856,7 @@ def attach_paper_registers(
         knowledge = attribution.knowledge_to_extract.strip()
         triggered = False
         if knowledge:
-            if r_task > 0.5 and attribution.overall_attribution in (
+            if r_task and attribution.overall_attribution in (
                 Attribution.SUCCESS_VIEWED_SKILL_BUT_NOT_USED,
                 Attribution.SUCCESS_NO_SKILL_SEEN,
             ):
@@ -876,7 +868,7 @@ def attach_paper_registers(
                 if buffer_full:
                     await _flush_buffer()
                 triggered = True
-            elif r_task <= 0.5 and attribution.overall_attribution in (
+            elif not r_task and attribution.overall_attribution in (
                 Attribution.FAIL_AGENT_ISSUE,
                 Attribution.FAIL_SKILL_ISSUE,
             ):
@@ -941,7 +933,7 @@ def attach_paper_registers(
 
     def _incremental_edit_on_failure(
         *,
-        r_task: float,
+        r_task: int,
         intent_text: str,
         trial_dir: Path,
         trial_id: str,
@@ -951,7 +943,7 @@ def attach_paper_registers(
         editor backend to propose a minimal edit and re-embed the
         description if it changed.
         """
-        if r_task != 0.0 or not lib.skills:
+        if not r_task or not lib.skills:
             return
         top = max(
             lib.skills.values(),
