@@ -329,8 +329,14 @@ def test_viewed_but_not_used_bumps_q(tmp_path: Path, monkeypatch):
 # Rule 5: failure + no good skill → new skill from failure attribution
 # ---------------------------------------------------------------------------
 def test_bridge_extracts_on_failure_no_skill(tmp_path: Path, monkeypatch):
-    """r_task=0 + FAIL_AGENT_ISSUE + no skill has Q > theta_consider_used
-    + non-empty knowledge_to_extract → extractor called with mode='failure'.
+    """r_task=0 + FAIL_AGENT_ISSUE + non-empty knowledge_to_extract
+    → extractor called with mode='failure'.
+
+    The historical "skip extract if any existing skill has high Q"
+    gate is no longer present; the test still uses
+    ``seed_initial_q=0.0`` so the seed skill's Q stays neutral —
+    the contract verified here is "Rule 5 fires purely on the
+    attribution enum + non-empty knowledge, independent of lib state".
 
     Mirrors test_bridge_extracts_on_success_no_skill_seen but on the
     failure path.
@@ -366,7 +372,6 @@ def test_bridge_extracts_on_failure_no_skill(tmp_path: Path, monkeypatch):
         enable_auto_extract=True,
         seed_initial_q=0.0,
         extract_every_n_trials=1,       # flush on the first qualifying trial
-        theta_consider_used=0.0,
         # Disable the incremental-edit path (it would call the LLM
         # to propose a SKILL.md edit; we don't have a stub for
         # that in this test file).
@@ -388,14 +393,24 @@ def test_bridge_extracts_on_failure_no_skill(tmp_path: Path, monkeypatch):
     assert new_meta.get("extract_mode") == "failure"
 
 
-def test_bridge_skips_extract_on_failure_when_skill_exists(tmp_path: Path, monkeypatch):
-    """r_task=0 but a skill already has Q > theta_consider_used → no
-    new skill (existing skill is good enough; the bridge will try
-    the incremental edit path instead).
+def test_bridge_extracts_on_failure_even_when_skill_exists(tmp_path: Path, monkeypatch):
+    """r_task=0 + FAIL_AGENT_ISSUE + a high-Q seed skill is already
+    in lib + non-empty knowledge_to_extract → extractor IS called
+    with mode='failure' and the new skill lands in lib.
+
+    Locks in the post-gate-removal contract: Rule 5 fires purely on
+    (attribution enum, non-empty knowledge), regardless of how good
+    the existing lib looks. The ``seed_initial_q=0.5`` explicitly
+    constructs the case the historical "skip if high-Q skill exists"
+    gate used to suppress.
     """
     _patch_litellm_backends(monkeypatch)
     called = {"n": 0}
-    new_skill = Skill(skill_id="x", body="x" * 200)
+    new_skill = Skill(
+        skill_id="guard-rail",
+        body="x" * 200,
+        metadata={"source": "skillq_extract", "extract_mode": "failure"},
+    )
 
     async def fake_extract_batch(self, **kwargs):
         called["n"] += 1
@@ -410,8 +425,11 @@ def test_bridge_skips_extract_on_failure_when_skill_exists(tmp_path: Path, monke
         "analyze",
         lambda self, **kwargs: TrialAttribution(
             overall_attribution=Attribution.FAIL_AGENT_ISSUE,
-            overall_rationale="won't extract",
-            knowledge_to_extract="x",
+            overall_rationale="regression test for the removed gate",
+            knowledge_to_extract=(
+                "the existing seed skill was high-Q, but the agent still "
+                "failed — synthesize a guard-rail from this attribution"
+            ),
         ),
     )
 
@@ -420,7 +438,10 @@ def test_bridge_skips_extract_on_failure_when_skill_exists(tmp_path: Path, monke
         b_max=4,
         n_explore=2,
         enable_auto_extract=True,
-        seed_initial_q=0.5,  # seed Q > theta_consider_used (default 0.3)
+        # Seed Q = 0.5 reproduces the exact scenario the historical
+        # "skip if high-Q skill exists" gate used to suppress
+        # (the old default threshold was 0.30).
+        seed_initial_q=0.5,
         extract_every_n_trials=1,
     )
     _seed_lib(method)
@@ -431,4 +452,13 @@ def test_bridge_skips_extract_on_failure_when_skill_exists(tmp_path: Path, monke
     event = _fake_hook_event("trial-x", result=result)
     asyncio.run(job.on_ended(event))
 
-    assert called["n"] == 0
+    # The gate is gone — the extractor must fire and the new skill
+    # must land in lib.
+    assert called["n"] == 1, (
+        "Rule 5 should fire on FAIL_AGENT_ISSUE + non-empty knowledge "
+        "regardless of existing-skill Q"
+    )
+    state = json.loads(method.resolved_state_path().read_text(encoding="utf-8"))
+    assert "guard-rail" in state["library"]["skills"]
+    new_meta = state["library"]["skills"]["guard-rail"]["metadata"]
+    assert new_meta.get("extract_mode") == "failure"

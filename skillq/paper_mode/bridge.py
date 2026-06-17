@@ -836,19 +836,23 @@ def attach_paper_registers(
 
         - **Rule 2** (success path): r_task > 0.5 AND
           attribution ∈ {SUCCESS_NO_SKILL_SEEN,
-          SUCCESS_VIEWED_SKILL_BUT_NOT_USED} AND no existing skill
-          has Q > theta_consider_used AND
+          SUCCESS_VIEWED_SKILL_BUT_NOT_USED} AND
           ``knowledge_to_extract`` is non-empty. The knowledge is a
           reusable procedure; we add to the buffer with
           ``mode="success"`` so the right prompt is used.
         - **Rule 5** (failure path): r_task ≤ 0.5 AND
-          attribution ∈ {FAIL_AGENT_ISSUE, FAIL_SKILL_ISSUE} (the
-          latter only when no skill was actually applied — the
-          ``theta_consider_used`` check below serves as the proxy)
-          AND no existing skill has Q > theta_consider_used AND
+          attribution ∈ {FAIL_AGENT_ISSUE, FAIL_SKILL_ISSUE} AND
           ``knowledge_to_extract`` is non-empty. The knowledge is a
           failure attribution; we add to the buffer with
           ``mode="failure"`` so the guard-rail prompt is used.
+
+        Note: a previous version of this gate checked "no existing
+        skill has high Q" before allowing extraction. That gate is
+        intentionally removed — a successful novel-task trajectory
+        should always be allowed to evolve into a new skill regardless
+        of how good the existing lib looks. Lib growth is bounded
+        independently by the Q-driven ``b_max`` cap in
+        ``LibManager.maintain``.
         """
         if extractor is None:
             return
@@ -858,17 +862,14 @@ def attach_paper_registers(
             skills_root=_find_skills_dir(event),
         )
         knowledge = attribution.knowledge_to_extract.strip()
-        any_good_skill = any(
-            mgr.q_for(s) > method.theta_consider_used for s in lib.skills
-        )
         triggered = False
-        if not any_good_skill and knowledge:
+        if knowledge:
             if r_task > 0.5 and attribution.overall_attribution in (
                 Attribution.SUCCESS_VIEWED_SKILL_BUT_NOT_USED,
                 Attribution.SUCCESS_NO_SKILL_SEEN,
             ):
-                # Rule 2: success + no skill was good enough → new
-                # skill from the success trajectory.
+                # Rule 2: success trajectory with no relevant skill
+                # in lib → new skill from the success trajectory.
                 buffer_full = extract_buffer.add(
                     task=intent_text, knowledge=knowledge, mode="success"
                 )
@@ -879,11 +880,11 @@ def attach_paper_registers(
                 Attribution.FAIL_AGENT_ISSUE,
                 Attribution.FAIL_SKILL_ISSUE,
             ):
-                # Rule 5: failure + no good skill existed → new
-                # skill (guard-rail) from the failure attribution.
-                # Note: FAIL_ENV_ISSUE is excluded because the
-                # failure was external, not a missing-skill
-                # problem.
+                # Rule 5: failure attributed to agent or to an
+                # unused skill → new skill (guard-rail) from the
+                # failure attribution. Note: FAIL_ENV_ISSUE is
+                # excluded because the failure was external, not a
+                # missing-skill problem.
                 buffer_full = extract_buffer.add(
                     task=intent_text, knowledge=knowledge, mode="failure"
                 )

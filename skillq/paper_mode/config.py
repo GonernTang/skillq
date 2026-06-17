@@ -97,8 +97,7 @@ class MethodConfig(BaseModel):
         description=(
             "Batched-evolve flush cadence. Every N qualifying successful "
             "trials (those whose attribution ∈ {SUCCESS_NO_SKILL_SEEN, "
-            "SUCCESS_VIEWED_SKILL_BUT_NOT_USED} and where no retrieved "
-            "skill has Q > theta_consider_used), spawn ONE claude "
+            "SUCCESS_VIEWED_SKILL_BUT_NOT_USED}), spawn ONE claude "
             "--print subprocess that aggregates the N (task, knowledge) "
             "records into a single new SKILL.md. Default 4 mirrors "
             "SkillsVote's evolve_every_n_trials=1 default offset by the "
@@ -107,14 +106,6 @@ class MethodConfig(BaseModel):
     )
     extract_max_new_per_trial: int = Field(default=1, ge=0, le=10)
     extract_timeout_sec: int = Field(default=600, ge=10)
-    theta_consider_used: float = Field(
-        default=0.30, ge=0.0,
-        description=(
-            "If any retrieved skill has Q > theta_consider_used, we treat the "
-            "trial as 'used a skill' and skip the extract trigger (even when "
-            "the attribution says VIEWED_BUT_NOT_USED)."
-        ),
-    )
     new_skill_initial_q: float = Field(
         default=0.5, ge=-1.0, le=1.0,
         description=(

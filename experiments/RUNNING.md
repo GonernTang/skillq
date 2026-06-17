@@ -326,8 +326,11 @@ subprocess 写新 skill:
 | `SUCCESS_NO_SKILL_SEEN` | 没看到相关 skill,基于自己的探索成功 | 单纯 extract |
 | `SUCCESS_VIEWED_SKILL_BUT_NOT_USED` | 看了但没用,基于自己的探索成功 | 看过的那批 skill Q += 0.05(防漂) |
 
-附加守卫:**任何** retrieved skill 的 Q 超过 `theta_consider_used`(默认 0.3)就
-跳过 extract,认为"已经被现有 skill 救过,不需要新 skill"。
+提取条件:**只看 attribution enum + knowledge 非空**。即使 lib 里已有高 Q skill,
+只要该 trial 的 attribution 落在上表两类,attribution LLM 给出的
+`knowledge_to_extract` 非空,就会进 extract 缓冲区。设计依据:agent 走一条全新
+路径成功时,可能揭示了 lib 缺失的 procedure;保留"新建"这一选择比"跳过"更安全
+(lib 增长由 `b_max` 硬驱逐 cap,见 `LibManager.maintain`)。
 
 ### 流程(单 trial)
 
@@ -359,7 +362,6 @@ method:
   enable_auto_extract: true
   extract_max_new_per_trial: 1     # 一次 trial 至多 1 个新 skill
   extract_timeout_sec: 600         # claude subprocess 超时
-  theta_consider_used: 0.30        # 已有 skill 救得了就跳过
   attribution_model: openai/gpt-4o
   extractor_claude_cli: claude     # 走系统的 Claude Code CLI
 ```
