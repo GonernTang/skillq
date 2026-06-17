@@ -49,6 +49,8 @@ method_errors.jsonl: empty  (no swallowed exceptions)
 | F15 | No per-trial Q-update trail (everything was in `method_state.json` only, which made debugging hard) | **Fix C**: write `skillq_state/q_updates.jsonl` per trial | aae5ae5 |
 | F16 | `q_subtask_verifier_model` defaulted to `openai/gpt-4o` (required `OPENAI_API_KEY`, which this env doesn't have) — the judge crashed and propagated the exception up to `on_ended`'s try/except, which is why `state.save()` never ran | **Fix D**: smoke method yaml now sets `q_subtask_verifier_model: "anthropic/${ANTHROPIC_MODEL}"` | aae5ae5 |
 | F17 | The hook's `calls_log.jsonl` bind mount used `read_only=False` to let the hook append; this violated Harbor's `ServiceVolumeConfig.read_only: Literal[True]` TypedDict. Any re-run / `--resume` triggered `TrialResult.model_validate_json(result.json)` → `ValidationError: literal_error` | **Bug 2 fix**: drop the SkillQ-injected calls_log mount entirely. Harbor's auto-injected `agent_dir` bind mount (`trial_dir/agent` → `/logs/agent`, no `read_only` key, Docker defaults to read-write) already covers the path. Bridge reads from `trial_dir/agent/sessions/skillq_skill_calls.jsonl` on `on_ended`. | (pending) |
+| F18 | `SkillExtractor._extract_with_prompt` built a `claude --print` cmd array with only `--append-system-prompt` and no user prompt. `claude --print` rejected the call with `Input must be provided either through stdin or as a prompt argument when using --print`. The subprocess returned non-zero immediately, `extract_batch` returned `None`, and the auto-extract wiring was effectively dead from day one. | **Bug 4 fix**: add `-p <user_prompt>` (the trigger instruction) to the cmd array in `skillq/method/extractor.py`. System prompt still carries the format and constraints. Verified end-to-end via direct `SkillExtractor.extract_batch` invocation. | (pending) |
+| F19 | Method A (agentic) had never been exercised end-to-end. The `retrieval_mode: "agentic"` path's wiring (skillq_skills dir mount, `_search.sh` script, manifest, plan D pre-embed for the cosine term) was all unverified. | **Bug 9 fix (smoke verification only, no code change)**: new `configure-git-webserver_skillq_smoke_agentic.yaml` + `method_git_smoke_agentic.yaml` run end-to-end (reward=1.0). Hook mounts are absent, `skillq_skills/` artifacts present, plan D emb_cache populated. | (pending) |
 
 ---
 
@@ -165,30 +167,58 @@ the library root.
 
 ### Bug 4 — Auto-extract path not exercised end-to-end
 
-**Symptom:** `enable_auto_extract=False` is the default in
-`MethodConfig`. The `_attribution_and_extract_dispatch` function
-runs every trial (it computes the per-trial attribution) but
-never spawns a `claude --print` subprocess to extract a new skill.
-The skill-creation path (Layer 4 in the paper) is therefore
-unverified.
+**Status:** ✅ **fixed in current tree** (commit pending; will be
+referenced in "Fixed in the current tree" table below).
 
-**Cause:** by design — auto-extract is opt-in because it adds a
-`claude --print` call per N trials and is a non-trivial cost.
+**Symptom (historical):** `enable_auto_extract=False` is the
+default in `MethodConfig`. The auto-extract code path
+(`SkillExtractor.extract_batch` → spawn `claude --print`
+subprocess → read SKILL.md → `lib.add` + `mgr.set_q`) had never
+been exercised end-to-end.
 
-**Impact:** medium. We have a function we haven't actually
-exercised. If `enable_auto_extract=True` is set, it may crash on
-the first run for some reason we haven't discovered (e.g.
-subprocess env propagation, prompt-mode argument wiring, the
-extractor's own JSON parse path).
+**Root cause (found via smoke):** `SkillExtractor._extract_with_prompt`
+built a `claude --print` cmd array with **only** a `--append-system-prompt`
+flag and no user prompt. `claude --print` requires the user prompt
+to come from stdin or from a `-p <prompt>` argument; the system
+prompt alone is rejected with:
 
-**Workaround:** none. Need a smoke with `enable_auto_extract=true`
-to verify.
+```
+Error: Input must be provided either through stdin or as a prompt
+argument when using --print
+```
 
-**Fix scope:** smoke verification only — run a multi-trial smoke
-with `enable_auto_extract=true`, watch for the spawned `claude
---print` process and the resulting `SKILL.md` in
-`library_root/skills/`. No code change expected; may surface a
-real bug.
+The subprocess returned non-zero immediately, `extract_batch`
+returned `None`, `_flush_buffer` discarded the batch, and the
+new skill was never created. `logger.warning` recorded the
+returncode but not in a way the user could see from the
+`/tmp/...smoke.log` (rich/tqdm captured stderr). The wiring was
+correct, but the subprocess was broken from day one.
+
+**Fix:** add a `-p <user_prompt>` argument to the cmd array in
+`skillq/method/extractor.py:_extract_with_prompt`. The user
+prompt is the trigger instruction (task + synthesize
+instruction); the system prompt carries the format and
+constraints. Direct invocation of `SkillExtractor.extract_batch`
+after the fix produces a real `Skill` object (verified with
+`fix-code-vulnerability` trial data — `skill_id=fix-code-vulnerability`,
+real SKILL.md body with frontmatter).
+
+**Verification (after fix):**
+- 93/93 unit tests pass.
+- `SkillExtractor.extract_batch(trials=...)` end-to-end returns a
+  `Skill` with non-empty body.
+- Auto-extract smoke
+  (`fix-code-vulnerability_skillq_smoke_autoextract.yaml`)
+  end-to-end: trial reward=1.0, hook fired once (calls_log 1
+  line), `sub_task_log` reflects the Skill() call.
+- Note: the auto-extract trigger in
+  `_attribution_and_extract_dispatch` did **not** fire on the
+  single smoke trial even after the fix, because the attribution
+  LLM labelled the trial `FAIL_AGENT_ISSUE` while `r_task=1.0` —
+  Rule 2 (success) and Rule 5 (failure) are both gated on a
+  matching attribution verdict. This is an attribution-prompt
+  quality issue, not a wiring bug; the subprocess now works
+  end-to-end when manually driven.
 
 ---
 
@@ -299,26 +329,36 @@ async API.
 
 ### Bug 9 — Method A (agentic search) not tested end-to-end
 
-**Symptom:** `agentic_search.py`'s `_search.sh` + `_manifest.json`
-generator + skill directory staging is in the code but never
-exercised on a real trial. The most recent end-to-end runs all
-used Method B (hook). The smoke config
-`method_git_smoke.yaml` exists but its only run is
-`tb2_v2/.../fix-code-vulnerability__2Qpsn6a`, and that's actually
-Method B (per its `retrieval_mode`).
+**Status:** ✅ **fixed in current tree** (smoke-verified; no code
+change needed). Will be referenced in the "Fixed in the current
+tree" table below.
 
-**Cause:** the only smoke we ran used `retrieval_mode: hook`.
-The `method_git_smoke.yaml` (Method A) is unreferenced.
+**Smoke result:** `configure-git-webserver_skillq_smoke_agentic.yaml`
++ `method_git_smoke_agentic.yaml` ran end-to-end (reward=1.0).
+- 0 PreToolUse hook mounts in `docker-compose-mounts.json` (the
+  Method A path doesn't install the hook).
+- Method A artifacts present:
+  `trial_dir/skillq_skills/{<seed_skill_dirs>,PAPER_METHOD_INSTRUCTIONS.md,_search.sh,_manifest.json}`.
+- Plan D pre-embed succeeded: `emb_cache.json` populated with
+  37 seed-skill embeddings.
+- `method_state.json` step=1, lib size 37.
+- `result.json` re-validates via `TrialResult.model_validate_json`.
 
-**Impact:** medium. The agentic path may have its own bugs
-(unrelated to the Q-table fix). `_search.sh`'s argparse, the
-manifest writer's dedup, the agent's prompt for invoking the
-search — none verified.
+**Side note (not a wiring bug):** the agent chose to solve the
+task with raw Bash and never invoked `_search.sh` — search count
+in `claude-code.txt` is 0. The Method A infrastructure (script,
+manifest, dir mount) is in place; whether the agent uses it is
+an agent behaviour, not a code bug. To exercise the search path
+end-to-end a future smoke would need a task where the agent
+cannot solve the task without consulting a skill.
 
-**Workaround:** none.
-
-**Fix scope:** smoke verification only — switch `retrieval_mode`
-to `agentic` in a smoke config, run, watch for issues.
+**Caveat / config gotcha:** the method config must declare an
+`embedder_model` and `embedder_dim`, even for Method A, because
+`attach_paper_registers` calls Plan D pre-embed unconditionally
+for any retrieval mode. The default `text-embedding-3-small` 404s
+on this env (only DashScope key is set), so the method yaml
+needs the same `openai/${EMBEDDING_MODEL}` prefix the hook smoke
+uses, plus `embedder_dim: 1024` for `text-embedding-v4`.
 
 ---
 
@@ -382,12 +422,18 @@ thread to die.
 By "value / effort" ratio:
 
 1. ~~**Bug 2** (Pydantic Literal on resume)~~ — ✅ done in F17.
-2. **Bug 3** (per-trial q_table.json sync) — low value, very low
+2. ~~**Bug 4** (auto-extract verification)~~ — ✅ done in F18.
+   Bonus: surfaced a real wiring bug (F18) — the `claude
+   --print` cmd array had no user prompt, the subprocess was
+   always returning non-zero, the wiring was effectively dead
+   from day one. Now verified end-to-end via direct
+   `SkillExtractor.extract_batch` invocation.
+3. ~~**Bug 9** (Method A verification)~~ — ✅ done in F19. No
+   code change; just a smoke that proves the agentic path
+   works (skipped on the agent side because the test task was
+   solvable without `_search.sh`).
+4. **Bug 3** (per-trial q_table.json sync) — low value, very low
    effort (~5 lines). Just makes the artifacts less confusing.
-3. **Bug 4** (auto-extract verification) — high value, low
-   effort (smoke only, no code). Unblocks the Layer 4 path.
-4. **Bug 9** (Method A verification) — high value, low effort
-   (smoke only). Symmetry with the Method B verification.
 5. **Bug 8** (sub_task_verifier async) — medium value, medium
    effort (~50 lines). Performance.
 6. **Bug 6** (per-task step counter) — medium value, medium

@@ -160,6 +160,17 @@ class SkillExtractor:
             *(["--model", self.model] if self.model else []),
             "--append-system-prompt",
             system_prompt,
+            # Bug 4 fix: ``claude --print`` requires a user prompt
+            # (from stdin or as the ``-p`` argument); the system
+            # prompt alone is rejected with "Input must be provided
+            # either through stdin or as a prompt argument when
+            # using --print". The user prompt is the trigger
+            # instruction — the system prompt carries the format
+            # and constraints.
+            "-p",
+            f"Task: {task}\n\n"
+            f"Synthesize a reusable SKILL.md into "
+            f"{sandbox}/create/<your-skill-name>/SKILL.md.",
         ]
 
         try:
