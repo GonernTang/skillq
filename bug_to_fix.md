@@ -248,6 +248,22 @@ practice for moderate α.
 
 ### Bug 6 — `state.step` is a global counter across all tasks sharing a `library_root`
 
+**Status: ✅ done (commit `7aa2340`). Resolved by removing every
+decision that read `state.step` or `last_retrieval_step`.**
+
+After the eviction simplification, `LibManager.maintain()` no
+longer consults `state.step` for staleness or probation gates —
+the only eviction rule is `while lib.size > b_max: evict lowest-Q`,
+which is per-skill Q-driven and unaffected by cross-task step
+drift. `state.step` is still persisted (read by `bridge._maintain_lib`
+to pass as `current_step`) but its only consumer is now
+`maintain()`'s unused `current_step` parameter — safe to remove
+in a future cleanup.
+
+---
+
+### Bug 6 (historical) — `state.step` is a global counter across all tasks sharing a `library_root`
+
 **Symptom:** `state.step += 1` happens at the end of every trial.
 If a user runs `configure-git-webserver` × 3 + `fix-code-vulnerability`
 × 2 against the same `library_root/.state/method_state.json`, the
@@ -263,15 +279,20 @@ step counter accumulates across task types. The library-maintain
 `state.step` grew, even if the skill was never re-retrieved in
 intervening trials.
 
-**Workaround:** use one `library_root` per task. Or set
-`n_stale` very high.
+**Workaround (now obsolete):** use one `library_root` per task.
+Or set `n_stale` very high.
 
-**Fix scope:** ~10 lines. Either:
+**Fix scope (superseded):** ~10 lines. Either:
 - (a) Track per-task `step` and reset on task change. Needs
   `event.task_name` plumbing.
 - (b) Track per-skill `last_retrieved_step` and let staleness
   be relative to the skill's last retrieval, not the global
   step. Cleaner but changes Eq.5 / Layer 3 semantics.
+
+The actually-shipped fix was **(c)**: delete all `state.step` /
+`last_retrieval_step` consumers and reduce the eviction rule to
+`b_max`-bounded lowest-Q. Same correctness outcome, no paper
+semantics to renegotiate.
 
 ---
 
@@ -364,13 +385,25 @@ uses, plus `embedder_dim: 1024` for `text-embedding-v4`.
 
 ### Bug 10 — `seed_initial_q` overwrites missing entries unconditionally
 
+**Status: ✅ closed by Bug 6 simplification (commit `7aa2340`).**
+
+No code change made; the loop at `state.py:163-167` is still
+present (intentionally — it provides backward compat for legacy
+state files and external tools that bypass `set_q`), but with
+admission removed, no decision reads the auto-seeded Q value
+anymore. Adding a `reseed_on_load` flag would be busywork.
+
+---
+
+### Bug 10 (historical) — `seed_initial_q` overwrites missing entries unconditionally
+
 **Symptom:** `QlibState.load_into` re-applies `seed_initial_q` to
 any skill not yet in `mgr.q_table`. If a user starts with
 `seed_initial_q=0.5`, runs 10 trials (Q drifts), then adds a new
 seed skill — the new skill gets Q=0.5, even if the user has
 adopted a "low initial Q, let evidence drive" policy.
 
-**Cause:** `load_into` at `state.py:172-176` is unconditional:
+**Cause:** `load_into` at `state.py:163-167` is unconditional:
 
 ```python
 if seed_initial_q != 0.0:
@@ -386,7 +419,7 @@ issue is the "silently re-applies" aspect — users have to set
 **Workaround:** set `seed_initial_q=0.0` in the method yaml to
 disable re-seeding.
 
-**Fix scope:** ~3 lines. Add a config flag like
+**Fix scope (now moot):** ~3 lines. Add a config flag like
 `reseed_on_load: bool = True` and gate the loop on it.
 
 ---
@@ -443,19 +476,31 @@ By "value / effort" ratio:
    `tests/test_q_initial.py::test_bridge_redumps_q_table_to_staging_on_ended`.
 5. **Bug 8** (sub_task_verifier async) — medium value, medium
    effort (~50 lines). Performance.
-6. **Bug 6** (per-task step counter) — medium value, medium
-   effort (~10 lines). Correctness.
-7. ~~**Bug 5** (Q clip)~~ — ✅ done. Added
+6. ~~**Bug 6** (per-task step counter)~~ — ✅ done. Resolved by
+   the eviction simplification (commit `7aa2340`): admission /
+   stale-queue / low-Q-queue / deprecation_list / rejuvenate
+   path are all gone, so the global `state.step` counter no
+   longer drives any decision. The only eviction rule is now
+   `while lib.size > b_max: evict lowest-Q`, which is per-skill
+   Q-driven and unaffected by cross-task step drift. Also
+   incidentally closes Bug 10 — see next entry.
+7. ~~**Bug 10** (`reseed_on_load` flag)~~ — ✅ closed by Bug 6
+   simplification. The `state.py:163-167` loop that auto-seeds
+   missing Q-values to `seed_initial_q` is still present (for
+   backward compat with legacy state files and external tools
+   that bypass `set_q`), but with admission removed, no decision
+   reads the auto-seeded Q value anymore. The mechanism is
+   harmless dead code; adding a `reseed_on_load` flag would be
+   busywork. Skipped.
+8. ~~**Bug 5** (Q clip)~~ — ✅ done. Added
    ``MethodConfig.q_clip_floor`` / ``q_clip_ceiling`` (both
    default ``None`` = no clip, existing behaviour preserved),
    plumbed through to ``LibManager`` and applied inside
-   ``update_q`` and ``set_q``. 5 unit tests in
+   ``update_q`` and ``set_q``. 6 unit tests in
    ``tests/test_q_initial.py::test_q_clip_*`` (default
    no-op, floor-only, ceiling-only, both-bounds, config
-   default). Reference design's ``q_floor`` knob adopted;
-   added ``q_clip_ceiling`` for symmetry. To forbid
-   negative Q (recommended for ``theta_admit``/``theta_evict``
-   safety), set ``q_clip_floor: 0.0`` in the method config.
-8. **Bug 10** (`reseed_on_load` flag) — low value, low effort
-   (~3 lines).
+   default, config roundtrip). Reference design's ``q_floor``
+   knob adopted; added ``q_clip_ceiling`` for symmetry. To
+   forbid negative Q, set ``q_clip_floor: 0.0`` in the method
+   config.
 9. **Bug 1, 7, 11** — leave alone, working as intended.
