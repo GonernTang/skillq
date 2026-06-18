@@ -37,7 +37,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from skillq.method.types import Qlib, Skill
 
@@ -67,6 +67,12 @@ class LibManager:
     theta_evict: float
     n_explore: int
     n_stale: int
+    # Bug 5: optional bilateral Q-value clip. Default (None, None)
+    # = no clip = existing behaviour preserved. See
+    # ``MethodConfig.q_clip_floor`` / ``q_clip_ceiling`` for the
+    # user-facing knobs.
+    q_clip_floor: Optional[float] = None
+    q_clip_ceiling: Optional[float] = None
 
     # Q-table: skill_id -> Q-value (single global value per skill)
     q_table: Dict[str, float] = field(default_factory=dict)
@@ -90,8 +96,18 @@ class LibManager:
     # Q-table mutation
     # ------------------------------------------------------------------
     def update_q(self, skill_id: str, delta: float) -> None:
-        """Apply a Q-value increment (or decrement) to one skill."""
-        self.q_table[skill_id] = self.q_table.get(skill_id, 0.0) + delta
+        """Apply a Q-value increment (or decrement) to one skill.
+
+        If ``q_clip_floor`` / ``q_clip_ceiling`` are set, the resulting
+        Q is clipped to ``[q_clip_floor, q_clip_ceiling]`` (Bug 5).
+        Default None: no clip = existing behaviour preserved.
+        """
+        new_q = self.q_table.get(skill_id, 0.0) + delta
+        if self.q_clip_floor is not None:
+            new_q = max(self.q_clip_floor, new_q)
+        if self.q_clip_ceiling is not None:
+            new_q = min(self.q_clip_ceiling, new_q)
+        self.q_table[skill_id] = new_q
         self.update_count[skill_id] += 1
 
         # Per-skill probation bookkeeping (no per-intent)
@@ -105,9 +121,14 @@ class LibManager:
     def set_q(self, skill_id: str, q_value: float) -> None:
         """Set the Q value of a skill directly (used for seed/initial).
 
-        Updates the running mean used by probation so subsequent
-        maintain() calls see a consistent state.
+        If ``q_clip_floor`` / ``q_clip_ceiling`` are set, the value is
+        clipped to ``[q_clip_floor, q_clip_ceiling]`` (Bug 5).
+        Default None: no clip = existing behaviour preserved.
         """
+        if self.q_clip_floor is not None:
+            q_value = max(self.q_clip_floor, q_value)
+        if self.q_clip_ceiling is not None:
+            q_value = min(self.q_clip_ceiling, q_value)
         self.q_table[skill_id] = q_value
 
     def q_for(self, skill_id: str) -> float:

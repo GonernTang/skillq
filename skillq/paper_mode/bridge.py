@@ -476,6 +476,8 @@ def attach_paper_registers(
         theta_evict=method.theta_evict,
         n_explore=method.n_explore,
         n_stale=method.n_stale,
+        q_clip_floor=method.q_clip_floor,
+        q_clip_ceiling=method.q_clip_ceiling,
     )
     # State + emb_cache load
     state = QlibState(method.resolved_state_path())

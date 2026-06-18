@@ -291,6 +291,8 @@ def wire_one_trial(handle: ContainerWiringHandle, event: Any) -> None:
         theta_evict=method.theta_evict,
         n_explore=method.n_explore,
         n_stale=method.n_stale,
+        q_clip_floor=method.q_clip_floor,
+        q_clip_ceiling=method.q_clip_ceiling,
     )
     QlibState(handle.state_path).load_into(lib, mgr, lib_root=method.library_root)
     emb_cache = VectorTable(handle.state_path.parent / "emb_cache.json")

@@ -24,6 +24,29 @@ class MethodConfig(BaseModel):
     beta: float = Field(default=0.5, ge=0.0, le=1.0)
     increment_clip: float = Field(default=1.0, ge=0.0)
 
+    # Bug 5: optional bilateral clip on Q-values applied inside
+    # ``LibManager.update_q`` / ``set_q``. Default (None, None) =
+    # no clip = existing behaviour preserved. Set
+    # ``q_clip_floor=0.0`` to forbid negative Q (recommended when
+    # Q feeds into ``theta_admit`` / ``theta_evict`` which assume
+    # a [0, 1] range); set ``q_clip_ceiling=1.0`` to forbid
+    # Q > 1.0. Mirrors the reference design's ``q_floor`` knob but
+    # bilateral.
+    q_clip_floor: Optional[float] = Field(
+        default=None,
+        description=(
+            "Optional lower bound for Q-values. update_q / set_q "
+            "clip Q to >= this value. Default None: no lower bound."
+        ),
+    )
+    q_clip_ceiling: Optional[float] = Field(
+        default=None,
+        description=(
+            "Optional upper bound for Q-values. update_q / set_q "
+            "clip Q to <= this value. Default None: no upper bound."
+        ),
+    )
+
     # Two-stage retrieval (Layer 1, Eq. 4)
     lambda_: float = Field(default=0.5, ge=0.0, le=1.0)
     c_ucb: float = Field(default=0.5, ge=0.0)

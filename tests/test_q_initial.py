@@ -355,3 +355,86 @@ def test_bridge_redumps_q_table_to_staging_on_ended(tmp_path: Path, monkeypatch)
     # The new skill must now appear with its initial Q.
     assert "auto-fix-cwe" in post_snapshot
     assert abs(post_snapshot["auto-fix-cwe"] - 0.42) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# Bug 5 — Q-value clip (q_clip_floor / q_clip_ceiling on LibManager)
+# ---------------------------------------------------------------------------
+def test_q_clip_default_no_clip():
+    """Default q_clip_floor=None, q_clip_ceiling=None: update_q
+    and set_q accept any value. Existing behaviour preserved.
+    """
+    mgr = LibManager(
+        b_max=10, theta_admit=0.25, theta_evict=0.15,
+        n_explore=8, n_stale=80,
+    )
+    mgr.update_q("a", -10.0)   # big negative delta
+    assert mgr.q_for("a") == -10.0  # not clipped
+    mgr.set_q("b", 2.0)         # value > 1
+    assert mgr.q_for("b") == 2.0   # not clipped
+
+
+def test_q_clip_floor_zero_forbids_negative():
+    """q_clip_floor=0.0: Q never goes below 0 via update_q OR set_q.
+    """
+    mgr = LibManager(
+        b_max=10, theta_admit=0.25, theta_evict=0.15,
+        n_explore=8, n_stale=80,
+        q_clip_floor=0.0,
+    )
+    mgr.update_q("a", -10.0)
+    assert mgr.q_for("a") == 0.0  # clipped to floor
+    mgr.set_q("b", -0.5)
+    assert mgr.q_for("b") == 0.0  # clipped to floor
+
+
+def test_q_clip_ceiling_one_forbids_above_one():
+    """q_clip_ceiling=1.0: Q never goes above 1 via update_q OR set_q.
+    """
+    mgr = LibManager(
+        b_max=10, theta_admit=0.25, theta_evict=0.15,
+        n_explore=8, n_stale=80,
+        q_clip_ceiling=1.0,
+    )
+    mgr.set_q("a", 2.0)
+    assert mgr.q_for("a") == 1.0  # clipped to ceiling
+    mgr.update_q("b", 100.0)  # huge positive delta
+    assert mgr.q_for("b") == 1.0
+
+
+def test_q_clip_both_bounds():
+    """q_clip_floor=-0.5, q_clip_ceiling=0.5: Q stays in [-0.5, 0.5].
+    """
+    mgr = LibManager(
+        b_max=10, theta_admit=0.25, theta_evict=0.15,
+        n_explore=8, n_stale=80,
+        q_clip_floor=-0.5, q_clip_ceiling=0.5,
+    )
+    mgr.update_q("a", 100.0)
+    assert mgr.q_for("a") == 0.5
+    mgr.update_q("a", -100.0)
+    assert mgr.q_for("a") == -0.5
+
+
+def test_method_config_q_clip_default_none():
+    """MethodConfig.q_clip_floor / q_clip_ceiling default to None.
+    """
+    cfg = MethodConfig()
+    assert cfg.q_clip_floor is None
+    assert cfg.q_clip_ceiling is None
+
+
+def test_method_config_q_clip_floor_zero_roundtrip():
+    """q_clip_floor=0.0 round-trips through pydantic validation.
+    """
+    cfg = MethodConfig(q_clip_floor=0.0)
+    assert cfg.q_clip_floor == 0.0
+    # And wires into LibManager via the bridge plumbing (the
+    # bridge's LibManager(...) call passes it through).
+    mgr = LibManager(
+        b_max=10, theta_admit=0.25, theta_evict=0.15,
+        n_explore=8, n_stale=80,
+        q_clip_floor=cfg.q_clip_floor,
+    )
+    mgr.update_q("a", -1.0)
+    assert mgr.q_for("a") == 0.0

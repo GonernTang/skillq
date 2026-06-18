@@ -445,7 +445,17 @@ By "value / effort" ratio:
    effort (~50 lines). Performance.
 6. **Bug 6** (per-task step counter) — medium value, medium
    effort (~10 lines). Correctness.
-7. **Bug 5** (Q clip) — low value, low effort (~5 lines).
+7. ~~**Bug 5** (Q clip)~~ — ✅ done. Added
+   ``MethodConfig.q_clip_floor`` / ``q_clip_ceiling`` (both
+   default ``None`` = no clip, existing behaviour preserved),
+   plumbed through to ``LibManager`` and applied inside
+   ``update_q`` and ``set_q``. 5 unit tests in
+   ``tests/test_q_initial.py::test_q_clip_*`` (default
+   no-op, floor-only, ceiling-only, both-bounds, config
+   default). Reference design's ``q_floor`` knob adopted;
+   added ``q_clip_ceiling`` for symmetry. To forbid
+   negative Q (recommended for ``theta_admit``/``theta_evict``
+   safety), set ``q_clip_floor: 0.0`` in the method config.
 8. **Bug 10** (`reseed_on_load` flag) — low value, low effort
    (~3 lines).
 9. **Bug 1, 7, 11** — leave alone, working as intended.
