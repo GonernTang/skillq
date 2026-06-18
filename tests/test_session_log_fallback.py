@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -186,7 +187,6 @@ def test_extract_uses_most_recent_jsonl(tmp_path: Path):
         session_name="session-001.jsonl",
     )
     # Sleep to ensure a different mtime
-    import time
 
     time.sleep(0.05)
     newer = _write_session_jsonl(
@@ -309,6 +309,13 @@ def test_q_update_falls_back_to_session_log_when_hook_log_empty(
                 rationale="stub success",
             )
 
+        async def ascore(self, *, task, skill_id, skill_description, sub_task_trace):
+            return SubTaskVerdict(
+                skill_id=skill_id,
+                success=True,
+                rationale="stub success",
+            )
+
     monkeypatch.setattr(bridge_mod, "SubTaskVerifier", _AlwaysSuccessVerifier)
 
     # Skip the attribution/extract path entirely so the test focuses
@@ -400,3 +407,94 @@ def test_q_update_no_signal_no_op_when_neither_hook_nor_session(
     # Q-table may or may not have an entry for the seed; either way
     # no Q-update for "git-basics" ran (since there was no signal).
     assert state["step"] == 1  # trial was processed end-to-end
+
+
+def test_q_update_parallel_wallclock_below_serial(
+    tmp_path: Path, monkeypatch
+):
+    """Bug 8 fix verification: 8 skills × 2 calls each (16 judge calls)
+    with a 0.3s-per-call stub. Serial would take ~4.8s; the
+    Semaphore(8)-bounded ``asyncio.gather`` parallel path should take
+    roughly ``ceil(16/8) × 0.3 = 0.6s``.
+
+    We assert elapsed < ``serial_bound / 2`` — must beat the serial
+    bound by at least 2×. Allows generous headroom for asyncio
+    scheduling overhead + on_ended bookkeeping.
+    """
+    _patch_litellm_backends(monkeypatch)
+    monkeypatch.setattr(
+        bridge_mod.AttributionAnalyzer,
+        "analyze",
+        lambda self, **kwargs: TrialAttribution(
+            overall_attribution=Attribution.SUCCESS_SKILL_USED,
+            overall_rationale="test",
+            knowledge_to_extract="",
+        ),
+    )
+
+    JUDGE_LATENCY_SEC = 0.3
+
+    class _SlowAsyncVerifier:
+        """SubTaskVerifier stub whose ascore sleeps to model LLM latency."""
+
+        def __init__(self, backend, model):
+            pass
+
+        async def ascore(
+            self, *, task, skill_id, skill_description, sub_task_trace
+        ):
+            await asyncio.sleep(JUDGE_LATENCY_SEC)
+            return SubTaskVerdict(
+                skill_id=skill_id,
+                success=True,
+                rationale="slow stub",
+            )
+
+    monkeypatch.setattr(bridge_mod, "SubTaskVerifier", _SlowAsyncVerifier)
+
+    method = MethodConfig(
+        library_root=tmp_path / "lib",
+        b_max=16,
+        enable_auto_extract=False,
+        seed_initial_q=0.5,
+        theta_near_miss=1.0,
+    )
+
+    # Seed the library with 8 distinct skills so by_skill has 8 groups.
+    lib = Qlib(b_max=method.b_max)
+    mgr = LibManager(b_max=method.b_max)
+    for i in range(8):
+        lib.add(Skill(skill_id=f"skill-{i}", body=f"body {i}"))
+        mgr.set_q(f"skill-{i}", 0.5)
+    state_path = method.resolved_state_path()
+    QlibState(state_path).save(
+        lib,
+        mgr,
+        lib_root=method.library_root,
+        seed_initial_q=method.seed_initial_q,
+    )
+
+    job = _MockJob()
+    bridge_mod.attach_paper_registers(job, method)
+
+    # Build a trial dir with a session log: 2 calls per skill = 16 total.
+    trial_dir = tmp_path / "trial-slow"
+    trial_dir.mkdir()
+    entries = []
+    for i in range(8):
+        entries.append(_skill_tool_use(f"skill-{i}"))
+        entries.append(_skill_tool_use(f"skill-{i}"))
+    _write_session_jsonl(trial_dir, *entries)
+
+    result = _fake_trial_result(reward=1.0, trial_uri=str(trial_dir))
+    event = _fake_hook_event("trial-slow", result=result)
+
+    t0 = time.monotonic()
+    asyncio.run(job.on_ended(event))
+    elapsed = time.monotonic() - t0
+
+    serial_bound = 16 * JUDGE_LATENCY_SEC  # 4.8s
+    assert elapsed < serial_bound / 2, (
+        f"judge phase took {elapsed:.2f}s; expected < {serial_bound/2:.2f}s "
+        f"(serial bound {serial_bound:.2f}s; MAX_CONCURRENT_JUDGES=8)"
+    )

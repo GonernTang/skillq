@@ -78,6 +78,7 @@ from skillq.method.vector_table import (
 )
 from skillq.method.sub_task_verifier import (
     LiteLLMSubTaskVerifierBackend,
+    SubTaskVerdict,
     SubTaskVerifier,
     mean_r_subtask,
 )
@@ -656,7 +657,7 @@ def attach_paper_registers(
     # on a closure over attach_paper_registers. The Q-table and lib
     # are passed in (and mutated in place).
     # ------------------------------------------------------------------
-    def _q_update_from_subtask(
+    async def _q_update_from_subtask(
         *,
         trial_id: str,
         intent_text: str,
@@ -678,6 +679,15 @@ def attach_paper_registers(
 
             target   = w_subtask * r_subtask_mean + w_task * r_task
             Q(skill) += alpha * (target - Q(skill))
+
+        The judge calls are issued concurrently via
+        :func:`asyncio.gather`, bounded by
+        :data:`~skillq.method.sub_task_verifier.MAX_CONCURRENT_JUDGES`
+        inside :meth:`SubTaskVerifier.ascore`. ``asyncio.gather``
+        returns verdicts in **input order** (not completion order) so
+        we can re-group by ``skill_id`` in the second pass by
+        slicing ``verdicts_in_order`` with the ``group_sizes`` we
+        captured in the first pass.
 
         Returns the per-trial sub_task_log entries (for the debug
         state file). Reads ``skillq_skill_calls.jsonl`` written by the
@@ -729,27 +739,66 @@ def attach_paper_registers(
             return []
 
         out: list[dict[str, Any]] = []
+        # First pass: enumerate every (skill, call) the judge must
+        # score, plus the per-skill ordering info we'll need to
+        # regroup the parallel results.
+        #   - ``judge_inputs``:   flat list of (skill_id, trace, desc)
+        #                         in deterministic order (by_skill
+        #                         iteration × calls).
+        #   - ``group_sizes``:    number of judge calls per surviving
+        #                         (in-lib) skill, in the same order as
+        #                         the slices of judge_inputs.
+        #   - ``ordered_skills``: list of surviving skill_ids, in
+        #                         iteration order. Used to re-group
+        #                         verdicts_in_order in the second pass.
+        # Skills evicted between call-time and end-of-trial are
+        # skipped here, matching today's serial behavior.
+        judge_inputs: list[tuple[str, str, str]] = []
+        group_sizes: list[int] = []
+        ordered_skills: list[str] = []
         for skill_id, calls in by_skill.items():
             if skill_id not in lib:
                 # Skill was in the agent's view at call time but has
                 # since been evicted. Skip — we don't Q-update a
                 # skill that no longer exists.
                 continue
-            verdicts = []
+            ordered_skills.append(skill_id)
+            group_sizes.append(len(calls))
+            # The judge evaluates goal completion, not body
+            # quality, so we pass the description (extracted
+            # from the SKILL.md frontmatter), not the full body.
+            # ``lib.get`` may return None for an evicted skill
+            # in a race; default to "" so the prompt still formats.
+            skill = lib.get(skill_id)
+            desc = _description_of(skill.body) if skill else ""
             for call in calls:
                 trace = _slice_sub_task_trace(trial_dir, call.ts)
-                skill = lib.get(skill_id)
-                # The judge evaluates goal completion, not body
-                # quality, so we pass the description (extracted
-                # from the SKILL.md frontmatter), not the full body.
-                desc = _description_of(skill.body) if skill else ""
-                verdict = sub_task_verifier.score(
-                    task=intent_text,
-                    skill_id=skill_id,
-                    skill_description=desc,
-                    sub_task_trace=trace,
-                )
-                verdicts.append(verdict)
+                judge_inputs.append((skill_id, trace, desc))
+
+        # Fire all judge calls in parallel. No ``return_exceptions``
+        # so a single failure propagates and the outer on_ended
+        # try/except records it as today. ``asyncio.gather``
+        # returns verdicts in input order (Python 3.10+).
+        verdicts_in_order: list[SubTaskVerdict] = []
+        if judge_inputs:
+            verdicts_in_order = await asyncio.gather(
+                *[
+                    sub_task_verifier.ascore(
+                        task=intent_text,
+                        skill_id=sid,
+                        skill_description=desc,
+                        sub_task_trace=trace,
+                    )
+                    for sid, trace, desc in judge_inputs
+                ]
+            )
+
+        # Second pass: regroup verdicts_in_order by skill_id, apply
+        # the Q-update per skill, build the debug-log entries.
+        cursor = 0
+        for skill_id, n_calls in zip(ordered_skills, group_sizes):
+            verdicts = verdicts_in_order[cursor : cursor + n_calls]
+            cursor += n_calls
             r_subtask_mean = mean_r_subtask(verdicts)
             # Generalised Eq.6 (binary rewards):
             # target = w_subtask * r_subtask_mean + w_task * r_task
@@ -771,7 +820,7 @@ def attach_paper_registers(
                     {
                         "trial": trial_id,
                         "skill": skill_id,
-                        "calls": len(calls),
+                        "calls": n_calls,
                         "verdicts": [
                             {
                                 "success": v.success,
@@ -788,7 +837,7 @@ def attach_paper_registers(
                 "Q-update skill=%s calls=%d r_subtask_mean=%.2f "
                 "r_task=%d q_old=%+.3f -> q_new=%+.3f",
                 skill_id,
-                len(calls),
+                n_calls,
                 r_subtask_mean,
                 int(r_task),
                 q_old,
@@ -1003,7 +1052,10 @@ def attach_paper_registers(
             trial_dir = _trial_dir(event)
 
             # 1. Per-subtask Q-update (Eq.6 generalised).
-            sub_task_log_entries = _q_update_from_subtask(
+            # ``_q_update_from_subtask`` is async because the
+            # per-call LLM-judge is now fired concurrently under a
+            # Semaphore(8) inside SubTaskVerifier.ascore (Bug 8 fix).
+            sub_task_log_entries = await _q_update_from_subtask(
                 trial_id=event.trial_id,
                 intent_text=intent_text,
                 trial_dir=trial_dir,

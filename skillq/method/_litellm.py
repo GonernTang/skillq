@@ -46,3 +46,23 @@ class LiteLLMCompletion:
             kwargs["response_format"] = self.response_format
         response = litellm.completion(**kwargs)
         return response.choices[0].message.content or ""
+
+    async def acall(self, prompt: str, model: str | None = None) -> str:
+        """Async variant using ``litellm.acompletion``.
+
+        Same kwarg shape as :meth:`__call__`; sync path is kept AS-IS
+        for the three other backend consumers (``verifier``, ``editor``,
+        ``attribution``) that don't need async today. Added in 2026-06-18
+        to support :meth:`SubTaskVerifier.ascore` (Bug 8 fix-by-conversion).
+        """
+        import litellm
+
+        kwargs: dict[str, Any] = {
+            "model": model or self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": self.temperature,
+        }
+        if self.response_format is not None:
+            kwargs["response_format"] = self.response_format
+        response = await litellm.acompletion(**kwargs)
+        return response.choices[0].message.content or ""

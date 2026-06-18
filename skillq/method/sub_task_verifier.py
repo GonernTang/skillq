@@ -27,6 +27,7 @@ don't pass in.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -37,6 +38,34 @@ from skillq.method._litellm import LiteLLMCompletion
 from skillq.method.types import Skill
 
 logger = logging.getLogger("paper.method.sub_task_verifier")
+
+
+#: Maximum concurrent LLM-as-judge calls per trial. Bounded by an
+#: :class:`asyncio.Semaphore` inside :meth:`SubTaskVerifier.ascore` so a
+#: trial with N unique skills × M calls finishes in roughly
+#: ``max_single_call_latency × ceil(N*M / 8)`` instead of
+#: ``N*M × latency``. Module-level constant (not a ``MethodConfig``
+#: field) keeps the surface small; promote to config if anyone
+#: complains about rate-limiting.
+MAX_CONCURRENT_JUDGES = 8
+
+#: Process-wide semaphore (lazy). Created on first :func:`_get_sem`
+#: call to defer binding to the running event loop.
+_JUDGE_SEM: asyncio.Semaphore | None = None
+
+
+def _get_sem() -> asyncio.Semaphore:
+    """Lazily-returned process-wide judge semaphore.
+
+    Created lazily because :class:`asyncio.Semaphore` binds to the
+    running event loop at construction time (Python 3.10+). The
+    semaphore lives for the lifetime of the process; it is just a
+    counter, so the memory cost is negligible.
+    """
+    global _JUDGE_SEM
+    if _JUDGE_SEM is None:
+        _JUDGE_SEM = asyncio.Semaphore(MAX_CONCURRENT_JUDGES)
+    return _JUDGE_SEM
 
 
 @dataclass
@@ -68,9 +97,15 @@ class SubTaskVerdict:
 
 
 class SubTaskVerifierBackend(Protocol):
-    """Backend protocol — same shape as the existing :class:`VerifierBackend`."""
+    """Backend protocol — same shape as the existing :class:`VerifierBackend`.
+
+    Both sync (``__call__``) and async (``acall``) variants are required
+    so :class:`SubTaskVerifier` can use whichever fits the call site.
+    """
 
     def __call__(self, prompt: str, model: str) -> str: ...
+
+    async def acall(self, prompt: str, model: str) -> str: ...
 
 
 class StubSubTaskVerifierBackend:
@@ -80,6 +115,12 @@ class StubSubTaskVerifierBackend:
         self._success = success
 
     def __call__(self, prompt: str, model: str) -> str:
+        return self._payload()
+
+    async def acall(self, prompt: str, model: str) -> str:
+        return self._payload()
+
+    def _payload(self) -> str:
         return json.dumps(
             {
                 "success": self._success,
@@ -151,9 +192,12 @@ output, that's a failure.
 class SubTaskVerifier:
     """LLM-as-judge for one sub-task.
 
-    Stateless — call :meth:`score` once per (skill_id, sub_task_trace)
-    pair. The bridge aggregates over multiple verdicts for the same
-    skill across the same trial.
+    Stateless — call :meth:`score` (sync) or :meth:`ascore` (async)
+    once per (skill_id, sub_task_trace) pair. The bridge aggregates
+    over multiple verdicts for the same skill across the same trial.
+
+    The async path uses a :data:`MAX_CONCURRENT_JUDGES`-bounded
+    semaphore (see :func:`_get_sem`) to throttle parallel LLM calls.
     """
 
     backend: SubTaskVerifierBackend
@@ -167,15 +211,45 @@ class SubTaskVerifier:
         skill_description: str,
         sub_task_trace: str,
     ) -> SubTaskVerdict:
-        """Return a :class:`SubTaskVerdict` for this sub-task."""
-        prompt = SUBTASK_VERIFIER_PROMPT.format(
+        """Sync version — kept for callers that haven't gone async."""
+        prompt = self._build_prompt(task, skill_id, skill_description, sub_task_trace)
+        raw = self.backend(prompt, self.model)
+        return self._parse(skill_id, raw)
+
+    async def ascore(
+        self,
+        task: str,
+        skill_id: str,
+        skill_description: str,
+        sub_task_trace: str,
+    ) -> SubTaskVerdict:
+        """Async version — throttled by a process-wide semaphore.
+
+        Designed for use inside :func:`asyncio.gather` over many
+        (skill, call) tuples; one bad call raises (no
+        ``return_exceptions=True``) so the outer try/except can
+        record the failure exactly as the sync version does.
+        """
+        prompt = self._build_prompt(task, skill_id, skill_description, sub_task_trace)
+        sem = _get_sem()
+        async with sem:
+            raw = await self.backend.acall(prompt, self.model)
+        return self._parse(skill_id, raw)
+
+    def _build_prompt(
+        self,
+        task: str,
+        skill_id: str,
+        skill_description: str,
+        sub_task_trace: str,
+    ) -> str:
+        """Build the SUBTASK_VERIFIER_PROMPT for this sub-task."""
+        return SUBTASK_VERIFIER_PROMPT.format(
             task=task[:2000],
             skill_name=skill_id,
             skill_description=skill_description[:500],
             sub_task_trace=sub_task_trace[: self.max_trace_chars],
         )
-        raw = self.backend(prompt, self.model)
-        return self._parse(skill_id, raw)
 
     @staticmethod
     def _parse(skill_id: str, raw: str) -> SubTaskVerdict:
@@ -224,6 +298,7 @@ def mean_r_subtask(verdicts: Sequence[SubTaskVerdict]) -> float:
 
 
 __all__ = [
+    "MAX_CONCURRENT_JUDGES",
     "SubTaskVerdict",
     "SubTaskVerifier",
     "SubTaskVerifierBackend",
