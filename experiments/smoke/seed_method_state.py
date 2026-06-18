@@ -79,10 +79,6 @@ def main() -> int:
         "step": 0,
         "seed_initial_q": SEED_INITIAL_Q,
         "q_table": q_table,
-        "probation": {"count": {}, "avg_q": {}},
-        "deprecation_list": [],
-        "evict_candidates": [],
-        "last_retrieval_step": {},
         "library": {
             "b_max": 50,
             "skills": skills,

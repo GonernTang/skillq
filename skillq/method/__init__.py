@@ -31,7 +31,6 @@ from skillq.method.layered_q import (
 )
 from skillq.method.library import (
     LibManager,
-    LibraryStats,
     forgetting_rate_upper_bound,
 )
 from skillq.method.near_miss import (
@@ -85,7 +84,6 @@ __all__ = [
     "improvement_penalty_threshold",
     # library
     "LibManager",
-    "LibraryStats",
     "forgetting_rate_upper_bound",
     # near-miss
     "EditProposalBackend",

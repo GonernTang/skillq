@@ -115,13 +115,7 @@ def _seed_lib(method: MethodConfig) -> None:
     state = QlibState(method.resolved_state_path())
     state.save(
         lib,
-        LibManager(
-            b_max=method.b_max,
-            theta_admit=method.theta_admit,
-            theta_evict=method.theta_evict,
-            n_explore=method.n_explore,
-            n_stale=method.n_stale,
-        ),
+        LibManager(b_max=method.b_max),
         lib_root=method.library_root,
         seed_initial_q=method.seed_initial_q,
     )
@@ -158,8 +152,7 @@ def test_buffer_accumulates_until_threshold(tmp_path: Path, monkeypatch):
     method = MethodConfig(
         library_root=tmp_path / "lib",
         b_max=4,
-        n_explore=2,
-        enable_auto_extract=True,
+                enable_auto_extract=True,
         seed_initial_q=0.0,
         extract_every_n_trials=4,       # > #trials
         new_skill_initial_q=0.0,
@@ -192,8 +185,7 @@ def test_threshold_hit_aggregates_n_records(tmp_path: Path, monkeypatch):
     method = MethodConfig(
         library_root=tmp_path / "lib",
         b_max=4,
-        n_explore=2,
-        enable_auto_extract=True,
+                enable_auto_extract=True,
         seed_initial_q=0.0,
         extract_every_n_trials=4,
         new_skill_initial_q=0.0,
@@ -228,8 +220,7 @@ def test_two_batches_in_eight_trials(tmp_path: Path, monkeypatch):
     method = MethodConfig(
         library_root=tmp_path / "lib",
         b_max=10,
-        n_explore=2,
-        enable_auto_extract=True,
+                enable_auto_extract=True,
         seed_initial_q=0.0,
         extract_every_n_trials=4,
         new_skill_initial_q=0.0,
@@ -264,8 +255,7 @@ def test_force_flush_on_last_trial_drains_partial(tmp_path: Path, monkeypatch):
     method = MethodConfig(
         library_root=tmp_path / "lib",
         b_max=10,
-        n_explore=2,
-        enable_auto_extract=True,
+                enable_auto_extract=True,
         seed_initial_q=0.0,
         extract_every_n_trials=4,       # > #trials → no threshold hit
         new_skill_initial_q=0.0,
@@ -299,8 +289,7 @@ def test_no_force_flush_when_more_trials_remain(tmp_path: Path, monkeypatch):
     method = MethodConfig(
         library_root=tmp_path / "lib",
         b_max=10,
-        n_explore=2,
-        enable_auto_extract=True,
+                enable_auto_extract=True,
         seed_initial_q=0.0,
         extract_every_n_trials=4,
         new_skill_initial_q=0.0,
@@ -332,8 +321,7 @@ def test_threshold_n_2_flushes_every_2_trials(tmp_path: Path, monkeypatch):
     method = MethodConfig(
         library_root=tmp_path / "lib",
         b_max=10,
-        n_explore=2,
-        enable_auto_extract=True,
+                enable_auto_extract=True,
         seed_initial_q=0.0,
         extract_every_n_trials=2,
         new_skill_initial_q=0.0,

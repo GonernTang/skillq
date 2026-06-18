@@ -107,13 +107,7 @@ def _seed_lib(method: MethodConfig) -> None:
 
 
 def _fresh_mgr(method: MethodConfig) -> LibManager:
-    return LibManager(
-        b_max=method.b_max,
-        theta_admit=method.theta_admit,
-        theta_evict=method.theta_evict,
-        n_explore=method.n_explore,
-        n_stale=method.n_stale,
-    )
+    return LibManager(b_max=method.b_max)
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +137,6 @@ def test_extract_writes_q_initial_to_q_table(tmp_path: Path, monkeypatch):
     method = MethodConfig(
         library_root=tmp_path / "lib",
         b_max=4,
-        n_explore=2,
         enable_auto_extract=True,
         extract_every_n_trials=1,       # flush on the first qualifying trial
         seed_initial_q=0.0,             # seed skill Q=0 so auto-extract fires
@@ -186,7 +179,6 @@ def test_extract_uses_configured_initial_q(tmp_path: Path, monkeypatch):
     method = MethodConfig(
         library_root=tmp_path / "lib",
         b_max=4,
-        n_explore=2,
         enable_auto_extract=True,
         extract_every_n_trials=1,       # flush on the first qualifying trial
         new_skill_initial_q=0.3,
@@ -214,7 +206,7 @@ def test_seed_skill_load_into_gets_q_initial(tmp_path: Path):
     lib.add(Skill(skill_id="seed-skill-A", body="body A"))
     lib.add(Skill(skill_id="seed-skill-B", body="body B"))
     mgr = LibManager(
-        b_max=10, theta_admit=0.3, theta_evict=0.1, n_explore=5, n_stale=80
+        b_max=10
     )
     state = QlibState(tmp_path / "method_state.json")
     state.save(lib, mgr, lib_root=tmp_path, seed_initial_q=0.5)
@@ -222,7 +214,7 @@ def test_seed_skill_load_into_gets_q_initial(tmp_path: Path):
     # Now load fresh and confirm seed skills have Q=0.5
     lib2 = Qlib()
     mgr2 = LibManager(
-        b_max=10, theta_admit=0.3, theta_evict=0.1, n_explore=5, n_stale=80
+        b_max=10
     )
     state2 = QlibState(tmp_path / "method_state.json")
     state2.load_into(lib2, mgr2, lib_root=tmp_path)
@@ -235,14 +227,14 @@ def test_seed_initial_q_0_disables_seeding(tmp_path: Path):
     lib = Qlib(b_max=10)
     lib.add(Skill(skill_id="seed", body="x"))
     mgr = LibManager(
-        b_max=10, theta_admit=0.3, theta_evict=0.1, n_explore=5, n_stale=80
+        b_max=10
     )
     state = QlibState(tmp_path / "method_state.json")
     state.save(lib, mgr, lib_root=tmp_path, seed_initial_q=0.0)
 
     lib2 = Qlib()
     mgr2 = LibManager(
-        b_max=10, theta_admit=0.3, theta_evict=0.1, n_explore=5, n_stale=80
+        b_max=10
     )
     state2 = QlibState(tmp_path / "method_state.json")
     state2.load_into(lib2, mgr2, lib_root=tmp_path)
@@ -256,7 +248,7 @@ def test_resume_does_not_overwrite_existing_q(tmp_path: Path):
     lib = Qlib(b_max=10)
     lib.add(Skill(skill_id="seed", body="x"))
     mgr = LibManager(
-        b_max=10, theta_admit=0.3, theta_evict=0.1, n_explore=5, n_stale=80
+        b_max=10
     )
     # Pre-populate with a custom Q
     mgr.update_q("seed", 0.7)
@@ -265,7 +257,7 @@ def test_resume_does_not_overwrite_existing_q(tmp_path: Path):
 
     lib2 = Qlib()
     mgr2 = LibManager(
-        b_max=10, theta_admit=0.3, theta_evict=0.1, n_explore=5, n_stale=80
+        b_max=10
     )
     state2 = QlibState(tmp_path / "method_state.json")
     state2.load_into(lib2, mgr2, lib_root=tmp_path)
@@ -313,7 +305,6 @@ def test_bridge_redumps_q_table_to_staging_on_ended(tmp_path: Path, monkeypatch)
     method = MethodConfig(
         library_root=tmp_path / "lib",
         b_max=4,
-        n_explore=2,
         enable_auto_extract=True,
         extract_every_n_trials=1,
         seed_initial_q=0.0,             # seed skill Q=0 so auto-extract fires
@@ -365,8 +356,7 @@ def test_q_clip_default_no_clip():
     and set_q accept any value. Existing behaviour preserved.
     """
     mgr = LibManager(
-        b_max=10, theta_admit=0.25, theta_evict=0.15,
-        n_explore=8, n_stale=80,
+        b_max=10
     )
     mgr.update_q("a", -10.0)   # big negative delta
     assert mgr.q_for("a") == -10.0  # not clipped
@@ -378,8 +368,7 @@ def test_q_clip_floor_zero_forbids_negative():
     """q_clip_floor=0.0: Q never goes below 0 via update_q OR set_q.
     """
     mgr = LibManager(
-        b_max=10, theta_admit=0.25, theta_evict=0.15,
-        n_explore=8, n_stale=80,
+        b_max=10,
         q_clip_floor=0.0,
     )
     mgr.update_q("a", -10.0)
@@ -392,8 +381,7 @@ def test_q_clip_ceiling_one_forbids_above_one():
     """q_clip_ceiling=1.0: Q never goes above 1 via update_q OR set_q.
     """
     mgr = LibManager(
-        b_max=10, theta_admit=0.25, theta_evict=0.15,
-        n_explore=8, n_stale=80,
+        b_max=10,
         q_clip_ceiling=1.0,
     )
     mgr.set_q("a", 2.0)
@@ -406,8 +394,7 @@ def test_q_clip_both_bounds():
     """q_clip_floor=-0.5, q_clip_ceiling=0.5: Q stays in [-0.5, 0.5].
     """
     mgr = LibManager(
-        b_max=10, theta_admit=0.25, theta_evict=0.15,
-        n_explore=8, n_stale=80,
+        b_max=10,
         q_clip_floor=-0.5, q_clip_ceiling=0.5,
     )
     mgr.update_q("a", 100.0)
@@ -432,8 +419,7 @@ def test_method_config_q_clip_floor_zero_roundtrip():
     # And wires into LibManager via the bridge plumbing (the
     # bridge's LibManager(...) call passes it through).
     mgr = LibManager(
-        b_max=10, theta_admit=0.25, theta_evict=0.15,
-        n_explore=8, n_stale=80,
+        b_max=10,
         q_clip_floor=cfg.q_clip_floor,
     )
     mgr.update_q("a", -1.0)

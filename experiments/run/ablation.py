@@ -11,8 +11,10 @@ Cells (all on/off against the default hyperparameters):
                            (replaces r_learning with 0)
   - ``with_near_miss``   — theta_near_miss=0.5 vs theta_near_miss=10
                            (effectively disables Layer 4)
-  - ``with_rejuvenate``  — n_stale=80 (default) vs n_stale=0
-                           (rejuvenation still active, no staleness)
+  - ``with_eviction``    — REMOVED 2026-06-18: admission/stale/lowq
+                           queues and rejuvenation are gone; the only
+                           eviction rule is b_max-bounded lowest-Q.
+                           This ablation is no longer meaningful.
 """
 
 from __future__ import annotations

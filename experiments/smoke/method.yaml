@@ -6,8 +6,9 @@
 # whole experiment can be wiped with one `rm -rf output/smoke_*`.
 #
 # Other fields left at defaults: alpha=0.3, beta=0.5, k1=10, k2=3,
-# theta_admit=0.25, theta_evict=0.15, theta_near_miss=0.5,
-# b_max=50, n_explore=8, n_stale=80, enable_auto_extract=False.
+# theta_near_miss=0.5, b_max=50, enable_auto_extract=False.
+# (theta_admit / theta_evict / n_explore / n_stale were removed in
+# the 2026-06-18 eviction simplification.)
 
 library_root: /home/gonern/workspace/skillq/output/smoke_wiring_v2/.skillq_library
 state_path: /home/gonern/workspace/skillq/output/smoke_wiring_v2/.skillq_library/.state/method_state.json

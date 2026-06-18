@@ -61,8 +61,7 @@ def _seed_state(tmp_path: Path) -> tuple[Qlib, LibManager, VectorTable]:
     lib.add(Skill(skill_id="git-basics", body="git rebase -i HEAD~3"))
 
     mgr = LibManager(
-        b_max=10, theta_admit=0.3, theta_evict=0.1,
-        n_explore=5, n_stale=80,
+        b_max=10
     )
     mgr.update_q("git-basics", 0.42)
 
@@ -158,8 +157,7 @@ def test_wire_one_trial_populates_env_and_mounts(tmp_path: Path):
     method = MethodConfig(
         library_root=tmp_path / ".skillq_library",
         b_max=10,
-        n_explore=5,
-        seed_initial_q=0.5,
+                seed_initial_q=0.5,
         retrieval_mode="hook",   # force Method B (these tests assert on skillq_state + hook env)
         hook_enabled=True,
         hook_top_k=3,
@@ -239,8 +237,7 @@ def test_wire_one_trial_uses_method_config_tunables(tmp_path: Path):
     method = MethodConfig(
         library_root=tmp_path / ".skillq_library",
         b_max=10,
-        n_explore=5,
-        seed_initial_q=0.5,
+                seed_initial_q=0.5,
         retrieval_mode="hook",   # force Method B
         hook_top_k=7,           # ← custom
         hook_lambda=0.2,        # ← custom
@@ -271,8 +268,7 @@ def test_wire_one_trial_handles_empty_lib(tmp_path: Path):
     method = MethodConfig(
         library_root=tmp_path / ".skillq_library",
         b_max=10,
-        n_explore=5,
-        retrieval_mode="hook",   # force Method B
+                retrieval_mode="hook",   # force Method B
     )
     # Don't seed any skills — lib is empty.
     event = _fake_event(tmp_path)
@@ -304,8 +300,7 @@ def test_wire_one_trial_agentic_writes_skill_tree(tmp_path: Path):
     method = MethodConfig(
         library_root=tmp_path / ".skillq_library",
         b_max=10,
-        n_explore=5,
-        seed_initial_q=0.5,
+                seed_initial_q=0.5,
         retrieval_mode="agentic",
     )
     event = _fake_event(tmp_path)
@@ -351,8 +346,7 @@ def test_wire_one_trial_agentic_no_claude_md_overwrite(tmp_path: Path):
     method = MethodConfig(
         library_root=tmp_path / ".skillq_library",
         b_max=10,
-        n_explore=5,
-        retrieval_mode="agentic",
+                retrieval_mode="agentic",
         # user_claude_md_path is None by default → no merge
     )
     event = _fake_event(tmp_path)
@@ -391,8 +385,7 @@ def test_wire_one_trial_agentic_merges_user_claude_md(tmp_path: Path):
     method = MethodConfig(
         library_root=tmp_path / ".skillq_library",
         b_max=10,
-        n_explore=5,
-        retrieval_mode="agentic",
+                retrieval_mode="agentic",
         user_claude_md_path=user_claude,
     )
     event = _fake_event(tmp_path)

@@ -1,8 +1,6 @@
 """Pydantic configuration for ``paper paper`` mode.
 
-Fields map 1:1 to the symbols in the SkillQ paper (Sec. 3.1-3.4). Defaults
-differ from the implementation_guide skeleton (e.g. ``n_explore=8`` vs 10)
-to make the mg defaults not a verbatim copy.
+Fields map 1:1 to the symbols in the SkillQ paper (Sec. 3.1-3.4).
 """
 
 from __future__ import annotations
@@ -27,11 +25,9 @@ class MethodConfig(BaseModel):
     # Bug 5: optional bilateral clip on Q-values applied inside
     # ``LibManager.update_q`` / ``set_q``. Default (None, None) =
     # no clip = existing behaviour preserved. Set
-    # ``q_clip_floor=0.0`` to forbid negative Q (recommended when
-    # Q feeds into ``theta_admit`` / ``theta_evict`` which assume
-    # a [0, 1] range); set ``q_clip_ceiling=1.0`` to forbid
-    # Q > 1.0. Mirrors the reference design's ``q_floor`` knob but
-    # bilateral.
+    # ``q_clip_floor=0.0`` to forbid negative Q; set
+    # ``q_clip_ceiling=1.0`` to forbid Q > 1.0. Mirrors the reference
+    # design's ``q_floor`` knob but bilateral.
     q_clip_floor: Optional[float] = Field(
         default=None,
         description=(
@@ -54,11 +50,7 @@ class MethodConfig(BaseModel):
     k2: int = Field(default=3, ge=1)
 
     # Library management (Layer 3)
-    theta_admit: float = Field(default=0.25, ge=0.0, le=1.0)
-    theta_evict: float = Field(default=0.15, ge=0.0, le=1.0)
     b_max: int = Field(default=50, ge=1)
-    n_explore: int = Field(default=8, ge=1)
-    n_stale: int = Field(default=80, ge=1)
 
     # Near-miss (Layer 4)
     # Note: the previous ``edit_token_cap`` field (default 0.20) has

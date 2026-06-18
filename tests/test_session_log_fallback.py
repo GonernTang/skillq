@@ -278,13 +278,7 @@ def _seed_lib(method: MethodConfig) -> None:
     state = QlibState(method.resolved_state_path())
     state.save(
         lib,
-        LibManager(
-            b_max=method.b_max,
-            theta_admit=method.theta_admit,
-            theta_evict=method.theta_evict,
-            n_explore=method.n_explore,
-            n_stale=method.n_stale,
-        ),
+        LibManager(b_max=method.b_max),
         lib_root=method.library_root,
         seed_initial_q=method.seed_initial_q,
     )
@@ -333,8 +327,7 @@ def test_q_update_falls_back_to_session_log_when_hook_log_empty(
     method = MethodConfig(
         library_root=tmp_path / "lib",
         b_max=4,
-        n_explore=2,
-        enable_auto_extract=False,
+                enable_auto_extract=False,
         seed_initial_q=0.5,        # seed skill Q=0.5 so update_q finds it in probation_count
         theta_near_miss=1.0,
     )
@@ -387,8 +380,7 @@ def test_q_update_no_signal_no_op_when_neither_hook_nor_session(
     method = MethodConfig(
         library_root=tmp_path / "lib",
         b_max=4,
-        n_explore=2,
-        enable_auto_extract=False,
+                enable_auto_extract=False,
         seed_initial_q=0.0,
         theta_near_miss=1.0,
     )

@@ -114,13 +114,7 @@ def _seed_lib(method: MethodConfig) -> None:
 
 
 def _fresh_mgr(method: MethodConfig) -> LibManager:
-    return LibManager(
-        b_max=method.b_max,
-        theta_admit=method.theta_admit,
-        theta_evict=method.theta_evict,
-        n_explore=method.n_explore,
-        n_stale=method.n_stale,
-    )
+    return LibManager(b_max=method.b_max)
 
 
 # ---------------------------------------------------------------------------
@@ -151,8 +145,7 @@ def test_bridge_extracts_on_success_no_skill_seen(tmp_path: Path, monkeypatch):
     method = MethodConfig(
         library_root=tmp_path / "lib",
         b_max=4,
-        n_explore=2,
-        enable_auto_extract=True,
+                enable_auto_extract=True,
         seed_initial_q=0.0,
         extract_every_n_trials=1,       # flush on the first qualifying trial
     )
@@ -195,7 +188,7 @@ def test_bridge_skips_extract_on_failure(tmp_path: Path, monkeypatch):
     )
 
     method = MethodConfig(
-        library_root=tmp_path / "lib", b_max=4, n_explore=2, enable_auto_extract=True,
+        library_root=tmp_path / "lib", b_max=4, enable_auto_extract=True,
         seed_initial_q=0.0,
         extract_every_n_trials=1,       # flush on the first qualifying trial
     )
@@ -233,7 +226,7 @@ def test_bridge_skips_extract_on_skill_used(tmp_path: Path, monkeypatch):
     )
 
     method = MethodConfig(
-        library_root=tmp_path / "lib", b_max=4, n_explore=2, enable_auto_extract=True,
+        library_root=tmp_path / "lib", b_max=4, enable_auto_extract=True,
         seed_initial_q=0.0,
         extract_every_n_trials=1,       # flush on the first qualifying trial
     )
@@ -255,8 +248,7 @@ def test_bridge_skips_extract_when_disabled(tmp_path: Path, monkeypatch):
     method = MethodConfig(
         library_root=tmp_path / "lib",
         b_max=4,
-        n_explore=2,
-        enable_auto_extract=False,
+                enable_auto_extract=False,
     )
     _seed_lib(method)
     job = _MockJob()
@@ -307,7 +299,7 @@ def test_viewed_but_not_used_bumps_q(tmp_path: Path, monkeypatch):
     )
 
     method = MethodConfig(
-        library_root=tmp_path / "lib", b_max=4, n_explore=2, enable_auto_extract=False
+        library_root=tmp_path / "lib", b_max=4, enable_auto_extract=False
     )
     _seed_lib(method)
     job = _MockJob()
@@ -368,8 +360,7 @@ def test_bridge_extracts_on_failure_no_skill(tmp_path: Path, monkeypatch):
     method = MethodConfig(
         library_root=tmp_path / "lib",
         b_max=4,
-        n_explore=2,
-        enable_auto_extract=True,
+                enable_auto_extract=True,
         seed_initial_q=0.0,
         extract_every_n_trials=1,       # flush on the first qualifying trial
         # Disable the incremental-edit path (it would call the LLM
@@ -436,8 +427,7 @@ def test_bridge_extracts_on_failure_even_when_skill_exists(tmp_path: Path, monke
     method = MethodConfig(
         library_root=tmp_path / "lib",
         b_max=4,
-        n_explore=2,
-        enable_auto_extract=True,
+                enable_auto_extract=True,
         # Seed Q = 0.5 reproduces the exact scenario the historical
         # "skip if high-Q skill exists" gate used to suppress
         # (the old default threshold was 0.30).

@@ -36,11 +36,10 @@ def test_qlib_state_round_trip(tmp_path: Path):
     lib.add(Skill(skill_id="a", body="body a", n_retrievals=2, n_uses=1, n_success=1))
     lib.add(Skill(skill_id="b", body="body b", n_retrievals=0))
     mgr = LibManager(
-        b_max=10, theta_admit=0.3, theta_evict=0.1, n_explore=5, n_stale=80
+        b_max=10
     )
     mgr.update_q(skill_id="a", delta=0.5)
     mgr.update_q(skill_id="b", delta=-0.2)
-    mgr.mark_retrieved("a", current_step=7)
     state = QlibState(tmp_path / "method_state.json")
     state.step = 42
     state.save(lib, mgr, lib_root=tmp_path)
@@ -48,7 +47,7 @@ def test_qlib_state_round_trip(tmp_path: Path):
     # Reload into a fresh in-memory state.
     lib2 = Qlib()
     mgr2 = LibManager(
-        b_max=10, theta_admit=0.3, theta_evict=0.1, n_explore=5, n_stale=80
+        b_max=10
     )
     state2 = QlibState(tmp_path / "method_state.json")
     assert state2.load_into(lib2, mgr2) is True
@@ -57,13 +56,12 @@ def test_qlib_state_round_trip(tmp_path: Path):
     assert lib2.b_max == 10
     assert mgr2.q_for("a") == 0.5
     assert mgr2.q_for("b") == -0.2
-    assert mgr2.last_retrieval_step["a"] == 7
 
 
 def test_qlib_state_handles_missing_file(tmp_path: Path):
     lib = Qlib(b_max=3)
     mgr = LibManager(
-        b_max=3, theta_admit=0.3, theta_evict=0.1, n_explore=5, n_stale=80
+        b_max=3
     )
     state = QlibState(tmp_path / "missing.json")
     assert state.load_into(lib, mgr) is False
@@ -107,7 +105,6 @@ def test_attach_paper_registers_wires_on_trial_ended(tmp_path: Path, monkeypatch
     method = MethodConfig(
         library_root=tmp_path / "lib",
         b_max=4,
-        n_explore=2,
     )
     # Pre-seed the library with a single skill so the ranker has something
     # to retrieve.
@@ -141,7 +138,7 @@ def test_attach_paper_registers_skips_failed_trials(tmp_path: Path, monkeypatch)
     """Failed / retried trials must not be processed by the four-layer method."""
     _patch_litellm_backends(monkeypatch)
 
-    method = MethodConfig(library_root=tmp_path / "lib", b_max=4, n_explore=2)
+    method = MethodConfig(library_root=tmp_path / "lib", b_max=4)
     state = QlibState(method.resolved_state_path())
     state.save(Qlib(b_max=4), _fresh_manager(method), lib_root=method.library_root)
 
@@ -188,13 +185,7 @@ def _patch_litellm_backends(monkeypatch) -> None:
 
 
 def _fresh_manager(method: MethodConfig) -> LibManager:
-    return LibManager(
-        b_max=method.b_max,
-        theta_admit=method.theta_admit,
-        theta_evict=method.theta_evict,
-        n_explore=method.n_explore,
-        n_stale=method.n_stale,
-    )
+    return LibManager(b_max=method.b_max)
 
 
 def _build_fake_trial_result(reward: float, trial_uri: str) -> MagicMock:

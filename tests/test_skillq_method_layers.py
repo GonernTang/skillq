@@ -142,65 +142,61 @@ def test_verifier_handles_garbage_output_gracefully():
 # ---------------------------------------------------------------------------
 # Library manager (Layer 3)
 # ---------------------------------------------------------------------------
-def test_library_manager_deprecates_low_q_after_exploration():
-    lib = Qlib(b_max=50)
-    mgr = LibManager(
-        b_max=50,
-        theta_admit=0.3,
-        theta_evict=0.1,
-        n_explore=5,
-        n_stale=100,
-    )
-    skill = Skill(skill_id="low")
-    lib.add(skill)
-
-    # Simulate n_explore retrievals with low Q
-    for _ in range(5):
-        mgr.update_q(skill_id="low", delta=-0.1)
-
-    events = mgr.maintain(lib, current_step=10)
-    assert any("deprecate:low" in e for e in events)
-    assert "low" in mgr.deprecation_list
-
-
 def test_library_manager_evicts_to_maintain_b_max():
+    """Simplification (2026-06-18): only b_max-bounded lowest-Q
+    eviction. No admission, no stale queue, no probation gate — even
+    a brand-new skill is evictable if its Q is the lowest.
+    """
     lib = Qlib(b_max=2)
-    mgr = LibManager(
-        b_max=2,
-        theta_admit=0.3,
-        theta_evict=0.1,
-        n_explore=5,
-        n_stale=100,
-    )
+    mgr = LibManager(b_max=2)
     # Add three skills with different Q-values
     for sid, q in [("a", 0.8), ("b", 0.2), ("c", 0.5)]:
         lib.add(Skill(skill_id=sid))
         mgr.update_q(skill_id=sid, delta=q)
 
     events = mgr.maintain(lib, current_step=1)
-    # One of the lower-Q skills should have been evicted
+    # Exactly one eviction: the lowest-Q skill ("b", Q=0.2)
     assert lib.size == 2
-    assert any(e.startswith("evict:") for e in events)
+    assert {s.skill_id for s in lib.skills.values()} == {"a", "c"}
+    assert events == ["evict:b"]
+    # No admission, stale, or low-Q events ever produced
+    assert not any(e.startswith(("deprecate:", "stale:", "lowq:"))
+                   for e in events)
 
 
-def test_library_manager_marks_stale_skills():
-    lib = Qlib(b_max=50)
-    mgr = LibManager(
-        b_max=50,
-        theta_admit=0.3,
-        theta_evict=0.1,
-        n_explore=5,
-        n_stale=10,
-    )
-    lib.add(Skill(skill_id="old"))
-    mgr.mark_retrieved("old", current_step=1)
-    # Don't retrieve for 20 steps (exceeds n_stale=10)
-    events = mgr.maintain(lib, current_step=21)
-    # Need n_explore updates to mark as stale-evict candidate
-    for _ in range(5):
-        mgr.update_q(skill_id="old", delta=0.0)
-    events = mgr.maintain(lib, current_step=22)
-    assert any("stale:old" in e for e in events) or any("lowq:old" in e for e in events)
+def test_library_manager_no_eviction_under_b_max():
+    """With lib.size <= b_max, maintain() is a no-op (no events)."""
+    lib = Qlib(b_max=5)
+    mgr = LibManager(b_max=5)
+    for sid, q in [("a", 0.1), ("b", 0.9)]:
+        lib.add(Skill(skill_id=sid))
+        mgr.update_q(skill_id=sid, delta=q)
+    assert mgr.maintain(lib, current_step=42) == []
+    assert lib.size == 2
+
+
+def test_library_manager_evicts_multiple_when_far_over_b_max():
+    """If lib.size > b_max by k, exactly k lowest-Q skills are evicted,
+    in ascending Q order (deterministic tie-break).
+    """
+    lib = Qlib(b_max=1)
+    mgr = LibManager(b_max=1)
+    qs = [("a", 0.1), ("b", 0.9), ("c", 0.5), ("d", 0.2)]
+    for sid, q in qs:
+        lib.add(Skill(skill_id=sid))
+        mgr.update_q(skill_id=sid, delta=q)
+    events = mgr.maintain(lib, current_step=1)
+    # Lowest-Q-first: a (0.1), d (0.2), c (0.5) — only b (0.9) survives
+    assert events == ["evict:a", "evict:d", "evict:c"]
+    assert {s.skill_id for s in lib.skills.values()} == {"b"}
+
+
+def test_library_manager_empty_library_is_noop():
+    """maintain() on empty lib returns [] (covers library.size == 0
+    early-return in _pick_eviction_victim)."""
+    lib = Qlib(b_max=5)
+    mgr = LibManager(b_max=5)
+    assert mgr.maintain(lib, current_step=1) == []
 
 
 # ---------------------------------------------------------------------------

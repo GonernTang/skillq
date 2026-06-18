@@ -172,10 +172,7 @@ import json
 d = json.load(open("$JOB_DIR/.skillq_library/.state/method_state.json"))
 print(f"  step:           {d.get('step')}")
 print(f"  q_table:        {len(d.get('q_table', []))} entries")
-print(f"  probation:      {len(d.get('probation', {}).get('count', {}))} skills")
 print(f"  library.skills: {len(d.get('library', {}).get('skills', {}))} skills")
-print(f"  deprecation:    {len(d.get('deprecation_list', []))}")
-print(f"  evict:          {len(d.get('evict_candidates', []))}")
 EOF
 
 # -------- 7. trajectory / verifier (first trial as a sample) --------

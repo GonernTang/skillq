@@ -472,10 +472,6 @@ def attach_paper_registers(
     lib = Qlib(b_max=method.b_max)
     mgr = LibManager(
         b_max=method.b_max,
-        theta_admit=method.theta_admit,
-        theta_evict=method.theta_evict,
-        n_explore=method.n_explore,
-        n_stale=method.n_stale,
         q_clip_floor=method.q_clip_floor,
         q_clip_ceiling=method.q_clip_ceiling,
     )

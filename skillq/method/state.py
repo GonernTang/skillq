@@ -36,19 +36,23 @@ _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL)
 class QlibState:
     """Persistent serialisation of the four-layer method's working set.
 
-    State file JSON keys (post global-Q refactor):
+    State file JSON keys (post-simplification 2026-06-18):
         step:                 int
         q_table:              [[skill_id: str, q: float], ...]   ← global
-        probation:            {avg_q: {skill_id: float}, count: {skill_id: int}}
-        deprecation_list:     [skill_id, ...]
-        evict_candidates:     [skill_id, ...]
-        last_retrieval_step:  {skill_id: int}
         library:              {b_max: int, skills: {skill_id: {...}}}
         seed_initial_q:       float
         sub_task_log:         [debug entries — only present when
                                debug_keep_subtask_log=True is set on
                                the calling bridge]
         library_root:         str (path, optional)
+
+    Backward-compat note: older state files written by the
+    admission/eviction-aware code path may also carry
+    ``probation``, ``deprecation_list``, ``evict_candidates``, and
+    ``last_retrieval_step`` keys. ``load_into`` silently ignores them
+    (no consumer in the simplified LibManager); the legacy
+    ``{sid: {intent: int}}`` probation-count shape is also accepted for
+    backward compat.
     """
 
     state_path: Path
@@ -75,13 +79,6 @@ class QlibState:
             "q_table": [
                 [skill_id, q] for skill_id, q in mgr.q_table.items()
             ],
-            "probation": {
-                "avg_q": dict(mgr.probation_avg_q),
-                "count": dict(mgr.probation_count),
-            },
-            "deprecation_list": list(mgr.deprecation_list),
-            "evict_candidates": list(mgr.evict_candidates),
-            "last_retrieval_step": dict(mgr.last_retrieval_step),
             "library": {
                 "b_max": lib.b_max,
                 "skills": {
@@ -135,27 +132,21 @@ class QlibState:
                 continue
             mgr.q_table[skill_id] = q
 
-        # Probation bookkeeping
-        prob = data.get("probation", {})
-        mgr.probation_avg_q = {k: float(v) for k, v in prob.get("avg_q", {}).items()}
-        # probation_count may be {sid: int} (new) or {sid: {intent: int}} (legacy).
-        # Use defaultdict(int) so :meth:`LibManager.update_q` can
-        # implicitly insert a 0 the first time a skill gets updated
-        # (the dataclass default is also defaultdict(int)).
+        # Probation bookkeeping (telemetry only; no decision consumer).
+        # probation_count may be {sid: int} (new) or {sid: {intent: int}}
+        # (legacy). Use defaultdict(int) so :meth:`LibManager.update_q`
+        # can implicitly insert a 0 the first time a skill gets updated.
+        # Older state files may carry a "probation" envelope; its
+        # "count" subkey is accepted for backward compat.
         mgr.probation_count = defaultdict(int)
-        raw_count = prob.get("count", {})
+        prob = data.get("probation", {})
+        raw_count = prob.get("count", {}) if isinstance(prob, dict) else {}
         for sid, val in raw_count.items():
             if isinstance(val, dict):
                 # legacy per-intent count — sum across intents
                 mgr.probation_count[sid] = sum(int(n) for n in val.values())
             else:
                 mgr.probation_count[sid] = int(val)
-
-        mgr.deprecation_list = list(data.get("deprecation_list", []))
-        mgr.evict_candidates = list(data.get("evict_candidates", []))
-        mgr.last_retrieval_step = {
-            k: int(v) for k, v in data.get("last_retrieval_step", {}).items()
-        }
 
         # Library
         lib_data = data.get("library", {})
