@@ -432,8 +432,15 @@ By "value / effort" ratio:
    code change; just a smoke that proves the agentic path
    works (skipped on the agent side because the test task was
    solvable without `_search.sh`).
-4. **Bug 3** (per-trial q_table.json sync) — low value, very low
-   effort (~5 lines). Just makes the artifacts less confusing.
+4. ~~**Bug 3** (per-trial q_table.json sync)~~ — ✅ done. Added
+   a re-dump of `trial_dir/skillq_state/q_table.json` in
+   `bridge.py:on_ended` immediately after `state.save(...)` (see
+   commit log for the exact lines). Verified end-to-end via the
+   autoextract smoke: path A and path B now match exactly
+   (38/38 keys identical, including post-trial Q-updates like
+   `affaan-m-security-review → 0.65` and the new auto-extracted
+   skill `fix-cwe-vulnerability → 0.5`). Test added in
+   `tests/test_q_initial.py::test_bridge_redumps_q_table_to_staging_on_ended`.
 5. **Bug 8** (sub_task_verifier async) — medium value, medium
    effort (~50 lines). Performance.
 6. **Bug 6** (per-task step counter) — medium value, medium

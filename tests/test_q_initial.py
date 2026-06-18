@@ -276,3 +276,82 @@ def test_method_config_default_for_new_skill_initial_q():
     """The default new_skill_initial_q is 0.5."""
     cfg = MethodConfig()
     assert cfg.new_skill_initial_q == 0.5
+
+
+def test_bridge_redumps_q_table_to_staging_on_ended(tmp_path: Path, monkeypatch):
+    """Bug 3 fix: after on_ended, trial_dir/skillq_state/q_table.json
+    must reflect the post-trial Q-table, not the trial-START snapshot
+    written by ``container_wiring._write_state_files``.
+
+    Setup:
+        - Trial staging has an "old" q_table.json (the trial-START
+          snapshot, all 0.5 for known skills).
+        - on_ended triggers auto-extract → ``mgr.set_q(new_skill,
+          0.42)`` mutates the in-memory Q-table.
+
+    Assertion:
+        - The post-trial staging file shows the new skill at 0.42.
+        - The pre-existing seed skill remains at 0.0 (un-mutated).
+    """
+    _patch_litellm_backends(monkeypatch)
+    new_skill = Skill(skill_id="auto-fix-cwe", body="x" * 200)
+    _patch_extractor_to_return(monkeypatch, new_skill)
+
+    from skillq.paper_mode import bridge as bridge_mod
+    from skillq.method.attribution import Attribution, TrialAttribution
+
+    monkeypatch.setattr(
+        bridge_mod.AttributionAnalyzer,
+        "analyze",
+        lambda self, **kwargs: TrialAttribution(
+            overall_attribution=Attribution.SUCCESS_NO_SKILL_SEEN,
+            overall_rationale="test",
+            knowledge_to_extract="reusable knowledge",
+        ),
+    )
+
+    method = MethodConfig(
+        library_root=tmp_path / "lib",
+        b_max=4,
+        n_explore=2,
+        enable_auto_extract=True,
+        extract_every_n_trials=1,
+        seed_initial_q=0.0,             # seed skill Q=0 so auto-extract fires
+        new_skill_initial_q=0.42,       # distinctive value to grep for
+    )
+    _seed_lib(method)
+
+    # Mimic trial-START: container_wiring._write_state_files writes
+    # the per-trial staging q_table.json from mgr.q_table BEFORE
+    # on_ended runs. We reproduce the same format here.
+    trial_dir = tmp_path / "trial-bug3"
+    trial_dir.mkdir()
+    staging = trial_dir / "skillq_state"
+    staging.mkdir(parents=True, exist_ok=True)
+    # Load the just-saved state to read mgr.q_table at trial-START.
+    lib_start = Qlib()
+    mgr_start = _fresh_mgr(method)
+    state_start = QlibState(method.resolved_state_path())
+    state_start.load_into(lib_start, mgr_start, lib_root=method.library_root)
+    staging_q_path = staging / "q_table.json"
+    staging_q_path.write_text(
+        json.dumps(dict(mgr_start.q_table), ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    pre_onshot_snapshot = json.loads(staging_q_path.read_text(encoding="utf-8"))
+    # Sanity: trial-START snapshot does NOT yet contain the new skill
+    # (it does not exist until auto-extract fires inside on_ended).
+    assert "auto-fix-cwe" not in pre_onshot_snapshot
+
+    job = _MockJob()
+    bridge_mod.attach_paper_registers(job, method)
+    result = _fake_trial_result(reward=1.0, trial_uri=str(trial_dir))
+    event = _fake_hook_event("trial-bug3", result=result)
+    asyncio.run(job.on_ended(event))
+
+    # Post-trial: staging q_table.json must be re-dumped with the
+    # post-trial Q-table (Bug 3 fix).
+    post_snapshot = json.loads(staging_q_path.read_text(encoding="utf-8"))
+    # The new skill must now appear with its initial Q.
+    assert "auto-fix-cwe" in post_snapshot
+    assert abs(post_snapshot["auto-fix-cwe"] - 0.42) < 1e-9

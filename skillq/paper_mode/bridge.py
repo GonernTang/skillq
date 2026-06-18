@@ -1037,6 +1037,28 @@ def attach_paper_registers(
                 debug_keep_subtask_log=method.debug_keep_subtask_log,
             )
 
+            # 5b. Bug 3: re-dump q_table.json to the per-trial staging
+            # dir so users inspecting the trial artifacts see the
+            # post-trial Q-values (matching method_state.json), not
+            # the trial-START snapshot written by
+            # ``container_wiring._write_state_files``. Mirrors the
+            # format of that function exactly. Defensive mkdir
+            # + try/except: never let a method-bug-side I/O error
+            # abort the trial.
+            trial_q_path = trial_dir / "skillq_state" / "q_table.json"
+            try:
+                trial_q_path.parent.mkdir(parents=True, exist_ok=True)
+                trial_q_path.write_text(
+                    json.dumps(dict(mgr.q_table), ensure_ascii=False) + "\n",
+                    encoding="utf-8",
+                )
+            except Exception:
+                logger.exception(
+                    "Bug 3 mirror: failed to re-dump per-trial q_table.json "
+                    "for trial %s",
+                    event.trial_id,
+                )
+
             # 6. Incremental edit on failure (Sec. 3.4 / Layer 4).
             _incremental_edit_on_failure(
                 r_task=r_task,
