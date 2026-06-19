@@ -1,6 +1,6 @@
 # SkillQ — Open bugs and known gaps
 
-Last updated: 2026-06-17 (post the Q-table post-trial fix).
+Last updated: 2026-06-18 (post the Bug 8 async-conversion).
 
 This document is a faithful audit of the current state of the
 `skillq` paper method. "Tested" means there's a unit test covering
@@ -324,27 +324,45 @@ defaults to the empty-string case. No fix needed for correctness.
 
 ### Bug 8 — `sub_task_verifier` is sync + serial
 
-**Symptom:** `_q_update_from_subtask` calls
+**Symptom (historical):** `_q_update_from_subtask` called
 `sub_task_verifier.score(...)` once per (skill, trial). For a
-trial with N unique skill calls, this is N serial LLM calls. With
+trial with N unique skill calls, this was N serial LLM calls. With
 DeepSeek (our default), each call is ~1-3s, so a trial with 5
-unique skill calls adds 5-15s to the post-trial phase.
+unique skill calls added 5-15s to the post-trial phase.
 
-**Cause:** the bridge code is correct but synchronous.
-`SubTaskVerifier` is a single-shot judge with no batching or
+**Cause (historical):** the bridge code was correct but synchronous.
+`SubTaskVerifier` was a single-shot judge with no batching or
 async API.
 
-**Impact:** medium. Slows the per-trial wall-clock by O(unique_skills
+**Impact:** medium. Slowed the per-trial wall-clock by O(unique_skills
 × judge_latency). Not a correctness bug, just performance.
 
-**Workaround:** none for now.
+**Fix:** option (b) — convert the judge loop to async. `_q_update_from_subtask`
+is now `async def`; it enumerates a flat `judge_inputs: list[(skill_id, trace, desc)]`
+in a first pass, fires one `await asyncio.gather(*[verifier.ascore(...)])`
+with no `return_exceptions=True`, then regroups the in-order verdicts by
+skill_id in a second pass and applies the Q-update. A process-wide
+`asyncio.Semaphore(MAX_CONCURRENT_JUDGES=8)` (lazy-init in
+`skillq/method/sub_task_verifier.py`) throttles parallel LLM calls.
+`SubTaskVerifier` gained `async def ascore(...)` alongside the preserved
+sync `score(...)`; `LiteLLMCompletion` gained `async def acall(...)` using
+`litellm.acompletion`. No `MethodConfig` field added; `MAX_CONCURRENT_JUDGES=8`
+is a module-level constant.
 
-**Fix scope:** ~50 lines.
-- (a) Batch multiple `score()` calls into a single LLM request
-  with all (skill, trace) pairs.
-- (b) Run all score() calls concurrently with `asyncio.gather`.
-- (c) Add an `LLMRouter.score_batch()` that does the
-  async/concurrent version.
+**Status: ✅ done (commit `96ac498`).**
+
+**Verification:**
+- 106/106 unit tests pass (added `test_q_update_parallel_wallclock_below_serial`
+  in `tests/test_session_log_fallback.py` — 8 skills × 2 calls with 0.3s
+  per-call stub completes in < 2.4s; serial bound is 4.8s).
+- Functional smoke (8 parallel calls with `litellm.acompletion`):
+  0.50s vs 2.25s serial = **4.5× speedup**. 16 calls Semaphore-bounded
+  to 0.75s vs 8.0s serial = **10.7× speedup**.
+- `asyncio.gather` returns verdicts in input order (Python 3.10+),
+  so `q_updates.jsonl` output is byte-identical to the sync version.
+- No `return_exceptions=True` → a single judge failure propagates and
+  `on_ended`'s outer try/except writes `method_errors.jsonl` exactly
+  as before.
 
 ---
 
@@ -474,8 +492,12 @@ By "value / effort" ratio:
    `affaan-m-security-review → 0.65` and the new auto-extracted
    skill `fix-cwe-vulnerability → 0.5`). Test added in
    `tests/test_q_initial.py::test_bridge_redumps_q_table_to_staging_on_ended`.
-5. **Bug 8** (sub_task_verifier async) — medium value, medium
-   effort (~50 lines). Performance.
+5. ~~**Bug 8** (sub_task_verifier async)~~ — ✅ done (commit
+   `96ac498`). Option (b): `_q_update_from_subtask` now `async def`,
+   fires one `asyncio.gather(*[verifier.ascore(...)])` over all
+   `(skill, call)` pairs, throttled by a process-wide
+   `asyncio.Semaphore(MAX_CONCURRENT_JUDGES=8)`. 4.5–10.7× judge-phase
+   speedup verified; 106/106 tests pass; output bytes-identical.
 6. ~~**Bug 6** (per-task step counter)~~ — ✅ done. Resolved by
    the eviction simplification (commit `7aa2340`): admission /
    stale-queue / low-Q-queue / deprecation_list / rejuvenate

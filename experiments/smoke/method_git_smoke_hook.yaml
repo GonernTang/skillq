@@ -14,7 +14,7 @@ state_path: /home/gonern/workspace/skillq/output/tb2_git_smoke_hook/.skillq_libr
 # smoke config bind-mounts into the container at /skills, so the
 # paper method's library and the agent's Skill tool see the same
 # 32 skills.
-seed_skills_dir: /home/gonern/workspace/skillq/experiments/smoke/seed_skills
+seed_skills_dir: /home/gonern/workspace/skillq/skills
 retrieval_mode: hook
 hook_top_k: 3
 hook_lambda: 0.5

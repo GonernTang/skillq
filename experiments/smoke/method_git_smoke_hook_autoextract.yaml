@@ -7,7 +7,7 @@
 
 library_root: /home/gonern/workspace/skillq/output/tb2_fix_code_vuln_smoke_autoextract/.skillq_library
 state_path: /home/gonern/workspace/skillq/output/tb2_fix_code_vuln_smoke_autoextract/.skillq_library/.state/method_state.json
-seed_skills_dir: /home/gonern/workspace/skillq/experiments/smoke/seed_skills
+seed_skills_dir: /home/gonern/workspace/skillq/skills
 retrieval_mode: hook
 hook_top_k: 3
 hook_lambda: 0.5

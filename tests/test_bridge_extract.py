@@ -452,3 +452,52 @@ def test_bridge_extracts_on_failure_even_when_skill_exists(tmp_path: Path, monke
     assert "guard-rail" in state["library"]["skills"]
     new_meta = state["library"]["skills"]["guard-rail"]["metadata"]
     assert new_meta.get("extract_mode") == "failure"
+
+
+def test_bridge_flush_writes_mirror_to_seed_dir(tmp_path: Path, monkeypatch):
+    """After a successful flush, the new skill's SKILL.md is mirrored
+    into ``method.seed_skills_dir`` so a subsequent trial's container
+    can see it via the existing bind-mount at /skills.
+    """
+    _patch_litellm_backends(monkeypatch)
+    body = (
+        "---\nname: auto-mirrored\n---\n# body\n\n"
+        + "x" * 200
+    )
+    new_skill = Skill(skill_id="auto-mirrored", body=body)
+    _patch_extractor_to_return(monkeypatch, new_skill)
+
+    from skillq.paper_mode import bridge as bridge_mod
+
+    monkeypatch.setattr(
+        bridge_mod.AttributionAnalyzer,
+        "analyze",
+        lambda self, **kwargs: TrialAttribution(
+            overall_attribution=Attribution.SUCCESS_NO_SKILL_SEEN,
+            overall_rationale="test",
+            knowledge_to_extract="reusable knowledge",
+        ),
+    )
+
+    host_skills = tmp_path / "host_skills"
+    method = MethodConfig(
+        library_root=tmp_path / "lib",
+        b_max=4,
+                enable_auto_extract=True,
+        seed_initial_q=0.0,
+        extract_every_n_trials=1,
+        seed_skills_dir=host_skills,
+    )
+    _seed_lib(method)
+    job = _MockJob()
+    bridge_mod.attach_paper_registers(job, method)
+
+    result = _fake_trial_result(reward=1.0, trial_uri=str(tmp_path / "trial-x"))
+    event = _fake_hook_event("trial-x", result=result)
+    asyncio.run(job.on_ended(event))
+
+    mirror = host_skills / "auto-mirrored" / "SKILL.md"
+    assert mirror.is_file(), (
+        f"mirror SKILL.md not written; expected at {mirror}"
+    )
+    assert mirror.read_text(encoding="utf-8") == body

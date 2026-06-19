@@ -9,7 +9,7 @@
 #   0. preflight (uv, docker, .env, project deps)
 #   1. verify all 5 tasks exist in lqrl's input/terminal-bench
 #   2. verify all 5 skills_vote/<task>:20260604 prebuilt images
-#   3. ensure experiments/smoke/seed_skills/ has the seed stub
+#   3. ensure skills/ has the seed stub
 #   4. run `uv run paper paper run -c .../fix-git_skillq_smoke.yaml`
 #   5. for each task, parse result.json -> reward
 #   6. verify .skillq_library/method_state.json: step = number of trials
@@ -17,7 +17,7 @@
 #
 # Cleanup
 #   rm -rf output/smoke_5tasks_paper
-#   rm -rf experiments/smoke/seed_skills            (if you want a clean slate)
+#   rm -rf skills            (if you want a clean slate)
 
 set -euo pipefail
 # Make pipeline exit codes propagate (so a failing `paper paper run`
@@ -31,7 +31,7 @@ TASKS=(
 IMAGE_TAG="20260604"
 CONFIG="experiments/smoke/fix-git_skillq_smoke.yaml"
 JOB_DIR="output/smoke_wiring_v2"
-SEED_SKILLS="experiments/smoke/seed_skills"
+SEED_SKILLS="skills"
 METHOD_CONFIG="experiments/smoke/method.yaml"
 SkillQ_INPUT="${SkillQ_INPUT:-./input}"
 N_TASKS=${#TASKS[@]}

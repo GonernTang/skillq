@@ -11,7 +11,7 @@
 
 library_root: /home/gonern/workspace/skillq/output/tb2_git_smoke_agentic/.skillq_library
 state_path: /home/gonern/workspace/skillq/output/tb2_git_smoke_agentic/.skillq_library/.state/method_state.json
-seed_skills_dir: /home/gonern/workspace/skillq/experiments/smoke/seed_skills
+seed_skills_dir: /home/gonern/workspace/skillq/skills
 retrieval_mode: agentic
 agentic_search_top_k: 3
 agentic_search_k_rrf: 60

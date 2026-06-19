@@ -218,9 +218,13 @@ class MethodConfig(BaseModel):
     # directory for ``<skill>/SKILL.md`` files and pre-populates the
     # library + Q-table from them (every seed skill gets
     # ``seed_initial_q``). Default None: do nothing on first run.
-    # The smoke config sets this to ``experiments/smoke/seed_skills``
-    # so the 32 lqrl skills get auto-loaded without the user having
-    # to hand-write ``method_state.json``.
+    # The smoke configs set this to
+    # ``/home/gonern/workspace/skillq/skills`` so the curated skills
+    # get auto-loaded on first boot AND so any newly auto-extracted
+    # skill can be mirrored back to this same dir (see
+    # ``skillq.method.skill_mirror.mirror_skill_to_host_dir``),
+    # making it visible to subsequent trials via the existing
+    # bind-mount at /skills.
     seed_skills_dir: Optional[Path] = Field(
         default=None,
         description=(

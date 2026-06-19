@@ -71,6 +71,7 @@ from skillq.method.extractor import SkillExtractor
 from skillq.method.library import LibManager
 from skillq.method.near_miss import NearMissRefiner
 from skillq.method.retrieval import LiteLLMEmbedder
+from skillq.method.skill_mirror import mirror_skill_to_host_dir
 from skillq.method.state import QlibState
 from skillq.method.vector_table import (
     _description_of,
@@ -639,6 +640,12 @@ def attach_paper_registers(
                 continue
             new_skill.admission_exempt = True
             lib.add(new_skill)
+            # Mirror the new skill to the host skill dir so it is
+            # visible to subsequent trials' containers via the
+            # existing bind-mount at /skills. Best-effort: a write
+            # failure does not abort the trial (the function catches
+            # OSError internally and returns False).
+            mirror_skill_to_host_dir(new_skill, method.seed_skills_dir)
             # Seed Q on the new skill (global, no per-intent).
             mgr.set_q(new_skill.skill_id, method.new_skill_initial_q)
             # Schedule emb_cache refresh for the new skill.

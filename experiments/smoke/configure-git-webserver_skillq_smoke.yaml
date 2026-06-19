@@ -5,7 +5,7 @@
 #   - prebuilt image:  skills_vote/configure-git-webserver:20260604
 #   - dataset cache:   input/terminal-bench/configure-git-webserver  (symlinked
 #                       to lqrl's tree so we don't re-export)
-#   - seed skills:     experiments/smoke/seed_skills/  (36 lqrl skills + stub)
+#   - seed skills:     skills/  (36 lqrl skills + stub)
 #
 # Why configure-git-webserver:  clearly matches git / nginx / sysadmin skills
 # in the seed library — we can see whether paper_retrieval surfaces them and
@@ -31,7 +31,7 @@ environment:
   delete: false
   mounts_json:
     - type: bind
-      source: /home/gonern/workspace/skillq/experiments/smoke/seed_skills
+      source: /home/gonern/workspace/skillq/skills
       target: /skills
       read_only: true
 agents:

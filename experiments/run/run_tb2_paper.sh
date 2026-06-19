@@ -67,8 +67,8 @@ TASK_DIR="${SkillQ_INPUT:-./input}/terminal-bench/gcode-to-text"
 }
 
 # Seed skills stub present?
-[ -f experiments/smoke/seed_skills/_seed_stub/SKILL.md ] || {
-  echo "seed_skills stub missing; expected experiments/smoke/seed_skills/_seed_stub/SKILL.md" >&2
+[ -f skills/_seed_stub/SKILL.md ] || {
+  echo "seed_skills stub missing; expected skills/_seed_stub/SKILL.md" >&2
   exit 1
 }
 

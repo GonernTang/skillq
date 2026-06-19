@@ -49,7 +49,7 @@ environment:
     # useful for the agent's reference — they're listed in the system
     # prompt via PaperClaudeCodeAgent's rerank_with_ucb header.
     - type: bind
-      source: /home/gonern/workspace/skillq/experiments/smoke/seed_skills
+      source: /home/gonern/workspace/skillq/skills
       target: /skills
       read_only: true
 agents:

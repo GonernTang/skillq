@@ -3,7 +3,7 @@
 # Task: fix-git (TB 2.0, easy, 5-min expert time, prebuilt image present)
 #   - prebuilt image:  skills_vote/fix-git:20260604  (lqrl tag, already on disk)
 #   - dataset cache:   input/tb2/fix-git/  (symlinked to lqrl's input/terminal-bench)
-#   - seed skills:     experiments/smoke/seed_skills/  (lqrl .local_seed stub)
+#   - seed skills:     skills/  (lqrl .local_seed stub)
 #
 # This config is the minimum needed to validate that the paper method
 # end-to-end pipeline boots, the agent runs in the prebuilt container,
@@ -46,7 +46,7 @@ environment:
     # inside the container, so the path in `recommend.skills_dir` must
     # be the *container-side* mount path (/skills), not the host path.
     - type: bind
-      source: /home/gonern/workspace/skillq/experiments/smoke/seed_skills
+      source: /home/gonern/workspace/skillq/skills
       target: /skills
       read_only: true
 agents:

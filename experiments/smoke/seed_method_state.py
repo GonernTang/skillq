@@ -16,7 +16,7 @@ import re
 import sys
 from pathlib import Path
 
-SEED_DIR = Path("/home/gonern/workspace/skillq/experiments/smoke/seed_skills")
+SEED_DIR = Path("/home/gonern/workspace/skillq/skills")
 STATE_PATH = Path(
     "/home/gonern/workspace/skillq/output/tb2_git_smoke_hook/"
     ".skillq_library/.state/method_state.json"
