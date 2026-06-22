@@ -22,9 +22,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -215,7 +217,20 @@ class SkillExtractor:
 
         base = root or Path(tempfile.gettempdir())
         base.mkdir(parents=True, exist_ok=True)
-        sandbox = base / f"skillq_extract_{qhash(str(base)):016x}"[:24]
+        # Bug fix (2026-06-22): the previous deterministic name
+        # (hash of base only) collided across concurrent
+        # ``extract_batch`` calls — when ``on_ended`` callbacks fire
+        # for trials run with ``n_concurrent_trials >= 2``, every
+        # call landed in the SAME sandbox path. The first call's
+        # post-subprocess ``shutil.rmtree`` then deleted the cwd of
+        # the second call's still-running ``claude --print``, which
+        # failed with ``error: The current working directory was
+        # deleted, so that command didn't work``. Fix: include
+        # ``os.getpid()`` + ``time.time_ns()`` so each call gets a
+        # unique sandbox path. The hash of base is kept (last 16
+        # hex chars) as a stable, human-readable prefix.
+        unique = f"{os.getpid()}_{time.time_ns()}_{qhash(str(base)):016x}"
+        sandbox = base / f"skillq_extract_{unique}"[:48]
         sandbox.mkdir(parents=True, exist_ok=True)
         # The LLM is told to write into a `create/` subdirectory so
         # we can apply the lqrl-style "path must be a direct child

@@ -232,3 +232,46 @@ def test_extract_returns_none_on_missing_claude_cli(tmp_path: Path, monkeypatch)
         )
     )
     assert skill is None
+
+
+def test_make_sandbox_unique_per_call(tmp_path: Path) -> None:
+    """Each ``_make_sandbox`` call produces a distinct path even with
+    the same ``root``. The 2026-06-22 bug was a deterministic name
+    that collided across concurrent ``extract_batch`` calls when
+    ``n_concurrent_trials >= 2`` — the first call's rmtree deleted
+    the cwd of the second call's still-running ``claude --print``.
+    """
+    import shutil
+
+    extractor = SkillExtractor()
+    s1 = extractor._make_sandbox(tmp_path)
+    s2 = extractor._make_sandbox(tmp_path)
+    assert s1 != s2, (
+        f"sandbox names must differ per call, got {s1} == {s2} — race fix regressed"
+    )
+    assert s1.is_dir()
+    assert s2.is_dir()
+    # create/ subdir exists (the LLM writes into it)
+    assert (s1 / "create").is_dir()
+    assert (s2 / "create").is_dir()
+    # Both paths should live under the requested root.
+    assert s1.is_relative_to(tmp_path)
+    assert s2.is_relative_to(tmp_path)
+    shutil.rmtree(s1)
+    shutil.rmtree(s2)
+
+
+def test_make_sandbox_unique_under_concurrent_calls(tmp_path: Path) -> None:
+    """Two ``_make_sandbox`` calls back-to-back (mimicking concurrent
+    ``on_ended`` callbacks) never yield the same path. This is the
+    direct regression test for the race that triggered the
+    ``cwd was deleted`` error in the 5-task smoke.
+    """
+    import shutil
+
+    extractor = SkillExtractor()
+    paths = {extractor._make_sandbox(tmp_path) for _ in range(10)}
+    assert len(paths) == 10, f"expected 10 unique sandboxes, got {len(paths)}"
+    # Clean up.
+    for p in paths:
+        shutil.rmtree(p)
