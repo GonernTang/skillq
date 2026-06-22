@@ -593,6 +593,11 @@ def attach_paper_registers(
             model=method.q_subtask_verifier_model
         ),
         model=method.q_subtask_verifier_model,
+        # Body truncation cap for the verifier prompt (2026-06-22
+        # change — verifier now sees skill.body alongside the
+        # description so it can judge whether the agent's actions
+        # are consistent with the skill's intended approach).
+        max_body_chars=method.q_max_body_chars,
     )
 
     # Track which lib mutates fired this on_ended call (so we can
@@ -760,7 +765,7 @@ def attach_paper_registers(
         #                         verdicts_in_order in the second pass.
         # Skills evicted between call-time and end-of-trial are
         # skipped here, matching today's serial behavior.
-        judge_inputs: list[tuple[str, str, str]] = []
+        judge_inputs: list[tuple[str, str, str, str]] = []
         group_sizes: list[int] = []
         ordered_skills: list[str] = []
         for skill_id, calls in by_skill.items():
@@ -771,16 +776,20 @@ def attach_paper_registers(
                 continue
             ordered_skills.append(skill_id)
             group_sizes.append(len(calls))
-            # The judge evaluates goal completion, not body
-            # quality, so we pass the description (extracted
-            # from the SKILL.md frontmatter), not the full body.
-            # ``lib.get`` may return None for an evicted skill
-            # in a race; default to "" so the prompt still formats.
+            # The judge evaluates goal completion against the
+            # description (the skill's contract) and uses the body
+            # as a plausibility reference for what the skill
+            # prescribes. Both pass to the verifier; the description
+            # is still extracted from the SKILL.md frontmatter.
+            # ``lib.get`` may return None for an evicted skill in a
+            # race; default to "" for both fields so the prompt
+            # still formats.
             skill = lib.get(skill_id)
-            desc = _description_of(skill.body) if skill else ""
+            body = skill.body if skill else ""
+            desc = _description_of(body) if skill else ""
             for call in calls:
                 trace = _slice_sub_task_trace(trial_dir, call.ts)
-                judge_inputs.append((skill_id, trace, desc))
+                judge_inputs.append((skill_id, trace, desc, body))
 
         # Fire all judge calls in parallel. No ``return_exceptions``
         # so a single failure propagates and the outer on_ended
@@ -794,9 +803,10 @@ def attach_paper_registers(
                         task=intent_text,
                         skill_id=sid,
                         skill_description=desc,
+                        skill_body=body,
                         sub_task_trace=trace,
                     )
-                    for sid, trace, desc in judge_inputs
+                    for sid, trace, desc, body in judge_inputs
                 ]
             )
 

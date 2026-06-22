@@ -88,21 +88,36 @@ class MethodConfig(BaseModel):
     # The paper defines r as "the reward of the task in which the
     # skill was just called" — i.e. the **sub-task** reward (LLM
     # judge's per-Skill-call verdict), not the trial-level reward.
-    # We expose both as config knobs for experimental flexibility,
-    # but the default ``q_w_task = 0`` disables the trial-level
-    # signal so the Q-update reduces to the paper's formula::
+    # We expose both as config knobs for experimental flexibility.
     #
-    #     Q(skill) += alpha * (r_subtask_mean - Q(skill))
+    # Default ``q_w_task = -0.5`` makes the trial-level signal a
+    # **negative contribution**: trial failure penalises called
+    # skills, trial success adds a partial positive contribution.
+    # This mirrors the paper's Eq.6 shape ``(1-β)·r_task + β·r_learning``
+    # with ``r_subtask_mean`` (binary, per-call success rate) playing
+    # the role of ``r_learning``. ``r_subtask_mean`` remains the
+    # dominant signal (default weight 1.0); ``r_task`` adjusts but
+    # never overpowers it.
+    #
+    # Worked example (α=0.3, Q_old=0.5):
+    #   r_subtask=1.0, r_task=0.0 → target=1.0   → Q_new=0.65
+    #   r_subtask=1.0, r_task=1.0 → target=0.5   → Q_new=0.50
+    #   r_subtask=0.0, r_task=1.0 → target=-0.5  → Q_new=0.20
+    #   r_subtask=0.0, r_task=0.0 → target=0.0   → Q_new=0.35
     #
     # - ``r_subtask_mean`` ∈ [0, 1]: mean of binary per-Skill-call
     #   LLM-judge verdicts within the trial (per-skill success rate).
     # - ``r_task_bin`` ∈ {0, 1}: binarized trial-level reward
-    #   (1 if the raw reward > 0.5, else 0). Default weight 0 →
-    #   ignored. Set non-zero if you want trial-level signal mixed in.
+    #   (1 if the raw reward > 0.5, else 0).
     q_alpha: float = Field(default=0.3, ge=0.0, le=1.0)
     q_w_subtask: float = Field(default=1.0, ge=0.0, le=1.0)
-    q_w_task: float = Field(default=0.0, ge=0.0, le=1.0)
+    # q_w_task may be negative (penalty weight) — relax ge= to allow.
+    q_w_task: float = Field(default=-0.5, ge=-1.0, le=1.0)
     q_subtask_verifier_model: str = "openai/gpt-4o"
+    # Body truncation cap for the subtask verifier prompt. The
+    # verifier sees skill.body alongside skill_description; longer
+    # bodies get truncated here to keep prompts within token budget.
+    q_max_body_chars: int = Field(default=2000, ge=200, le=20000)
     debug_keep_subtask_log: bool = True
 
     # Auto-extract (create_skill path) — opt-in, see bridge.py

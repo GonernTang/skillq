@@ -299,17 +299,33 @@ def test_q_update_falls_back_to_session_log_when_hook_log_empty(
     )
 
     class _AlwaysSuccessVerifier:
-        def __init__(self, backend, model):
+        def __init__(self, backend, model, max_body_chars=2000):
             pass
 
-        def score(self, *, task, skill_id, skill_description, sub_task_trace):
+        def score(
+            self,
+            *,
+            task,
+            skill_id,
+            skill_description,
+            skill_body,
+            sub_task_trace,
+        ):
             return SubTaskVerdict(
                 skill_id=skill_id,
                 success=True,
                 rationale="stub success",
             )
 
-        async def ascore(self, *, task, skill_id, skill_description, sub_task_trace):
+        async def ascore(
+            self,
+            *,
+            task,
+            skill_id,
+            skill_description,
+            skill_body,
+            sub_task_trace,
+        ):
             return SubTaskVerdict(
                 skill_id=skill_id,
                 success=True,
@@ -437,11 +453,17 @@ def test_q_update_parallel_wallclock_below_serial(
     class _SlowAsyncVerifier:
         """SubTaskVerifier stub whose ascore sleeps to model LLM latency."""
 
-        def __init__(self, backend, model):
+        def __init__(self, backend, model, max_body_chars=2000):
             pass
 
         async def ascore(
-            self, *, task, skill_id, skill_description, sub_task_trace
+            self,
+            *,
+            task,
+            skill_id,
+            skill_description,
+            skill_body,
+            sub_task_trace,
         ):
             await asyncio.sleep(JUDGE_LATENCY_SEC)
             return SubTaskVerdict(

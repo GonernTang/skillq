@@ -1,17 +1,22 @@
 """Sub-task verifier — LLM-as-judge that scores a single sub-task
 triggered by a Skill tool call.
 
-**Binary 0/1 reward (per user design 2026-06-14)**:
-- Inputs: (task, skill_description, sub_task_log_slice)
+**Binary 0/1 reward (per user design 2026-06-14, extended 2026-06-22)**:
+- Inputs: (task, skill_description, skill_body, sub_task_log_slice)
 - Output: :class:`SubTaskVerdict` with a single binary ``success`` flag
   plus an optional ``rationale`` for debugging.
 - The judgment focuses on **whether the sub-task itself completed**,
   not on whether the skill was useful. (We already have Q-value
   reward shaping for that; the verifier just judges the goal.)
-- The skill's body is intentionally NOT passed in — the prompt
-  passes only the **description** as the skill's "promise". The
-  judge evaluates whether the agent's actions achieved the goal
-  implied by the description.
+- The judge sees BOTH the skill **description** (the one-line "promise"
+  from the SKILL.md YAML frontmatter) AND the skill **body** (the
+  full SKILL.md implementation, truncated to ``max_body_chars``).
+  The description remains the success criterion; the body is a
+  plausibility reference — it lets the judge tell whether the
+  agent's actions are consistent with what the skill actually
+  prescribes (vs. just satisfying the description's surface promise).
+  The judgment still targets the agent's execution of the goal,
+  not whether the agent followed the body's commands verbatim.
 - ``r_subtask`` is purely {0, 1} — 1 if the sub-task succeeded, 0
   otherwise. No confidence term; the LLM is asked to give a single
   yes/no decision.
@@ -19,10 +24,11 @@ triggered by a Skill tool call.
   (``r_subtask_mean`` ∈ [0, 1]) in the bridge, not here. This is
   the per-skill success rate within the trial.
 
-This module is intentionally simple. No information isolation (the
-judge is allowed to see the agent's full sub-task trace) — the
-isolation only matters for the *content* of the skill, which we
-don't pass in.
+This module is intentionally simple. No information isolation on
+the *agent's actions* (the judge is allowed to see the full
+sub-task trace); isolation only matters for the *skill's
+implementation*, which we now deliberately expose (the description
+alone is too thin to judge against).
 """
 
 from __future__ import annotations
@@ -150,6 +156,9 @@ You are evaluating a single sub-task executed by an agent in a larger task.
 The agent invoked a skill named "{skill_name}" with the following description:
     "{skill_description}"
 
+# Skill body (full implementation, may be truncated to relevant sections)
+{skill_body}
+
 The agent's actions during this sub-task are summarised below. They cover
 the period from when the agent called the Skill tool until either the
 next non-Skill tool call, the end of the agent's main loop, or the
@@ -173,13 +182,21 @@ Focus on the final state, not on every individual step. Examples:
   final text on disk matches what the gcode would print; failure
   otherwise.
 
-Ignore the *quality* of the skill's own body. You're judging whether
-the **agent's execution** achieved the goal, not whether the skill
-description was well-written.
+Use the **description** as the success criterion (it's the skill's
+contract) and the **body** as a plausibility reference — the body
+tells you what commands / outputs the skill prescribes, so you can
+tell whether the agent's actions are consistent with the skill's
+intended approach or whether the agent just satisfied the surface
+promise. If the body is truncated, focus on the sections that
+look relevant to the agent's actions.
+
+You are judging whether the **agent's execution** achieved the goal,
+not whether the agent followed the body's commands verbatim — the
+agent may take a different route and still succeed.
 
 # Output format
 Respond with a single JSON object, no prose:
-{{"success": <true|false>, "rationale": "<1-2 sentences>"}}
+{{"success": <true|false>, "rationale": "<1-3 sentences>"}}
 
 A binary decision is required. Do not hedge — if the final state
 is "probably correct" or "the right thing is on disk", that's a
@@ -203,16 +220,20 @@ class SubTaskVerifier:
     backend: SubTaskVerifierBackend
     model: str = "openai/gpt-4o"
     max_trace_chars: int = 6000
+    max_body_chars: int = 2000
 
     def score(
         self,
         task: str,
         skill_id: str,
         skill_description: str,
+        skill_body: str,
         sub_task_trace: str,
     ) -> SubTaskVerdict:
         """Sync version — kept for callers that haven't gone async."""
-        prompt = self._build_prompt(task, skill_id, skill_description, sub_task_trace)
+        prompt = self._build_prompt(
+            task, skill_id, skill_description, skill_body, sub_task_trace
+        )
         raw = self.backend(prompt, self.model)
         return self._parse(skill_id, raw)
 
@@ -221,6 +242,7 @@ class SubTaskVerifier:
         task: str,
         skill_id: str,
         skill_description: str,
+        skill_body: str,
         sub_task_trace: str,
     ) -> SubTaskVerdict:
         """Async version — throttled by a process-wide semaphore.
@@ -230,7 +252,9 @@ class SubTaskVerifier:
         ``return_exceptions=True``) so the outer try/except can
         record the failure exactly as the sync version does.
         """
-        prompt = self._build_prompt(task, skill_id, skill_description, sub_task_trace)
+        prompt = self._build_prompt(
+            task, skill_id, skill_description, skill_body, sub_task_trace
+        )
         sem = _get_sem()
         async with sem:
             raw = await self.backend.acall(prompt, self.model)
@@ -241,6 +265,7 @@ class SubTaskVerifier:
         task: str,
         skill_id: str,
         skill_description: str,
+        skill_body: str,
         sub_task_trace: str,
     ) -> str:
         """Build the SUBTASK_VERIFIER_PROMPT for this sub-task."""
@@ -248,6 +273,7 @@ class SubTaskVerifier:
             task=task[:2000],
             skill_name=skill_id,
             skill_description=skill_description[:500],
+            skill_body=(skill_body or "")[: self.max_body_chars],
             sub_task_trace=sub_task_trace[: self.max_trace_chars],
         )
 
@@ -280,7 +306,9 @@ def _build_verdict(skill_id: str, obj: dict[str, Any]) -> SubTaskVerdict:
     return SubTaskVerdict(
         skill_id=skill_id,
         success=bool(obj.get("success", False)),
-        rationale=str(obj.get("rationale", ""))[:500],
+        # Bumped from 500 → 1000 chars to accommodate reasoning
+        # about skill body + agent actions (2026-06-22).
+        rationale=str(obj.get("rationale", ""))[:1000],
     )
 
 
