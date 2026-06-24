@@ -409,6 +409,37 @@ def _wire_agentic_trial(
             )
         )
 
+    # Verifier warm cache (2026-06-24, Method A branch): share a
+    # host-side uv cache with the agent container so the verifier's
+    # `uvx -w torch==2.7.1` doesn't cold-download 200 MB+ of wheels
+    # per trial. RO mount — the container can read cached wheels
+    # but cannot modify the host cache. Gated on the path existing
+    # (and being a directory); if absent we log a warning and the
+    # verifier falls back to its current cold-download behavior.
+    # Default None = no mount.
+    if method.verifier_uv_cache_path is not None:
+        uv_cache_host = Path(method.verifier_uv_cache_path).expanduser().resolve()
+        if uv_cache_host.is_dir():
+            mounts.append(
+                _bind_mount(
+                    str(uv_cache_host),
+                    "/root/.cache/uv",
+                    read_only=True,
+                )
+            )
+            logger.info(
+                "verifier_uv_cache_path mounted (Method A): "
+                "%s -> /root/.cache/uv (RO)",
+                uv_cache_host,
+            )
+        else:
+            logger.warning(
+                "verifier_uv_cache_path=%s does not exist or is not a "
+                "directory; skipping mount (verifier will cold-download "
+                "as before). Run `skillq paper prime-uv-cache` to populate.",
+                uv_cache_host,
+            )
+
     # Inject env vars the search script can use (path, host:port).
     cfg.agent.env.update(
         {
@@ -627,6 +658,36 @@ def _wire_hook_trial(
                 read_only=True,
             )
         )
+    # Verifier warm cache (2026-06-24, Method B branch): share a
+    # host-side uv cache with the agent container so the verifier's
+    # `uvx -w torch==2.7.1` doesn't cold-download 200 MB+ of wheels
+    # per trial. RO mount — the container can read cached wheels
+    # but cannot modify the host cache. Gated on the path existing
+    # (and being a directory); if absent we log a warning and the
+    # verifier falls back to its current cold-download behavior.
+    # Default None = no mount.
+    if method.verifier_uv_cache_path is not None:
+        uv_cache_host = Path(method.verifier_uv_cache_path).expanduser().resolve()
+        if uv_cache_host.is_dir():
+            mounts.append(
+                _bind_mount(
+                    str(uv_cache_host),
+                    "/root/.cache/uv",
+                    read_only=True,
+                )
+            )
+            logger.info(
+                "verifier_uv_cache_path mounted (Method B): "
+                "%s -> /root/.cache/uv (RO)",
+                uv_cache_host,
+            )
+        else:
+            logger.warning(
+                "verifier_uv_cache_path=%s does not exist or is not a "
+                "directory; skipping mount (verifier will cold-download "
+                "as before). Run `skillq paper prime-uv-cache` to populate.",
+                uv_cache_host,
+            )
 
     # Inject the same skillq-method CLAUDE.md snippet the agentic
     # path uses, so the agent knows it can call Skill(...). Without

@@ -46,6 +46,58 @@ def build_parser(parent: argparse.ArgumentParser) -> None:
     )
     run_p.set_defaults(handler=_run_command)
 
+    # prime-uv-cache (2026-06-24): pre-populate a host-side uv cache
+    # so the agent container can reuse torch / pytest wheels instead
+    # of cold-downloading them on every verifier trial. See plan
+    # bug-3-per-trial-q-table-json-hashed-quilt.md, Fix #1.
+    prime_p = sub.add_parser(
+        "prime-uv-cache",
+        help=(
+            "Pre-populate a host-side uv cache with the wheels needed by "
+            "slow task verifiers (e.g. torch for pytorch tasks). Bind-mount "
+            "this cache into the agent container via "
+            "MethodConfig.verifier_uv_cache_path to skip cold downloads."
+        ),
+    )
+    prime_p.add_argument(
+        "--cache-path",
+        type=Path,
+        default=Path.home() / ".skillq_cache" / "uv",
+        help=(
+            "Host directory to populate. Will be created if missing. "
+            "Default ~/.skillq_cache/uv."
+        ),
+    )
+    prime_p.add_argument(
+        "--python-version",
+        default="3.13",
+        help=(
+            "Python version to pin wheels to (must match what the "
+            "container's test.sh uses, e.g. '-p 3.13' for pytorch tasks). "
+            "Default 3.13."
+        ),
+    )
+    prime_p.add_argument(
+        "--platform",
+        default=None,
+        help=(
+            "Optional platform tag for the wheel, e.g. 'manylinux2014_x86_64'. "
+            "Default None: let uv auto-select for the host. Most useful when "
+            "the host and container are different arches (e.g. WSL2 amd64 "
+            "container on an arm64 host)."
+        ),
+    )
+    prime_p.add_argument(
+        "--wheels",
+        nargs="+",
+        required=True,
+        help=(
+            "Wheels to pre-populate, e.g. 'torch==2.7.1' 'pytest==8.4.1'. "
+            "Pip version specifiers are passed through to `uv pip download`."
+        ),
+    )
+    prime_p.set_defaults(handler=_prime_uv_cache_command)
+
 
 def _load_method_config(path: Path | None) -> MethodConfig:
     if path is None:
@@ -83,4 +135,114 @@ def _run_command(args: argparse.Namespace) -> int:
     from skillq.paper_mode.bridge import run_paper_job_sync
 
     return run_paper_job_sync(args.config_path, method)
+
+
+def _prime_uv_cache_command(args: argparse.Namespace) -> int:
+    """Pre-populate a host-side uv cache so the agent container can
+    reuse cached wheels (torch, pytest, ...) instead of cold-downloading
+    them on every verifier trial.
+
+    2026-06-24: added to address the 5/6 pytorch-task verifier timeouts
+    in the 2026-06-24 full run. See plan
+    bug-3-per-trial-q-table-json-hashed-quilt.md, Fix #1.
+    """
+    import shutil
+    import subprocess
+    import sys
+
+    cache = args.cache_path.expanduser().resolve()
+    cache.mkdir(parents=True, exist_ok=True)
+    wheels_dir = cache / "wheels-v0"
+    wheels_dir.mkdir(exist_ok=True)
+    envs_dir = cache / "environments-v2"
+    envs_dir.mkdir(exist_ok=True)
+
+    # Sanity check: `uv` must be on PATH. (test.sh installs uv 0.9.5
+    # inside the container; the host should also have a recent uv.)
+    if shutil.which("uv") is None:
+        print(
+            "[mg paper prime-uv-cache] ERROR: `uv` not on PATH. "
+            "Install via `curl -LsSf https://astral.sh/uv/install.sh | sh` "
+            "or `pip install uv`.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 3
+
+    # Step 1: ensure the host has a uv-managed Python at the requested
+    # version. `uv pip download` doesn't actually need the interpreter
+    # locally (it just needs the version to compute wheel tags), but
+    # `uv python install` is the canonical way to advertise the
+    # version to uv's internal resolver cache.
+    print(
+        f"[mg paper prime-uv-cache] ensuring uv-managed Python "
+        f"{args.python_version} is available...",
+        flush=True,
+    )
+    try:
+        subprocess.run(
+            ["uv", "python", "install", args.python_version],
+            check=True,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        )
+    except subprocess.CalledProcessError as exc:
+        print(
+            f"[mg paper prime-uv-cache] ERROR: `uv python install` "
+            f"failed with exit code {exc.returncode}.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return exc.returncode or 4
+
+    # Step 2: pre-download the wheels tagged for the requested Python
+    # version. `--only-binary=:all:` skips any attempt to build from
+    # source, which would fail if the host's Python version doesn't
+    # match the wheel tag. `--target` puts them under wheels-v0/ where
+    # `uvx` will find them when invoked inside the container.
+    cmd = [
+        "uv", "pip", "download",
+        "--python-version", args.python_version,
+        "--only-binary=:all:",
+        "--target", str(wheels_dir),
+    ]
+    if args.platform:
+        cmd.extend(["--platform", args.platform])
+    cmd.extend(args.wheels)
+
+    print(
+        f"[mg paper prime-uv-cache] downloading {len(args.wheels)} wheel(s) "
+        f"to {wheels_dir}...",
+        flush=True,
+    )
+    print(f"[mg paper prime-uv-cache] command: {' '.join(cmd)}", flush=True)
+    try:
+        subprocess.run(
+            cmd,
+            check=True,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        )
+    except subprocess.CalledProcessError as exc:
+        print(
+            f"[mg paper prime-uv-cache] ERROR: `uv pip download` failed "
+            f"with exit code {exc.returncode}. Check the wheel version "
+            f"specifiers (got: {args.wheels}).",
+            file=sys.stderr,
+            flush=True,
+        )
+        return exc.returncode or 5
+
+    # Step 3: report
+    n_wheels = sum(1 for _ in wheels_dir.glob("*.whl"))
+    print(
+        f"[mg paper prime-uv-cache] done. {n_wheels} wheel(s) in {wheels_dir}.",
+        flush=True,
+    )
+    print(
+        f"[mg paper prime-uv-cache] to use, set in your method YAML:\n"
+        f"    verifier_uv_cache_path: {cache}",
+        flush=True,
+    )
+    return 0
 

@@ -78,6 +78,22 @@ sim_gate_floor: 1
 # the skill was wrongly recommended.
 q_update_cosine_weight: true
 
+# === Verifier warm cache (2026-06-24, Bug #4 fix) ===
+# Path to a host-side uv cache directory that is bind-mounted into the
+# agent container at /root/.cache/uv (read-only). The cache should be
+# pre-populated with the wheels needed by the 6 pytorch tasks'
+# `uvx -w torch==2.7.1` so each trial's verifier skips the cold ~200 MB
+# download. Default None: no mount, verifier cold-downloads every trial.
+#
+# Prime once via:
+#   uv run python -m skillq.cli prime-uv-cache \
+#       --cache-path /home/gonern/.skillq_cache/uv \
+#       --python-version 3.13 \
+#       --wheels torch==2.7.1 torchvision==0.22.1 \
+#                pytest==8.4.1 pytest-json-ctrf==0.3.5 \
+#                transformers==4.55.0 numpy==2.3.1
+verifier_uv_cache_path: /home/gonern/.skillq_cache/uv
+
 # === Q-update (Layer 2) ===
 # Simplified to task-only reward on 2026-06-23:
 #     Q(skill) += q_alpha * (r_task - Q(skill))

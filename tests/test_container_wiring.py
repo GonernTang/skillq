@@ -418,3 +418,125 @@ def test_wire_one_trial_agentic_merges_user_claude_md(tmp_path: Path):
     )
     assert claude_mount is not None
     assert claude_mount["source"].endswith("CLAUDE.md.merged")
+
+
+# ---------------------------------------------------------------------------
+# Verifier uv cache mount (2026-06-24, Bug #4 fix)
+# ---------------------------------------------------------------------------
+def _run_wire_with_uv_cache(tmp_path: Path, uv_cache_path: Path | None) -> MagicMock:
+    """Helper: run wire_one_trial with optional verifier_uv_cache_path."""
+    from skillq.paper_mode.container_wiring import ContainerWiringHandle
+
+    _, _, _ = _seed_state(tmp_path)
+    method = MethodConfig(
+        library_root=tmp_path / ".skillq_library",
+        b_max=10,
+                seed_initial_q=0.5,
+        retrieval_mode="hook",   # exercise Method B branch
+        hook_enabled=True,
+        hook_top_k=3,
+        hook_lambda=0.5,
+        hook_c_ucb=0.5,
+        verifier_uv_cache_path=uv_cache_path,
+    )
+    event = _fake_event(tmp_path, task_name="pytorch-model-recovery")
+    handle = ContainerWiringHandle(
+        embedding={"thread": None, "server": None, "port": 8765, "stop_event": None},
+        method=method,
+        library_root=method.library_root,
+        state_path=method.resolved_state_path(),
+    )
+    wire_one_trial(handle, event)
+    return event
+
+
+def test_verifier_uv_cache_mount_added_when_path_set(tmp_path: Path):
+    """Bug #4 fix: when verifier_uv_cache_path points at an existing
+    directory, wire_one_trial adds a RO bind mount to
+    /root/.cache/uv in the container."""
+    cache = tmp_path / ".skillq_cache" / "uv"
+    cache.mkdir(parents=True)
+    # Drop a fake wheel file so is_dir() is True and the helper is exercised.
+    (cache / "wheels-v0").mkdir()
+    (cache / "wheels-v0" / "torch-2.7.1-cp313-cp313-linux_x86_64.whl").write_bytes(b"fake")
+
+    event = _run_wire_with_uv_cache(tmp_path, uv_cache_path=cache)
+
+    mounts = event.config.environment.mounts_json
+    uv_mounts = [m for m in mounts if m["target"] == "/root/.cache/uv"]
+    assert len(uv_mounts) == 1, f"expected 1 uv cache mount, got {len(uv_mounts)}: {mounts}"
+    m = uv_mounts[0]
+    assert m["read_only"] is True
+    assert m["type"] == "bind"
+    # The source must resolve to the absolute path of the cache dir.
+    assert Path(m["source"]).resolve() == cache.resolve()
+
+
+def test_verifier_uv_cache_mount_skipped_when_path_missing(tmp_path: Path):
+    """When verifier_uv_cache_path is set but the directory does NOT
+    exist on disk, wire_one_trial must skip the mount and not crash
+    (verifier falls back to cold-download behavior)."""
+    nonexistent = tmp_path / "definitely_not_there"
+    assert not nonexistent.exists()
+
+    event = _run_wire_with_uv_cache(tmp_path, uv_cache_path=nonexistent)
+
+    mounts = event.config.environment.mounts_json or []
+    uv_mounts = [m for m in mounts if m["target"] == "/root/.cache/uv"]
+    assert uv_mounts == []
+
+
+def test_verifier_uv_cache_mount_skipped_when_path_is_a_file(tmp_path: Path):
+    """When verifier_uv_cache_path points at a file (not a directory),
+    wire_one_trial must skip the mount (is_dir() is False)."""
+    file_path = tmp_path / "not_a_dir.txt"
+    file_path.write_text("oops")
+
+    event = _run_wire_with_uv_cache(tmp_path, uv_cache_path=file_path)
+
+    mounts = event.config.environment.mounts_json or []
+    uv_mounts = [m for m in mounts if m["target"] == "/root/.cache/uv"]
+    assert uv_mounts == []
+
+
+def test_verifier_uv_cache_mount_omitted_when_field_unset(tmp_path: Path):
+    """Backward-compat: default verifier_uv_cache_path=None means
+    NO /root/.cache/uv mount is added. Existing runs (without
+    prime-uv-cache) must not see any change."""
+    event = _run_wire_with_uv_cache(tmp_path, uv_cache_path=None)
+
+    mounts = event.config.environment.mounts_json or []
+    uv_mounts = [m for m in mounts if m["target"] == "/root/.cache/uv"]
+    assert uv_mounts == []
+
+
+def test_verifier_uv_cache_mount_works_in_agentic_mode(tmp_path: Path):
+    """The mount logic also applies to Method A (agentic). Test the
+    non-hook branch by setting retrieval_mode='agentic'."""
+    from skillq.paper_mode.container_wiring import ContainerWiringHandle
+
+    _, _, _ = _seed_state(tmp_path)
+    cache = tmp_path / ".skillq_cache" / "uv"
+    cache.mkdir(parents=True)
+
+    method = MethodConfig(
+        library_root=tmp_path / ".skillq_library",
+        b_max=10,
+                seed_initial_q=0.5,
+        retrieval_mode="agentic",
+        user_claude_md_path=None,
+        verifier_uv_cache_path=cache,
+    )
+    event = _fake_event(tmp_path, task_name="pytorch-model-recovery")
+    handle = ContainerWiringHandle(
+        embedding={"thread": None, "server": None, "port": 8765, "stop_event": None},
+        method=method,
+        library_root=method.library_root,
+        state_path=method.resolved_state_path(),
+    )
+    wire_one_trial(handle, event)
+
+    mounts = event.config.environment.mounts_json or []
+    uv_mounts = [m for m in mounts if m["target"] == "/root/.cache/uv"]
+    assert len(uv_mounts) == 1
+    assert uv_mounts[0]["read_only"] is True

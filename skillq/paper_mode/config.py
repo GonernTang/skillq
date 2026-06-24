@@ -218,6 +218,36 @@ class MethodConfig(BaseModel):
         ),
     )
 
+    # === Verifier uv cache (2026-06-24) ===
+    # Path to a host-side uv cache directory that is bind-mounted
+    # into the agent container at /root/.cache/uv (read-only).
+    # The cache should be pre-populated with the wheels needed by
+    # slow task verifiers (e.g. torch for pytorch tasks) so each
+    # trial's ``uvx -w torch==2.7.1`` skips the cold ~200 MB
+    # download. Default None: no cache mounted, verifier runs as
+    # before (cold-downloads every trial).
+    #
+    # Prime once via:
+    #   uv run python -m skillq.paper_mode.cli prime-uv-cache \
+    #       --cache-path /home/gonern/.skillq_cache/uv \
+    #       --python-version 3.13 \
+    #       --wheels torch==2.7.1 pytest==8.4.1 pytest-json-ctrf==0.3.5
+    #
+    # The cache must contain wheels tagged for the Python version
+    # the container's test.sh uses (3.13 for pytorch tasks). The
+    # priming command uses ``uv pip download --python-version 3.13
+    # --only-binary=:all:`` to fetch platform-correct wheels
+    # without needing Python 3.13 installed on the host.
+    verifier_uv_cache_path: Optional[Path] = Field(
+        default=None,
+        description=(
+            "Host path to a pre-populated uv cache directory "
+            "(wheels-v0/ subdir). Bind-mounted RO into the agent "
+            "container at /root/.cache/uv. Default None: no mount, "
+            "verifier cold-downloads every trial."
+        ),
+    )
+
     # Auto-extract (create_skill path) — opt-in, see bridge.py
     enable_auto_extract: bool = False
     extract_every_n_trials: int = Field(
