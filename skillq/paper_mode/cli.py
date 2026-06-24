@@ -196,15 +196,39 @@ def _prime_uv_cache_command(args: argparse.Namespace) -> int:
         return exc.returncode or 4
 
     # Step 2: pre-download the wheels tagged for the requested Python
-    # version. `--only-binary=:all:` skips any attempt to build from
-    # source, which would fail if the host's Python version doesn't
-    # match the wheel tag. `--target` puts them under wheels-v0/ where
-    # `uvx` will find them when invoked inside the container.
+    # version. We use the *system* `pip download` here (not
+    # `uv pip install --target`) because:
+    #
+    # - `uv pip install --target` EXTRACTS the wheels into a
+    #   venv-like directory (torch/, numpy/, ...), but `uvx` inside
+    #   the container looks for raw `.whl` files in its cache, not
+    #   extracted packages.
+    # - `uv pip download` was removed in uv 0.10+.
+    # - System `pip` (3.10+) supports `pip download
+    #   --python-version 3.13 --only-binary=:all:` and saves the
+    #   .whl files verbatim into the destination dir, which is
+    #   exactly the layout `uvx` expects.
+    #
+    # `--no-deps` keeps the cache small — only the wheels we
+    # explicitly asked for land in wheels-v0/. Transitive deps
+    # (markupsafe, packaging, ...) are tiny and uvx will resolve
+    # them per-trial from its own internal cache.
+    if shutil.which("pip3") is None and shutil.which("pip") is None:
+        print(
+            "[mg paper prime-uv-cache] ERROR: neither `pip3` nor `pip` "
+            "is on PATH. Install Python 3 system pip via your OS package "
+            "manager, or run inside a uv-managed venv.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 6
+    pip_bin = shutil.which("pip3") or shutil.which("pip")
     cmd = [
-        "uv", "pip", "download",
+        pip_bin, "download",
         "--python-version", args.python_version,
         "--only-binary=:all:",
-        "--target", str(wheels_dir),
+        "--no-deps",
+        "--dest", str(wheels_dir),
     ]
     if args.platform:
         cmd.extend(["--platform", args.platform])
@@ -225,7 +249,7 @@ def _prime_uv_cache_command(args: argparse.Namespace) -> int:
         )
     except subprocess.CalledProcessError as exc:
         print(
-            f"[mg paper prime-uv-cache] ERROR: `uv pip download` failed "
+            f"[mg paper prime-uv-cache] ERROR: `pip download` failed "
             f"with exit code {exc.returncode}. Check the wheel version "
             f"specifiers (got: {args.wheels}).",
             file=sys.stderr,
