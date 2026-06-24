@@ -175,6 +175,25 @@ def _prime_uv_cache_command(args: argparse.Namespace) -> int:
             encoding="utf-8",
         )
 
+    # Pre-create the marker files that `uv` writes on first use in
+    # every cache subdir. On an RO bind mount each of these writes
+    # raises "Read-only file system (os error 30)" and aborts the
+    # resolver. The set was discovered empirically on 2026-06-24:
+    #   - .gitignore: uv writes a `*\n` to ignore all cache contents
+    #     from git
+    #   - .lock: zero-byte lockfile uv uses to serialize concurrent
+    #     cache writers
+    # We pre-create them at the cache root AND inside each subdir
+    # (wheels-v0, environments-v2) so uv's recursive walk never hits
+    # an RO error.
+    for sub in (cache, wheels_dir, envs_dir):
+        gitignore = sub / ".gitignore"
+        if not gitignore.exists():
+            gitignore.write_text("*\n", encoding="utf-8")
+        lockfile = sub / ".lock"
+        if not lockfile.exists():
+            lockfile.touch()
+
     # Sanity check: `uv` must be on PATH. (test.sh installs uv 0.9.5
     # inside the container; the host should also have a recent uv.)
     if shutil.which("uv") is None:
