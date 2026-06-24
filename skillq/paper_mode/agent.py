@@ -121,6 +121,14 @@ class SkillQClaudeCodeAgent(ClaudeCode):
             if "c_ucb" in paper:
                 skillq_hook_env["SKILLQ_HOOK_C_UCB"] = f"{float(paper['c_ucb']):.6f}"
 
+        # Pull-mode (2026-06-23): if the caller passes pull_top_k kwarg,
+        # set SKILLQ_PULL_TOP_K so the hook's SessionStart branch uses
+        # that K. Absent kwarg → falls back to SKILLQ_HOOK_TOP_K inside
+        # hook.py so existing runs are unaffected.
+        pull_top_k = self._flag_kwargs.get("pull_top_k")
+        if pull_top_k is not None:
+            skillq_hook_env["SKILLQ_PULL_TOP_K"] = str(int(pull_top_k))
+
         # Merge into _extra_env (created by super().__init__).
         # We can't access self._extra_env before super().__init__,
         # so the merge happens after super() above.
@@ -226,6 +234,14 @@ def hook_env(
     top_k: int,
     lambda_: float,
     c_ucb: float,
+    # 2026-06-24 additions: scoring mode + multiplicative params + Hard Gate
+    score_mode: str = "additive",
+    mult_beta: float = 0.5,
+    mult_gamma: float = 0.2,
+    q_clip_min: float = 0.0,
+    q_clip_max: float = 1.0,
+    sim_gate_min_score: float = 0.05,
+    sim_gate_floor: int = 1,
 ) -> dict[str, str]:
     """Build the env dict the agent container needs for the hook."""
     # The hook runs INSIDE the agent container, so all of these
@@ -257,11 +273,24 @@ def hook_env(
         "SKILLQ_HOOK_TOP_K": str(top_k),
         "SKILLQ_HOOK_LAMBDA": f"{lambda_:.6f}",
         "SKILLQ_HOOK_C_UCB": f"{c_ucb:.6f}",
+        # 2026-06-24: scoring mode + multiplicative params + Hard Gate.
+        # Container-side hook reads these via ``os.environ.get`` at
+        # module-load (see hook.py top-of-file constants).
+        "SKILLQ_HOOK_SCORE_MODE": str(score_mode),
+        "SKILLQ_HOOK_MULT_BETA": f"{mult_beta:.6f}",
+        "SKILLQ_HOOK_MULT_GAMMA": f"{mult_gamma:.6f}",
+        "SKILLQ_HOOK_Q_CLIP_MIN": f"{q_clip_min:.6f}",
+        "SKILLQ_HOOK_Q_CLIP_MAX": f"{q_clip_max:.6f}",
+        "SKILLQ_SIM_GATE_MIN_SCORE": f"{sim_gate_min_score:.6f}",
+        "SKILLQ_SIM_GATE_FLOOR": str(sim_gate_floor),
     }
 
 
 def hook_settings_json(
-    *, hook_container_path: str, script_inline: str | None = None
+    *,
+    hook_container_path: str,
+    script_inline: str | None = None,
+    include_pull: bool = False,
 ) -> dict[str, Any]:
     """Build the ``settings.json`` dict that registers the PreToolUse hook.
 
@@ -284,20 +313,55 @@ def hook_settings_json(
 
     The hook script receives the tool call's JSON on stdin and
     returns its decision on stdout.
+
+    When ``include_pull=True`` (used by retrieval_mode='pull'), also
+    registers a ``UserPromptSubmit`` hook under the same ``hooks`` key.
+    The script dispatches on ``hook_event_name`` (see
+    ``skillq/paper_mode/hook.py:main``), so a single command covers
+    both events.
+
+    Why ``UserPromptSubmit`` and not ``SessionStart``: smoke test on
+    2026-06-23 showed SessionStart fires with an empty ``prompt`` field
+    (the user prompt hasn't been injected yet on session startup), so
+    the pull-mode handler early-returned with empty stdout. UserPromptSubmit
+    fires after each user turn with the prompt text populated, which is
+    what the pull-mode handler actually needs.
     """
     cmd = f"python3 {hook_container_path}"
-    return {
-        "hooks": {
-            "PreToolUse": [
-                {
-                    "matcher": "Skill",
-                    "hooks": [
-                        {
-                            "type": "command",
-                            "command": cmd,
-                        }
-                    ],
-                }
-            ]
-        }
+    hooks_block: dict[str, Any] = {
+        "PreToolUse": [
+            {
+                "matcher": "Skill",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": cmd,
+                    }
+                ],
+            }
+        ],
     }
+    if include_pull:
+        # UserPromptSubmit: no matcher (fires unconditionally on every
+        # user prompt). Same command — hook.py dispatches by event name.
+        hooks_block["UserPromptSubmit"] = [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": cmd,
+                    }
+                ],
+            }
+        ]
+    return {"hooks": hooks_block}
+
+
+def pull_env(*, top_k: int) -> dict[str, str]:
+    """Env vars consumed by ``hook.py`` UserPromptSubmit branch.
+
+    Returned dict is merged into the agent container's env so the
+    hook script picks them up at startup (constants in hook.py are
+    read once at module load).
+    """
+    return {"SKILLQ_PULL_TOP_K": str(top_k)}

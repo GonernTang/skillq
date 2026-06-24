@@ -6,31 +6,30 @@ Two public functions:
 - :func:`attach_paper_registers` — wires Harbor's per-trial lifecycle
   hooks for the paper method: ``on_trial_started`` (container
   wiring — see :mod:`paper.paper_mode.container_wiring`) and
-  ``on_trial_ended`` (per-subtask Q-update + library maintenance).
+  ``on_trial_ended`` (per-trial Q-update + library maintenance).
 - :func:`run_paper_job` — high-level orchestrator that creates a Harbor
   :class:`Job`, starts the host-side embedding daemon, attaches both
   hooks, runs the job, and tears down the daemon in a try/finally.
 
-**Global-Q + per-subtask refactor (binary reward 2026-06-14)**:
+**Simplified Q-update (2026-06-23)**:
 
 - The Q-table is keyed by ``skill_id`` (single global value per
-  skill). Eq. 4 reads it as ``mgr.q_table[skill_id]``; Eq. 6 (the
-  Q-update) writes to the same key.
-- Per-subtask verdicts come from the container's PreToolUse hook
-  log (``skillq_skill_calls.jsonl``). The bridge aggregates by
-  ``(skill_id, trial)`` (mean of binary ``r_subtask`` over all
-  calls in the trial = per-skill success rate ∈ [0, 1]).
-- **Both rewards are now 0/1 binary**:
-  - ``r_subtask`` ∈ {0, 1}: 1 if the sub-task completed in a
-    generally correct way (LLM judge), 0 otherwise. All skills
-    called within the same sub-task share the same ``r_subtask``.
-  - ``r_task`` ∈ {0, 1}: 1 if the trial-level reward is truthy
-    (verifier passed), 0 otherwise. All skills called within
-    the same trial share the same ``r_task``.
-- The Q-update is::
+  skill). Eq. 4 reads it as ``mgr.q_table[skill_id]``; the Q-update
+  writes to the same key.
+- Skill calls are recovered from the container's PreToolUse hook
+  log (``skillq_skill_calls.jsonl``), with a session-log fallback
+  for agentic mode (no hook installed).
+- The Q-update is now standard Eq.5 (task-only reward)::
 
-      target   = w_subtask * r_subtask_mean  + w_task * r_task
-      Q(skill) += alpha * (target - Q(skill))
+      Q(skill) += alpha * (r_task - Q(skill))
+
+  with ``r_task`` ∈ {0, 1} (binarized trial-level verifier reward).
+  The pre-2026-06-23 path used an LLM judge to score each Skill()
+  call as ``r_subtask`` ∈ {0, 1} and blended it with ``r_task``,
+  but with pull-mode Top-K injection the agent typically calls
+  exactly one skill per trial — so ``r_subtask`` collapsed to a
+  binary that was almost always identical to ``r_task``, and the
+  judge call was wasted compute.
 
 **Container wiring lifecycle** (issue #2 fix):
 
@@ -67,6 +66,7 @@ from skillq.method.attribution import (
     LiteLLMAttributionBackend,
 )
 from skillq.method.editor_backend import LiteLLMEditBackend
+from skillq.method.embedding_service import sync_embed
 from skillq.method.extractor import SkillExtractor
 from skillq.method.library import LibManager
 from skillq.method.near_miss import NearMissRefiner
@@ -77,12 +77,6 @@ from skillq.method.vector_table import (
     _description_of,
     sync_lib_to_vector_table,
 )
-from skillq.method.sub_task_verifier import (
-    LiteLLMSubTaskVerifierBackend,
-    SubTaskVerdict,
-    SubTaskVerifier,
-    mean_r_subtask,
-)
 from skillq.method.types import Qlib, Skill
 from skillq.method.vector_table import VectorTable
 from skillq.paper_mode.config import MethodConfig
@@ -92,6 +86,7 @@ from skillq.paper_mode.container_wiring import (
     stop_container_wiring,
     wire_one_trial,
 )
+from skillq.paper_mode.hook import _cosine  # per-pair cosine for Q-update weight
 
 logger = logging.getLogger("paper.paper.bridge")
 
@@ -133,7 +128,12 @@ def resolve_retrieval_mode(method: "MethodConfig", n_lib_skills: int) -> str:
     The config field ``retrieval_mode`` is one of:
 
     - ``"agentic"`` — Method A. Returned verbatim.
-    - ``"hook"``    — Method B. Returned verbatim.
+    - ``"hook"``    — Method B (PreToolUse only). Returned verbatim.
+    - ``"pull"``    — Method B + SessionStart inject (2026-06-23).
+      Returned as ``"hook"`` since the wiring is identical except
+      for the extra ``hooks.SessionStart`` entry that
+      ``container_wiring._settings_json_path`` adds when
+      ``method.retrieval_mode == "pull"``.
     - ``"auto"``    — picks ``"agentic"`` if the current lib has
       fewer than ``method.library_size_threshold`` skills, else
       ``"hook"``. Decided at the start of each trial (per design
@@ -142,6 +142,8 @@ def resolve_retrieval_mode(method: "MethodConfig", n_lib_skills: int) -> str:
     mode = method.retrieval_mode
     if mode == "auto":
         return "agentic" if n_lib_skills < method.library_size_threshold else "hook"
+    if mode == "pull":
+        return "hook"
     return mode
 
 
@@ -272,8 +274,9 @@ def _read_skill_calls_log(log_path: Path) -> list[_SubTaskCallRecord]:
     """Parse the JSONL the hook wrote during a trial.
 
     Returns [] on any structural failure (missing file, bad JSON).
-    Per the per-subtask design, we aggregate by skill_id downstream
-    and take the mean of r_subtask over all calls in the trial.
+    Each record represents one Skill() call the agent made; the
+    Q-update path groups by ``skill_id`` and counts calls per skill
+    to drive ``n_retrievals`` and the Eq.5 update.
     """
     if not log_path.exists():
         return []
@@ -380,65 +383,6 @@ def _extract_skill_calls_from_session(trial_dir: Path) -> list[_SubTaskCallRecor
     return out
 
 
-def _slice_sub_task_trace(trial_dir: Path, ts: float) -> str:
-    """Read a slice of the agent's session log around ``ts`` seconds.
-
-    Used by :class:`SubTaskVerifier` to build its judgment context.
-    Best-effort — returns whatever we can parse; if the session log
-    is missing we return a stub note so the verifier can still
-    produce a (likely "uncertain") verdict rather than crashing.
-    """
-    # Sessions live under <trial_dir>/agent/sessions/projects/*/; the
-    # latest .jsonl is the agent's run log.
-    sessions_root = trial_dir / "agent" / "sessions" / "projects"
-    if not sessions_root.exists():
-        return "<no agent session log found>"
-
-    jsonls = sorted(
-        sessions_root.glob("*/*.jsonl"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    if not jsonls:
-        return "<no agent session log found>"
-
-    # Approximate: extract the last ~50 records (all of them for short
-    # runs; a budget-capped subset for long ones). The verifier's
-    # judgment is about the sub-task's *last* state, so the most
-    # recent activity is the most informative.
-    out_lines: list[str] = []
-    try:
-        with open(jsonls[0], "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                # Compact representation: type + content snippet
-                rtype = rec.get("type", "?")
-                content = rec.get("message", {}).get("content", "")
-                if isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict):
-                            if block.get("type") == "text":
-                                content = block.get("text", "")
-                                break
-                            if block.get("type") == "tool_use":
-                                content = (
-                                    f"[tool_use:{block.get('name','?')}] "
-                                    f"{json.dumps(block.get('input', {}))[:200]}"
-                                )
-                                break
-                if isinstance(content, str):
-                    out_lines.append(f"{rtype}: {content[:300]}")
-    except Exception:  # noqa: BLE001
-        return "<agent session log read failed>"
-    return "\n".join(out_lines[-50:])
-
-
 # ---------------------------------------------------------------------------
 # Public: hook registration
 # ---------------------------------------------------------------------------
@@ -447,7 +391,7 @@ def attach_paper_registers(
     method: MethodConfig,
     wiring: ContainerWiringHandle | None = None,
 ) -> None:
-    """Wire the per-subtask hook and the per-trial Q-update.
+    """Wire the PreToolUse hook and the per-trial Q-update.
 
     Registers two Harbor lifecycle hooks on the job:
 
@@ -456,20 +400,18 @@ def attach_paper_registers(
       directory, inject the ``SKILLQ_*`` env vars into the agent
       config, and bind-mount the hook script + ``settings.json``
       into the container.
-    - ``on_trial_ended`` — reads the per-subtask hook log, calls
-      :class:`SubTaskVerifier` per unique (skill, trial) pair,
-      applies Eq. 6 (binary-reward variant) with
-      ``w_subtask * r_subtask_mean + w_task * r_task`` as the
-      target, and maintains the lib.
+    - ``on_trial_ended`` — reads the PreToolUse hook log (or the
+      session-log fallback), applies the task-only Eq.5 Q-update
+      ``Q(skill) += alpha * (r_task - Q(skill))`` per unique skill
+      called in the trial, and maintains the lib.
 
     Both callbacks swallow exceptions (the bridge's safety net so a
     bug in the method never aborts the trial).
 
-    ``wiring=None`` is the legacy / unit-test mode: per-subtask hook
-    is not registered, so on_trial_started is skipped. The
-    end-of-trial Q-update still runs, but the Q-table won't
-    observe per-Skill-call outcomes (it'll only see the trial's
-    overall reward via r_task).
+    ``wiring=None`` is the legacy / unit-test mode: the PreToolUse
+    hook is not registered, so on_trial_started is skipped. The
+    end-of-trial Q-update still runs via the session-log fallback
+    (recovering Skill calls from the agent's Claude Code jsonl).
     """
     lib = Qlib(b_max=method.b_max)
     mgr = LibManager(
@@ -587,19 +529,6 @@ def attach_paper_registers(
         )
     extract_buffer = _ExtractBuffer(n_trials_threshold=method.extract_every_n_trials)
 
-    # Sub-task verifier
-    sub_task_verifier = SubTaskVerifier(
-        backend=LiteLLMSubTaskVerifierBackend(
-            model=method.q_subtask_verifier_model
-        ),
-        model=method.q_subtask_verifier_model,
-        # Body truncation cap for the verifier prompt (2026-06-22
-        # change — verifier now sees skill.body alongside the
-        # description so it can judge whether the agent's actions
-        # are consistent with the skill's intended approach).
-        max_body_chars=method.q_max_body_chars,
-    )
-
     # Track which lib mutates fired this on_ended call (so we can
     # batch emb_cache refresh at the end).
     lib_changes_this_trial: list[tuple[str, str, str]] = []  # (action, sid, body)
@@ -669,42 +598,40 @@ def attach_paper_registers(
     # on a closure over attach_paper_registers. The Q-table and lib
     # are passed in (and mutated in place).
     # ------------------------------------------------------------------
-    async def _q_update_from_subtask(
+    def _q_update(
         *,
         trial_id: str,
-        intent_text: str,
         trial_dir: Path,
         r_task: int,
     ) -> list[dict[str, Any]]:
-        """Apply the per-subtask Q-update (Eq.6 generalised, binary).
+        """Apply the task-only Q-update (Eq.5) for one trial.
 
-        Both rewards are 0/1:
+        For every skill the agent called this trial (counted from the
+        PreToolUse hook log, with a session-log fallback for agentic
+        mode), apply::
 
-        - ``r_subtask`` (binary) — per-skill-call LLM-judge verdict.
-          Multiple calls to the same skill in a trial are averaged
-          → ``r_subtask_mean`` (per-skill success rate ∈ [0, 1]).
-        - ``r_task`` (binary) — the trial-level verifier reward.
-          Already 0 or 1 from ``_harbor_r_task``. Shared by every
-          skill called in the trial.
+            Q(skill) += alpha * (r_task - Q(skill))
 
-        The Q-update is::
+        ``r_task`` is shared by every skill called in the trial
+        (already binarised to {0, 1} by ``_harbor_r_task``).
 
-            target   = w_subtask * r_subtask_mean + w_task * r_task
-            Q(skill) += alpha * (target - Q(skill))
+        Per-skill counters updated as a side-effect:
 
-        The judge calls are issued concurrently via
-        :func:`asyncio.gather`, bounded by
-        :data:`~skillq.method.sub_task_verifier.MAX_CONCURRENT_JUDGES`
-        inside :meth:`SubTaskVerifier.ascore`. ``asyncio.gather``
-        returns verdicts in **input order** (not completion order) so
-        we can re-group by ``skill_id`` in the second pass by
-        slicing ``verdicts_in_order`` with the ``group_sizes`` we
-        captured in the first pass.
+        - ``n_retrievals += n_calls`` — feeds the next trial's UCB
+          exploration bonus (see :mod:`paper_mode.hook`). Counts
+          every approved call so skills that get called a lot see
+          their exploration bonus decay.
+        - ``n_uses += 1`` — "did the agent use this skill at all in
+          the trial" counter (one per trial regardless of call count).
+        - ``n_success += 1 if r_task`` — task-success counter per
+          skill (gated on the trial-level reward only).
 
-        Returns the per-trial sub_task_log entries (for the debug
-        state file). Reads ``skillq_skill_calls.jsonl`` written by the
-        container-side hook and re-scores each unique (skill, trial)
-        pair via the LLM-as-judge.
+        Skills evicted between call-time and end-of-trial are skipped
+        (we don't Q-update a skill that no longer exists).
+
+        Returns the per-skill Q-update entries so the caller can
+        persist them (currently used only for the trace file; the
+        Q-table itself is updated in place via ``mgr.update_q``).
         """
         # The hook writes its per-call log to
         # ``/logs/agent/sessions/skillq_skill_calls.jsonl`` inside
@@ -736,127 +663,116 @@ def attach_paper_registers(
             by_skill[c.skill_id].append(c)
 
         if not by_skill:
-            if method.debug_keep_subtask_log:
-                return [
-                    {
-                        "trial": trial_id,
-                        "skill": "<none>",
-                        "calls": 0,
-                        "verdicts": [],
-                        "r_subtask_mean": 0.0,
-                        "r_task": r_task,
-                        "q_delta": 0.0,
-                    }
-                ]
             return []
 
+        # 2026-06-24 (Fix 3): Cosine-weighted Q-update. Compute phi(q)
+        # ONCE per trial by re-embedding the first call's intent_text
+        # (or trial_id as fallback). Each per-skill delta is then
+        # scaled by max(cos(phi(q), phi(s)), 0). Skills orthogonal to
+        # the trial's intent get delta=0 — Q is not polluted by
+        # failures on wrongly-recommended skills.
+        phi_q: list[float] | None = None
+        if method.q_update_cosine_weight:
+            intent_text = ""
+            if calls_log:
+                intent_text = (calls_log[0].intent_text or "").strip()
+            if not intent_text:
+                # Fallback: trial_id typically encodes the task_name.
+                intent_text = trial_id
+            try:
+                phi_q = sync_embed(
+                    text=intent_text,
+                    host="127.0.0.1",
+                    port=method.hook_embedding_service_port,
+                )
+                logger.info(
+                    "phi(q) embedded: text_len=%d emb_dim=%d",
+                    len(intent_text),
+                    len(phi_q),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "phi(q) embed failed; cosine weight disabled for "
+                    "trial %s: %s",
+                    trial_id,
+                    exc,
+                )
+                phi_q = None
+
         out: list[dict[str, Any]] = []
-        # First pass: enumerate every (skill, call) the judge must
-        # score, plus the per-skill ordering info we'll need to
-        # regroup the parallel results.
-        #   - ``judge_inputs``:   flat list of (skill_id, trace, desc)
-        #                         in deterministic order (by_skill
-        #                         iteration × calls).
-        #   - ``group_sizes``:    number of judge calls per surviving
-        #                         (in-lib) skill, in the same order as
-        #                         the slices of judge_inputs.
-        #   - ``ordered_skills``: list of surviving skill_ids, in
-        #                         iteration order. Used to re-group
-        #                         verdicts_in_order in the second pass.
-        # Skills evicted between call-time and end-of-trial are
-        # skipped here, matching today's serial behavior.
-        judge_inputs: list[tuple[str, str, str, str]] = []
-        group_sizes: list[int] = []
-        ordered_skills: list[str] = []
         for skill_id, calls in by_skill.items():
             if skill_id not in lib:
                 # Skill was in the agent's view at call time but has
                 # since been evicted. Skip — we don't Q-update a
                 # skill that no longer exists.
                 continue
-            ordered_skills.append(skill_id)
-            group_sizes.append(len(calls))
-            # The judge evaluates goal completion against the
-            # description (the skill's contract) and uses the body
-            # as a plausibility reference for what the skill
-            # prescribes. Both pass to the verifier; the description
-            # is still extracted from the SKILL.md frontmatter.
-            # ``lib.get`` may return None for an evicted skill in a
-            # race; default to "" for both fields so the prompt
-            # still formats.
-            skill = lib.get(skill_id)
-            body = skill.body if skill else ""
-            desc = _description_of(body) if skill else ""
-            for call in calls:
-                trace = _slice_sub_task_trace(trial_dir, call.ts)
-                judge_inputs.append((skill_id, trace, desc, body))
-
-        # Fire all judge calls in parallel. No ``return_exceptions``
-        # so a single failure propagates and the outer on_ended
-        # try/except records it as today. ``asyncio.gather``
-        # returns verdicts in input order (Python 3.10+).
-        verdicts_in_order: list[SubTaskVerdict] = []
-        if judge_inputs:
-            verdicts_in_order = await asyncio.gather(
-                *[
-                    sub_task_verifier.ascore(
-                        task=intent_text,
-                        skill_id=sid,
-                        skill_description=desc,
-                        skill_body=body,
-                        sub_task_trace=trace,
-                    )
-                    for sid, trace, desc, body in judge_inputs
-                ]
-            )
-
-        # Second pass: regroup verdicts_in_order by skill_id, apply
-        # the Q-update per skill, build the debug-log entries.
-        cursor = 0
-        for skill_id, n_calls in zip(ordered_skills, group_sizes):
-            verdicts = verdicts_in_order[cursor : cursor + n_calls]
-            cursor += n_calls
-            r_subtask_mean = mean_r_subtask(verdicts)
-            # Generalised Eq.6 (binary rewards):
-            # target = w_subtask * r_subtask_mean + w_task * r_task
+            n_calls = len(calls)
+            # Standard Q-learning (Eq.5, binary reward):
+            # target = r_task
+            # delta  = alpha * (target - Q(skill))
             q_old = mgr.q_for(skill_id)
-            target = (
-                method.q_w_subtask * r_subtask_mean
-                + method.q_w_task * r_task
-            )
+            target = r_task
             delta = method.q_alpha * (target - q_old)
-            mgr.update_q(skill_id, delta)
-            # Per-skill counters
+
+            # 2026-06-24 (Fix 3): cosine-weighted Q-update.
+            # Multiply delta by max(cos(phi(q), phi(s)), 0).
+            # Skills orthogonal to the trial get delta=0; their Q is
+            # preserved at q_old (no pollution from the failure).
+            cosine_sim: float | None = None
+            if phi_q is not None:
+                phi_s = emb_cache.get(skill_id)
+                if phi_s is None:
+                    # No embedding for this skill — skip update.
+                    # Prevents polluting Q on skills never seen by
+                    # the embedder (e.g. brand-new auto-extracted
+                    # skills with a description that wasn't yet
+                    # embedded for cosine search).
+                    logger.debug(
+                        "Q-update skipped: no embedding for skill=%s",
+                        skill_id,
+                    )
+                    continue
+                # VectorTable returns np.ndarray; coerce to list for _cosine.
+                phi_s_list = (
+                    phi_s.tolist() if hasattr(phi_s, "tolist") else list(phi_s)
+                )
+                sim = _cosine(phi_q, phi_s_list)
+                sim_clamped = max(sim, 0.0)
+                cosine_sim = sim_clamped
+                delta = delta * sim_clamped
+                if sim_clamped == 0.0:
+                    logger.debug(
+                        "Q-update zeroed: sim=%.3f skill=%s",
+                        sim,
+                        skill_id,
+                    )
+
+            if delta != 0.0:
+                mgr.update_q(skill_id, delta)
             skill_obj = lib.get(skill_id)
             if skill_obj is not None:
+                skill_obj.n_retrievals += n_calls
                 skill_obj.n_uses += 1
                 if r_task:
                     skill_obj.n_success += 1
-            if method.debug_keep_subtask_log:
-                out.append(
-                    {
-                        "trial": trial_id,
-                        "skill": skill_id,
-                        "calls": n_calls,
-                        "verdicts": [
-                            {
-                                "success": v.success,
-                                "rationale": v.rationale,
-                            }
-                            for v in verdicts
-                        ],
-                        "r_subtask_mean": r_subtask_mean,
-                        "r_task": r_task,
-                        "q_delta": delta,
-                    }
-                )
+            out.append(
+                {
+                    "trial": trial_id,
+                    "skill": skill_id,
+                    "calls": n_calls,
+                    "r_task": r_task,
+                    "q_old": q_old,
+                    "q_delta": delta,
+                    "q_new": q_old + delta,
+                    "cosine_sim": cosine_sim,
+                }
+            )
             logger.info(
-                "Q-update skill=%s calls=%d r_subtask_mean=%.2f "
-                "r_task=%d q_old=%+.3f -> q_new=%+.3f",
+                "Q-update skill=%s calls=%d r_task=%d sim=%s q_old=%+.3f -> q_new=%+.3f",
                 skill_id,
                 n_calls,
-                r_subtask_mean,
                 int(r_task),
+                f"{cosine_sim:.3f}" if cosine_sim is not None else "n/a",
                 q_old,
                 q_old + delta,
             )
@@ -866,7 +782,7 @@ def attach_paper_registers(
         # is small (one JSONL line per (skill, trial)) and lives
         # next to the other trial state dumps in
         # ``<trial_dir>/skillq_state/``.
-        if method.debug_keep_subtask_log and out:
+        if out:
             try:
                 q_path = trial_dir / "skillq_state" / "q_updates.jsonl"
                 q_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1004,9 +920,12 @@ def attach_paper_registers(
         trial_id: str,
     ) -> None:
         """Layer 4 (Sec. 3.4 incremental editing): if the trial failed
-        and the best skill's Q is above ``theta_near_miss``, ask the
-        editor backend to propose a minimal edit and re-embed the
-        description if it changed.
+        (r_task == 0), ask the editor backend to propose a minimal
+        edit on the highest-Q skill and re-embed the description if
+        it changed.
+
+        The previous near-miss gate (``Q >= theta_near_miss``) was
+        removed 2026-06-22; see the comment in the function body.
         """
         if not r_task or not lib.skills:
             return
@@ -1017,9 +936,14 @@ def attach_paper_registers(
         )
         if top is None:
             return
-        current_q = mgr.q_for(top.skill_id)
-        if not refiner.is_near_miss(r_task, current_q, method.theta_near_miss):
-            return
+        # 2026-06-22: previously gated by
+        # ``refiner.is_near_miss(r_task, current_q, method.theta_near_miss)``.
+        # That gate was structurally unreachable (low-Q failed-trial
+        # scenarios drifted below ``theta_near_miss=0.5``), so every
+        # failed trial was silently skipped. Removed: any failed trial
+        # with a non-empty lib now invokes the editor LLM.
+        # 2026-06-23: with the sub-task judge path removed, this gate's
+        # only blocker (the unreachable blend) is gone.
         new_skill = refiner.propose_edit(
             skill=top,
             task=intent_text,
@@ -1068,13 +992,10 @@ def attach_paper_registers(
             intent_text = event.task_name or _trial_dir(event).name
             trial_dir = _trial_dir(event)
 
-            # 1. Per-subtask Q-update (Eq.6 generalised).
-            # ``_q_update_from_subtask`` is async because the
-            # per-call LLM-judge is now fired concurrently under a
-            # Semaphore(8) inside SubTaskVerifier.ascore (Bug 8 fix).
-            sub_task_log_entries = await _q_update_from_subtask(
+            # 1. Per-trial Q-update (task-only, Eq.5). Synchronous:
+            # no LLM call, just a per-skill dict update.
+            _q_update(
                 trial_id=event.trial_id,
-                intent_text=intent_text,
                 trial_dir=trial_dir,
                 r_task=r_task,
             )
@@ -1100,8 +1021,6 @@ def attach_paper_registers(
                 mgr,
                 lib_root=method.library_root,
                 seed_initial_q=method.seed_initial_q,
-                sub_task_log=sub_task_log_entries,
-                debug_keep_subtask_log=method.debug_keep_subtask_log,
             )
 
             # 5b. Bug 3: re-dump q_table.json to the per-trial staging

@@ -208,3 +208,177 @@ def _build_fake_hook_event(trial_id: str, result: Any) -> MagicMock:
     event.timestamp = datetime.now(timezone.utc)
     event.result = result
     return event
+
+
+# ---------------------------------------------------------------------------
+# _score_skills — Fix 1 (Hard Gate) + Fix 2 (multiplicative scoring)
+# (2026-06-24)
+# ---------------------------------------------------------------------------
+from skillq.paper_mode.hook import _score_skills as _score_skills_hook  # noqa: E402
+
+
+def _build_score_input():
+    """Build a 3-skill fixture for _score_skills tests.
+
+    Skills: A (sim=1.0, Q=0.9), B (sim=0.5, Q=0.5), C (sim=0.0, Q=0.1).
+    Embeddings: orthogonal unit vectors; query is along A.
+    """
+    skills = [
+        {"skill_id": "A", "n_retrievals": 0},
+        {"skill_id": "B", "n_retrievals": 0},
+        {"skill_id": "C", "n_retrievals": 0},
+    ]
+    q_table = {"A": 0.9, "B": 0.5, "C": 0.1}
+    emb_cache = {
+        "A": [1.0, 0.0, 0.0],
+        "B": [0.0, 1.0, 0.0],
+        "C": [0.0, 0.0, 1.0],
+    }
+    subtask_emb = [1.0, 0.0, 0.0]
+    return subtask_emb, skills, q_table, emb_cache
+
+
+def test_score_skills_additive_unchanged_regression():
+    """Additive mode (legacy Eq.4): z-scored sim + z-scored Q + UCB."""
+    subtask_emb, skills, q_table, emb_cache = _build_score_input()
+    result = _score_skills_hook(
+        subtask_emb=subtask_emb,
+        skills=skills,
+        q_table=q_table,
+        emb_cache=emb_cache,
+        lambda_=0.5,
+        c_ucb=0.5,
+        top_k=3,
+        score_mode="additive",
+    )
+    # A (highest sim, highest Q) → highest score
+    assert result[0][0] == "A"
+    # All three skills appear
+    assert {sid for sid, _ in result} == {"A", "B", "C"}
+
+
+def test_score_skills_multiplicative_basic():
+    """Multiplicative: sim·(1 + β·Q_norm) + γ·UCB. Key property: when
+    sim=0, score = γ·UCB only — Q cannot promote the irrelevant skill.
+    """
+    subtask_emb, skills, q_table, emb_cache = _build_score_input()
+    result = _score_skills_hook(
+        subtask_emb=subtask_emb,
+        skills=skills,
+        q_table=q_table,
+        emb_cache=emb_cache,
+        lambda_=0.5,                # ignored in multiplicative mode
+        c_ucb=0.5,
+        top_k=3,
+        score_mode="multiplicative",
+        mult_beta=0.5,
+        mult_gamma=0.2,
+        q_clip_min=0.0,
+        q_clip_max=1.0,
+    )
+    # A is highest (sim=1.0 × (1 + 0.5 × 0.9) + γ·UCB ≈ 1.45 + small)
+    assert result[0][0] == "A"
+    # C's score should be ONLY γ·UCB (no sim term, no Q amplification)
+    c_score = next(s for sid, s in result if sid == "C")
+    # UCB term: c_ucb * sqrt(log(n_total) / n); n_total=1+1=2, n=0+1=1
+    # = 0.5 * sqrt(log(2)/1) ≈ 0.5 * 0.833 = 0.417
+    import math
+    expected_c = 0.2 * 0.5 * math.sqrt(math.log(2) / 1)
+    assert abs(c_score - expected_c) < 1e-6, f"C score {c_score} != {expected_c}"
+
+
+def test_score_skills_gate_filters():
+    """Hard Gate: candidates with sim < threshold dropped before scoring."""
+    subtask_emb, skills, q_table, emb_cache = _build_score_input()
+    # sims: A=1.0, B=0.0, C=0.0. Gate at 0.3 → only A survives.
+    result = _score_skills_hook(
+        subtask_emb=subtask_emb,
+        skills=skills,
+        q_table=q_table,
+        emb_cache=emb_cache,
+        lambda_=0.5,
+        c_ucb=0.5,
+        top_k=3,
+        score_mode="multiplicative",
+        mult_beta=0.5,
+        mult_gamma=0.2,
+        sim_gate_threshold=0.3,
+        sim_gate_min_score=0.3,
+        sim_gate_floor=1,
+    )
+    # Only A should remain (B and C had sim=0.0 < 0.3)
+    assert {sid for sid, _ in result} == {"A"}
+
+
+def test_score_skills_gate_floor_fallback():
+    """Hard Gate floor: if all skills would be gated out, keep the
+    top-N by descending sim anyway.
+    """
+    subtask_emb, skills, q_table, emb_cache = _build_score_input()
+    # Threshold higher than any sim → all would be gated → floor=1 keeps A
+    result = _score_skills_hook(
+        subtask_emb=subtask_emb,
+        skills=skills,
+        q_table=q_table,
+        emb_cache=emb_cache,
+        lambda_=0.5,
+        c_ucb=0.5,
+        top_k=3,
+        score_mode="multiplicative",
+        sim_gate_threshold=0.99,
+        sim_gate_min_score=0.99,
+        sim_gate_floor=1,
+    )
+    # floor=1 → at least A (highest sim) retained
+    assert {sid for sid, _ in result} == {"A"}
+
+
+def test_score_skills_gate_disabled_by_default():
+    """Default sim_gate_min_score=0.0 → gate effectively disabled;
+    all candidates pass through.
+    """
+    subtask_emb, skills, q_table, emb_cache = _build_score_input()
+    result = _score_skills_hook(
+        subtask_emb=subtask_emb,
+        skills=skills,
+        q_table=q_table,
+        emb_cache=emb_cache,
+        lambda_=0.5,
+        c_ucb=0.5,
+        top_k=3,
+        score_mode="multiplicative",
+    )
+    # All 3 candidates should be present (no gate applied)
+    assert {sid for sid, _ in result} == {"A", "B", "C"}
+
+
+def test_score_skills_zero_sim_only_ucb():
+    """Critical property: skill with sim=0 and high Q cannot reach top."""
+    skills = [
+        {"skill_id": "relevant", "n_retrievals": 0},  # sim=1.0
+        {"skill_id": "irrelevant_high_q", "n_retrievals": 0},  # sim=0, Q=0.99
+    ]
+    q_table = {"relevant": 0.5, "irrelevant_high_q": 0.99}
+    emb_cache = {
+        "relevant": [1.0, 0.0],
+        "irrelevant_high_q": [0.0, 1.0],  # orthogonal
+    }
+    subtask_emb = [1.0, 0.0]
+    result = _score_skills_hook(
+        subtask_emb=subtask_emb,
+        skills=skills,
+        q_table=q_table,
+        emb_cache=emb_cache,
+        lambda_=0.5,
+        c_ucb=0.5,
+        top_k=2,
+        score_mode="multiplicative",
+        mult_beta=0.5,
+        mult_gamma=0.2,
+    )
+    # Even though irrelevant_high_q has Q=0.99, its score is purely
+    # γ·UCB — must rank below "relevant" (sim=1.0, Q=0.5)
+    assert result[0][0] == "relevant"
+    # The Q=0.99 did NOT allow irrelevant_high_q to overtake relevant
+    irrelevant_score = next(s for sid, s in result if sid == "irrelevant_high_q")
+    assert irrelevant_score < 1.0  # purely γ·UCB, well below 1.0+

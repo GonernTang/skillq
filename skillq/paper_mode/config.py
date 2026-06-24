@@ -50,14 +50,10 @@ class MethodConfig(BaseModel):
     k2: int = Field(default=3, ge=1)
 
     # Library management (Layer 3)
-    b_max: int = Field(default=50, ge=1)
-
-    # Near-miss (Layer 4)
-    # Note: the previous ``edit_token_cap`` field (default 0.20) has
-    # been removed. The LLM is now free to rewrite as much or as
-    # little as it judges necessary. Quality control falls on the
-    # verifier's r_learning signal feeding back into Eq. 6.
-    theta_near_miss: float = Field(default=0.5, ge=0.0, le=1.0)
+    # b_max=1000 default — raised from 50 on 2026-06-23 after the TB2 full
+    # run hit 100/100 and started evicting on every auto_extract insertion.
+    # Smoke YAMLs that need a lower cap already pin b_max explicitly.
+    b_max: int = Field(default=1000, ge=1)
 
     # LLM models
     editor_model: str = "openai/gpt-4o"
@@ -79,46 +75,148 @@ class MethodConfig(BaseModel):
     hook_embedding_service_host: str = "host.docker.internal"
     hook_embedding_service_port: int = Field(default=8765, ge=1, le=65535)
     hook_embed_timeout_sec: float = Field(default=5.0, ge=0.1)
+    # Pull-mode (Layer 1, on top of hook-mode): registers a Claude Code
+    # SessionStart hook in addition to the PreToolUse hook. The
+    # SessionStart handler embeds the user's task, runs the same
+    # Eq.4 scoring as the PreToolUse branch, and emits a
+    # `hookSpecificOutput.additionalContext` block listing the top-K
+    # skills available. Enabled when retrieval_mode == "pull".
+    # See skillq/paper_mode/hook.py `_handle_session_start` for details.
+    hook_pull_top_k: int = Field(default=3, ge=1, le=10)
 
-    # === Q-value update (per-subtask reward is THE paper's r) ===
-    # Q(skill) += alpha * (w_subtask * r_subtask_mean
-    #                   + w_task    * r_task_bin
-    #                   - Q(skill))
+    # === Scoring mode (2026-06-24) ===
+    # Two retrieval formulas, switchable at config time:
     #
-    # The paper defines r as "the reward of the task in which the
-    # skill was just called" — i.e. the **sub-task** reward (LLM
-    # judge's per-Skill-call verdict), not the trial-level reward.
-    # We expose both as config knobs for experimental flexibility.
+    # - "additive" (legacy Eq.4): score = (1-λ)·sim_z + λ·q_z + c_ucb·√(log N/(n+1))
+    #   where sim_z / q_z are z-scored within each batch. After z-scoring,
+    #   a low-sim skill can still rank high if its Q is above mean, so
+    #   irrelevant skills occasionally reach Top-K.
     #
-    # Default ``q_w_task = -0.5`` makes the trial-level signal a
-    # **negative contribution**: trial failure penalises called
-    # skills, trial success adds a partial positive contribution.
-    # This mirrors the paper's Eq.6 shape ``(1-β)·r_task + β·r_learning``
-    # with ``r_subtask_mean`` (binary, per-call success rate) playing
-    # the role of ``r_learning``. ``r_subtask_mean`` remains the
-    # dominant signal (default weight 1.0); ``r_task`` adjusts but
-    # never overpowers it.
+    # - "multiplicative" (new, Fix 2): score = sim·(1 + β·Q_norm) + γ·UCB
+    #   using RAW (non-z-scored) cosine. Critical property: when sim=0
+    #   the entire sim term vanishes and the skill can only rank by
+    #   its UCB exploration bonus — Q cannot promote an irrelevant
+    #   skill. β=0.5, γ=0.2 are conservative defaults (Q amplification
+    #   is modest, UCB is small noise). See plan:
+    #   ~/.claude/plans/bug-3-per-trial-q-table-json-hashed-quilt.md
+    hook_score_mode: str = Field(
+        default="multiplicative",
+        description=(
+            'Retrieval scoring formula: "additive" (Eq.4 with z-scored '
+            'sim + z-scored Q + UCB) or "multiplicative" (sim·(1+β·Q) '
+            '+ γ·UCB; sim=0 ⇒ score=γ·UCB only). 2026-06-24: switched '
+            'default to "multiplicative" to fix Top-K recommending '
+            'irrelevant skills on ML tasks.'
+        ),
+    )
+    hook_multiplicative_beta: float = Field(
+        default=0.5, ge=0.0, le=5.0,
+        description=(
+            "Multiplicative-mode Q amplification factor. The score "
+            "term is sim·(1 + β·Q_norm). β=0 means Q has no effect; "
+            "β=1 means Q doubles the base sim. Default 0.5 is "
+            "conservative — Q amplifies by up to 50%%."
+        ),
+    )
+    hook_multiplicative_gamma: float = Field(
+        default=0.2, ge=0.0, le=5.0,
+        description=(
+            "Multiplicative-mode UCB weight. The score term is "
+            "sim·(1 + β·Q_norm) + γ·UCB. Default 0.2 — UCB is a small "
+            "exploration bonus that doesn't dominate relevance ranking."
+        ),
+    )
+    hook_q_clip_min: float = Field(
+        default=0.0,
+        description=(
+            "Lower bound for Q normalization in multiplicative mode. "
+            "Q values outside [hook_q_clip_min, hook_q_clip_max] are "
+            "clamped before computing Q_norm = (Q - min) / (max - min). "
+            "Default 0.0 (matches seed_initial_q=0.5)."
+        ),
+    )
+    hook_q_clip_max: float = Field(
+        default=1.0,
+        description=(
+            "Upper bound for Q normalization in multiplicative mode. "
+            "Default 1.0. Must be > hook_q_clip_min."
+        ),
+    )
+
+    # === Hard Gate (2026-06-24, Fix 1) ===
+    # Drop candidates with raw cosine similarity below ``sim_gate_min_score``
+    # BEFORE scoring. Hard cap — irrelevant skills cannot reach Top-K
+    # even with high UCB. ``sim_gate_floor`` keeps a minimum number
+    # of candidates by descending sim when the gate would otherwise
+    # leave the list empty (so early trials with little embedding
+    # coverage still get a Top-K to choose from).
     #
-    # Worked example (α=0.3, Q_old=0.5):
-    #   r_subtask=1.0, r_task=0.0 → target=1.0   → Q_new=0.65
-    #   r_subtask=1.0, r_task=1.0 → target=0.5   → Q_new=0.50
-    #   r_subtask=0.0, r_task=1.0 → target=-0.5  → Q_new=0.20
-    #   r_subtask=0.0, r_task=0.0 → target=0.0   → Q_new=0.35
+    # Default 0.0 = gate disabled. Production runs should opt in via
+    # the method YAML (e.g. 0.30 for typical text-embedding-v4 with
+    # semantic similarity in the [0.2, 0.8] range). With the default
+    # off, the multiplicative scoring formula (Fix 2) still provides
+    # soft gating: skills with sim=0 can only rank by their UCB term,
+    # so they only appear when truly nothing else is relevant.
+    sim_gate_min_score: float = Field(
+        default=0.0, ge=0.0, le=1.0,
+        description=(
+            "Hard Gate: minimum raw cosine similarity to enter the "
+            "scoring pool. Candidates with sim < this are dropped "
+            "before any z-scoring / additive or multiplicative "
+            "formula. Default 0.0 = gate disabled (the multiplicative "
+            "formula's inherent sim=0 → γ·UCB behavior still applies). "
+            "Production runs typically set 0.30. Set 0.99 to disable "
+            "scoring entirely and rely on raw sim rank."
+        ),
+    )
+    sim_gate_floor: int = Field(
+        default=1, ge=0,
+        description=(
+            "Hard Gate: minimum number of candidates to retain when "
+            "the gate is active. If the gate would leave fewer than "
+            "this many, keep this many by descending raw sim "
+            "regardless of the threshold. Default 1 ensures Top-K "
+            "is never empty on early trials."
+        ),
+    )
+
+    # === Q-value update (task-level reward only, 2026-06-23) ===
+    # Simplified from Eq.6 (per-subtask blend) to standard Eq.5.
+    # The pre-2026-06-23 path used an LLM judge to score each Skill()
+    # call as r_subtask ∈ {0, 1}, then blended
+    #     target = w_subtask * r_subtask_mean + w_task * r_task
+    # but with the pull-mode Top-K injection (one skill called per
+    # trial), r_subtask collapsed to a binary that was almost always
+    # identical to r_task, and the judge call was wasted compute.
     #
-    # - ``r_subtask_mean`` ∈ [0, 1]: mean of binary per-Skill-call
-    #   LLM-judge verdicts within the trial (per-skill success rate).
-    # - ``r_task_bin`` ∈ {0, 1}: binarized trial-level reward
-    #   (1 if the raw reward > 0.5, else 0).
+    # Q-update is now::
+    #
+    #     Q(skill) += alpha * (r_task - Q(skill))
+    #
+    # with ``r_task`` ∈ {0, 1} (binarized trial-level verifier
+    # reward). All skills called in the trial share the same r_task.
     q_alpha: float = Field(default=0.3, ge=0.0, le=1.0)
-    q_w_subtask: float = Field(default=1.0, ge=0.0, le=1.0)
-    # q_w_task may be negative (penalty weight) — relax ge= to allow.
-    q_w_task: float = Field(default=-0.5, ge=-1.0, le=1.0)
-    q_subtask_verifier_model: str = "openai/gpt-4o"
-    # Body truncation cap for the subtask verifier prompt. The
-    # verifier sees skill.body alongside skill_description; longer
-    # bodies get truncated here to keep prompts within token budget.
-    q_max_body_chars: int = Field(default=2000, ge=200, le=20000)
-    debug_keep_subtask_log: bool = True
+
+    # === Cosine-weighted Q-update (2026-06-24, Fix 3) ===
+    # When enabled, multiply each per-skill Q-update delta by
+    # max(cos(φ(q), φ(s)), 0), where:
+    #   φ(q) = embedding of calls_log[0].intent_text (re-computed
+    #          once per trial; ~50ms via the host embed daemon)
+    #   φ(s) = embedding of the skill's description (already in
+    #          emb_cache from Layer 1 retrieval)
+    # Effect: a skill that is semantically irrelevant to the trial
+    # (cos < 0) gets delta clamped to 0 — its Q is NOT polluted by
+    # the trial's failure. Relevant skills (cos ≈ 1) get the full
+    # Eq.5 delta. Fix 3 is the Q-update-side counterpart to Fix 2's
+    # retrieval-side guard.
+    q_update_cosine_weight: bool = Field(
+        default=True,
+        description=(
+            "When True, multiply each per-skill Q-update delta by "
+            "max(cos(φ(q), φ(s)), 0). Default True (2026-06-24). "
+            "Set False for ablation / to fall back to plain Eq.5."
+        ),
+    )
 
     # Auto-extract (create_skill path) — opt-in, see bridge.py
     enable_auto_extract: bool = False
@@ -170,7 +268,9 @@ class MethodConfig(BaseModel):
         default="auto",
         description=(
             'Retrieval mode: "auto" (switch on lib size), '
-            '"agentic" (Method A), or "hook" (Method B).'
+            '"agentic" (Method A), "hook" (Method B = PreToolUse only), '
+            'or "pull" (Method B + SessionStart inject of Top-K skills '
+            'into agent context at session start, 2026-06-23).'
         ),
     )
     library_size_threshold: int = Field(

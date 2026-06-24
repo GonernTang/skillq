@@ -67,6 +67,44 @@ stdin (Claude Code hook protocol), writes JSON to stdout, and exits
 For "deny" with a reason, the agent sees the reason text in its
 context and is expected to re-call Skill with one of the suggested
 skill names, or skip the call.
+
+**Pull-mode** (added 2026-06-23, retrieval_mode='pull'): in addition
+to the PreToolUse handler above, ``main()`` also dispatches the
+``SessionStart`` event. ``SessionStart`` fires once per ``claude``
+subprocess invocation (per trial under harbor), before the agent's
+first turn. The handler embeds the user's prompt, runs the same
+Eq. 4 scoring, and emits a ``hookSpecificOutput.additionalContext``
+block listing the top-``SKILLQ_PULL_TOP_K`` skills. The agent sees
+this reminder as part of its first-turn context and can call any of
+the listed skills via ``Skill(skill="<skill_id>")``. The
+PreToolUse handler continues to gate and Q-update those calls.
+
+**Hook input format** (Claude Code SessionStart):
+
+.. code-block:: json
+
+    {
+      "session_id": "...",
+      "transcript_path": "/path/to/.jsonl",
+      "cwd": "/...",
+      "hook_event_name": "SessionStart",
+      "prompt": "<the user's task text>"
+    }
+
+**Hook output format** (Claude Code SessionStart):
+
+.. code-block:: json
+
+    {
+      "hookSpecificOutput": {
+        "hookEventName": "SessionStart",
+        "additionalContext": "Top-3 skills available for this task ..."
+      }
+    }
+
+The pull-mode handler does **not** mutate the Q-table or write to
+``$SKILLQ_CALLS_LOG`` — those remain exclusive to the PreToolUse
+branch, which fires only on actual ``Skill(...)`` calls.
 """
 
 from __future__ import annotations
@@ -86,6 +124,22 @@ TOP_K = int(os.environ.get("SKILLQ_HOOK_TOP_K", "3"))
 LAMBDA = float(os.environ.get("SKILLQ_HOOK_LAMBDA", "0.5"))
 C_UCB = float(os.environ.get("SKILLQ_HOOK_C_UCB", "0.5"))
 EMBED_TIMEOUT_SEC = float(os.environ.get("SKILLQ_HOOK_EMBED_TIMEOUT_SEC", "5.0"))
+# Pull-mode: Top-K for SessionStart injected additionalContext. Falls back
+# to SKILLQ_HOOK_TOP_K when unset so old configs work unchanged.
+PULL_TOP_K = int(os.environ.get("SKILLQ_PULL_TOP_K", os.environ.get("SKILLQ_HOOK_TOP_K", "3")))
+
+# 2026-06-24: Scoring mode + multiplicative params + Hard Gate.
+# These map 1:1 to MethodConfig fields set by container_wiring.py.
+# Defaults match the MethodConfig defaults; the env vars exist so the
+# container-side hook (which has no Python access to MethodConfig)
+# can read them.
+SCORE_MODE = os.environ.get("SKILLQ_HOOK_SCORE_MODE", "additive")
+MULT_BETA = float(os.environ.get("SKILLQ_HOOK_MULT_BETA", "0.5"))
+MULT_GAMMA = float(os.environ.get("SKILLQ_HOOK_MULT_GAMMA", "0.2"))
+Q_CLIP_MIN = float(os.environ.get("SKILLQ_HOOK_Q_CLIP_MIN", "0.0"))
+Q_CLIP_MAX = float(os.environ.get("SKILLQ_HOOK_Q_CLIP_MAX", "1.0"))
+SIM_GATE_MIN_SCORE = float(os.environ.get("SKILLQ_SIM_GATE_MIN_SCORE", "0.0"))
+SIM_GATE_FLOOR = int(os.environ.get("SKILLQ_SIM_GATE_FLOOR", "1"))
 
 
 # ---------------------------------------------------------------------------
@@ -175,12 +229,47 @@ def _score_skills(
     lambda_: float,
     c_ucb: float,
     top_k: int,
+    # 2026-06-24: Hard Gate (Fix 1) — drop low-sim candidates before
+    # scoring. sim_gate_threshold is the high-water threshold (≥ this
+    # passes the gate). Backward-compat: caller passes the same value as
+    # sim_gate_min_score from MethodConfig.
+    sim_gate_threshold: float = 0.0,
+    sim_gate_floor: int = 1,
+    sim_gate_min_score: float = 0.05,
+    # 2026-06-24: Multiplicative scoring (Fix 2) — switch formula.
+    score_mode: str = "additive",
+    mult_beta: float = 0.5,
+    mult_gamma: float = 0.2,
+    q_clip_min: float = 0.0,
+    q_clip_max: float = 1.0,
 ) -> list[tuple[str, float]]:
-    """Return top-k (skill_id, score) by Eq. 4.
+    """Return top-k (skill_id, score).
+
+    Two scoring formulas (controlled by ``score_mode``):
+
+    - ``"additive"`` (legacy Eq.4):
+          score = (1-λ)·sim_z + λ·q_z + c_ucb·√(log N/(n+1))
+      sim_z / q_z are z-scored within the (post-gate) batch. After
+      z-scoring, a low-sim skill can still rank high if its Q is above
+      mean — irrelevant skills occasionally reach Top-K.
+
+    - ``"multiplicative"`` (2026-06-24, Fix 2):
+          score = sim·(1 + β·Q_norm) + γ·UCB
+      using RAW (non-z-scored) cosine. Critical property: when sim=0
+      the entire sim term vanishes and the skill can only rank by its
+      UCB exploration bonus — Q cannot promote an irrelevant skill.
+
+    Hard Gate (Fix 1): if ``sim_gate_threshold > 0``, candidates with
+    raw cosine < ``sim_gate_min_score`` are dropped before any
+    z-scoring or formula application. ``sim_gate_floor`` is the minimum
+    number of survivors — if the gate would leave fewer, the top-N by
+    raw sim are retained (so Top-K is never empty on early trials with
+    poor embedding coverage).
 
     If ``subtask_emb`` is None (embedding failed), falls back to
-    global-Q + UCB only (no sim term).
+    global-Q + UCB only (no sim term) — same as legacy.
     """
+    # 1. Raw sim per candidate (Fail-open: missing emb → sim=0)
     sims: list[float] = []
     for s in skills:
         sid = s["skill_id"]
@@ -190,18 +279,46 @@ def _score_skills(
         else:
             sims.append(0.0)
 
-    qs = [q_table.get(s["skill_id"], 0.0) for s in skills]
-    sims_z = _zscore(sims)
-    qs_z = _zscore(qs)
+    # 2. Hard Gate — drop low-sim candidates (Fix 1)
+    if sim_gate_threshold > 0.0 and skills:
+        gated = [(s, sim) for s, sim in zip(skills, sims) if sim >= sim_gate_min_score]
+        if len(gated) >= sim_gate_floor:
+            skills = [s for s, _ in gated]
+            sims = [sim for _, sim in gated]
+        # else: gate too aggressive → fall through with full list
+        # (top-k still works; just means threshold needs tuning)
 
+    # 3. Q-values per candidate (needed for both modes)
+    qs = [q_table.get(s["skill_id"], 0.0) for s in skills]
+
+    # 4. UCB term (used by both modes)
     n_total = max(int(sum(s.get("n_retrievals", 0) for s in skills)), 1) + 1
+
     scored: list[tuple[str, float]] = []
-    for s, sim_z, q_z in zip(skills, sims_z, qs_z):
-        sid = s["skill_id"]
-        n = int(s.get("n_retrievals", 0)) + 1
-        ucb = c_ucb * math.sqrt(math.log(max(n_total, 2)) / n)
-        score = (1.0 - lambda_) * sim_z + lambda_ * q_z + ucb
-        scored.append((sid, float(score)))
+
+    if score_mode == "multiplicative":
+        # Fix 2: sim·(1 + β·Q_norm) + γ·UCB
+        # Normalize Q to [0, 1] for stable β scaling
+        q_range = max(q_clip_max - q_clip_min, 1e-6)
+        for s, sim, q in zip(skills, sims, qs):
+            sid = s["skill_id"]
+            q_clamped = max(q_clip_min, min(q_clip_max, q))
+            q_norm = (q_clamped - q_clip_min) / q_range
+            n = int(s.get("n_retrievals", 0)) + 1
+            ucb = c_ucb * math.sqrt(math.log(max(n_total, 2)) / n)
+            score = sim * (1.0 + mult_beta * q_norm) + mult_gamma * ucb
+            scored.append((sid, float(score)))
+    else:
+        # Legacy Eq.4: (1-λ)·sim_z + λ·q_z + c_ucb·√(log N/(n+1))
+        sims_z = _zscore(sims) if len(sims) > 1 else [0.0] * len(sims)
+        qs_z = _zscore(qs) if len(qs) > 1 else [0.0] * len(qs)
+        for s, sim_z, q_z in zip(skills, sims_z, qs_z):
+            sid = s["skill_id"]
+            n = int(s.get("n_retrievals", 0)) + 1
+            ucb = c_ucb * math.sqrt(math.log(max(n_total, 2)) / n)
+            score = (1.0 - lambda_) * sim_z + lambda_ * q_z + ucb
+            scored.append((sid, float(score)))
+
     scored.sort(key=lambda x: -x[1])
     return scored[:top_k]
 
@@ -295,22 +412,127 @@ def _format_top_k(top_k: list[tuple[str, float]]) -> str:
     return "\n".join(lines)
 
 
+def _format_pull_context(top_k: list[tuple[str, float]],
+                         skills: list[dict[str, Any]]) -> str:
+    """Compact reminder text injected via SessionStart additionalContext.
+
+    Shows skill_id (used by the Skill tool) and description (truncated to
+    120 chars). Body is intentionally excluded — at full lib size 1000
+    bodies would blow the agent's context budget.
+    """
+    by_id = {s["skill_id"]: s for s in skills}
+    lines = [
+        f"Top-{len(top_k)} skills available for this task "
+        "(invoke via the Skill tool, e.g. Skill(skill=\"<id>\")):"
+    ]
+    for i, (sid, score) in enumerate(top_k, 1):
+        sk = by_id.get(sid, {})
+        desc = (sk.get("description") or "").replace("\n", " ").strip()
+        if len(desc) > 120:
+            desc = desc[:117] + "..."
+        lines.append(f"  {i}. {sid}   score={score:+.3f}")
+        if desc:
+            lines.append(f"     {desc}")
+    return "\n".join(lines)
+
+
+def _make_session_start_context(text: str) -> dict[str, Any]:
+    """Build the hookSpecificOutput.additionalContext payload for
+    UserPromptSubmit (the event actually fired; the function name is a
+    historical holdover from the SessionStart exploration).
+
+    Claude Code merges `additionalContext` into the agent's context for
+    the turn. The hook script reads no permissionDecision here — this is
+    pure context injection, not allow/deny.
+    """
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": text,
+        }
+    }
+
+
 # ---------------------------------------------------------------------------
-# Main
+# UserPromptSubmit (pull-mode) handler
 # ---------------------------------------------------------------------------
-def main() -> int:
-    """Hook entrypoint — read stdin JSON, write stdout JSON, exit code."""
+def _handle_session_start(payload: dict[str, Any]) -> int:
+    """Pull-mode: embed user prompt, score Top-K, emit additionalContext.
+
+    Fires on every user prompt submission (per turn). Does NOT mutate
+    the Q-table or write to calls_log — those remain exclusive to the
+    PreToolUse branch when the agent actually calls Skill.
+
+    Fail-open: any error → return 0 with empty stdout.
+    """
+    prompt_text = payload.get("prompt", "") or ""
+    if not prompt_text.strip():
+        return 0  # nothing to rank against
+
+    lib_path = os.environ.get("SKILLQ_LIB", "")
+    q_path = os.environ.get("SKILLQ_Q_TABLE", "")
+    emb_path = os.environ.get("SKILLQ_EMB_CACHE", "")
+    embed_host = os.environ.get("SKILLQ_EMBED_HOST", "host.docker.internal")
+    embed_port = int(os.environ.get("SKILLQ_EMBED_PORT", "8765"))
+
     try:
-        payload = json.loads(sys.stdin.read())
-    except json.JSONDecodeError:
-        # Hard error → exit 2 (Claude Code will likely log + continue)
-        return 2
+        lib = _read_json(lib_path) if lib_path else {"skills": []}
+        q_table = _read_json(q_path) if q_path else {}
+        emb_cache = _read_json(emb_path) if emb_path else {"embeddings": {}}
+    except Exception as exc:  # noqa: BLE001
+        sys.stderr.write(f"[skillq-hook] session-start read failure: {exc!r}\n")
+        sys.stderr.flush()
+        return 0  # pass through
 
-    tool_name = payload.get("tool_name", "")
-    if tool_name != "Skill":
-        # We only act on Skill; pass through everything else.
-        return 0
+    skills = lib.get("skills", [])
+    if not skills:
+        return 0  # empty lib → no reminder needed
+    emb_cache = emb_cache.get("embeddings", emb_cache)
 
+    subtask_emb = _post_embed(embed_host, embed_port, prompt_text[:4000])
+
+    top_k = _score_skills(
+        subtask_emb=subtask_emb,
+        skills=skills,
+        q_table=q_table,
+        emb_cache=emb_cache,
+        lambda_=LAMBDA,
+        c_ucb=C_UCB,
+        top_k=PULL_TOP_K,
+        # 2026-06-24: Hard Gate + scoring mode + multiplicative params
+        sim_gate_threshold=SIM_GATE_MIN_SCORE,
+        sim_gate_floor=SIM_GATE_FLOOR,
+        sim_gate_min_score=SIM_GATE_MIN_SCORE,
+        score_mode=SCORE_MODE,
+        mult_beta=MULT_BETA,
+        mult_gamma=MULT_GAMMA,
+        q_clip_min=Q_CLIP_MIN,
+        q_clip_max=Q_CLIP_MAX,
+    )
+
+    text = _format_pull_context(top_k, skills)
+    if subtask_emb is None:
+        text += "\n\n(embedding unavailable; ranking used Q + UCB only.)"
+
+    decision = _make_session_start_context(text)
+    sys.stdout.write(json.dumps(decision, ensure_ascii=False))
+    sys.stdout.write("\n")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# PreToolUse handler (factored out of main() on 2026-06-23 for dispatch)
+# ---------------------------------------------------------------------------
+def _handle_pretooluse_skill(payload: dict[str, Any]) -> int:
+    """Original allow/deny gate on actual Skill tool calls.
+
+    Body is identical to the pre-refactor main() flow:
+    1. Read lib / q_table / emb_cache.
+    2. Embed the sub-task intent (recent assistant messages + tool input).
+    3. Score Eq.4 top-k.
+    4. Allow if requested ∈ top-k, else deny with the top-k text.
+    5. Append to calls_log for offline analysis.
+    """
     tool_input = payload.get("tool_input", {}) or {}
     requested = tool_input.get("skill", "")
 
@@ -384,6 +606,15 @@ def main() -> int:
         lambda_=LAMBDA,
         c_ucb=C_UCB,
         top_k=TOP_K,
+        # 2026-06-24: Hard Gate + scoring mode + multiplicative params
+        sim_gate_threshold=SIM_GATE_MIN_SCORE,
+        sim_gate_floor=SIM_GATE_FLOOR,
+        sim_gate_min_score=SIM_GATE_MIN_SCORE,
+        score_mode=SCORE_MODE,
+        mult_beta=MULT_BETA,
+        mult_gamma=MULT_GAMMA,
+        q_clip_min=Q_CLIP_MIN,
+        q_clip_max=Q_CLIP_MAX,
     )
 
     # Decide
@@ -434,6 +665,43 @@ def main() -> int:
 
     sys.stdout.write(json.dumps(decision, ensure_ascii=False))
     sys.stdout.write("\n")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Main — dispatch on hook_event_name (2026-06-23 refactor)
+# ---------------------------------------------------------------------------
+def main() -> int:
+    """Hook entrypoint — read stdin JSON, write stdout JSON, exit code.
+
+    Dispatches by ``hook_event_name``:
+
+    - ``"UserPromptSubmit"`` → ``_handle_session_start`` (pull-mode: inject
+      Top-K skills into agent context via additionalContext on every turn).
+    - ``"PreToolUse"`` + ``tool_name == "Skill"`` → ``_handle_pretooluse_skill``
+      (push-mode: original allow/deny gate, Q-table update, calls_log).
+    - anything else → exit 0 (pass through).
+    """
+    try:
+        payload = json.loads(sys.stdin.read())
+    except json.JSONDecodeError:
+        # Hard error → exit 2 (Claude Code will likely log + continue)
+        return 2
+
+    event = payload.get("hook_event_name", "")
+
+    # Pull-mode: top-K skills injected on every user prompt.
+    if event == "UserPromptSubmit":
+        return _handle_session_start(payload)
+
+    # Push-mode: original Skill tool gate.
+    if event == "PreToolUse":
+        tool_name = payload.get("tool_name", "")
+        if tool_name == "Skill":
+            return _handle_pretooluse_skill(payload)
+        return 0
+
+    # Unknown event (SessionStart, Stop, PostToolUse, Notification, etc.) → pass through.
     return 0
 
 

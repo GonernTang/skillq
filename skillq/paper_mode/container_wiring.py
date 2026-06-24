@@ -164,6 +164,31 @@ def stop_container_wiring(handle: ContainerWiringHandle | None) -> None:
 # ---------------------------------------------------------------------------
 # Per-trial setup
 # ---------------------------------------------------------------------------
+def _extract_description(skill_body: str) -> str:
+    """Pull the ``description:`` line out of a SKILL.md frontmatter.
+
+    Used by ``_write_state_files`` so the hook and the pull-mode
+    CLAUDE.md injection can show a one-line description per skill
+    without re-parsing the full body. Returns "" if no frontmatter
+    or no description key.
+    """
+    if not skill_body:
+        return ""
+    # Frontmatter is the first ``---`` ... ``---`` block at the top.
+    if not skill_body.startswith("---"):
+        return ""
+    end = skill_body.find("\n---", 3)
+    if end < 0:
+        return ""
+    frontmatter = skill_body[3:end]
+    for line in frontmatter.splitlines():
+        line = line.strip()
+        if line.lower().startswith("description:"):
+            # Strip the key + leading quote/whitespace.
+            return line.split(":", 1)[1].strip().strip('"').strip("'").strip()
+    return ""
+
+
 def _write_state_files(
     trial_dir: Path,
     lib: Qlib,
@@ -191,7 +216,10 @@ def _write_state_files(
 
     # lib.json — list of skills with description (the hook only
     # needs the body and id, but we include description for
-    # debuggability).
+    # debuggability AND so the pull-mode CLAUDE.md injection in
+    # _wire_hook_trial can render the Top-K recommendations with
+    # descriptions inline. Description is extracted from the SKILL.md
+    # frontmatter if present; empty string otherwise.
     lib_path.write_text(
         json.dumps(
             {
@@ -199,6 +227,7 @@ def _write_state_files(
                     {
                         "skill_id": s.skill_id,
                         "body": s.body,
+                        "description": _extract_description(s.body),
                         "n_retrievals": s.n_retrievals,
                     }
                     for s in lib.skills.values()
@@ -243,13 +272,21 @@ def _write_state_files(
     return lib_path, q_path, emb_path, calls_log_path
 
 
-def _settings_json_path(staging: Path) -> Path:
+def _settings_json_path(staging: Path, *, include_pull: bool = False) -> Path:
     """Write a settings.json that registers the PreToolUse hook.
 
     The container runs the hook via the same Python binary the agent
     uses; we point at the bound-mount location of the script.
+
+    When ``include_pull=True`` (retrieval_mode='pull'), also registers
+    a ``SessionStart`` hook so the agent sees a Top-K skills reminder
+    on its first turn. See
+    ``skillq/paper_mode/hook.py:_handle_session_start``.
     """
-    settings = hook_settings_json(hook_container_path=CONTAINER_HOOK_PATH)
+    settings = hook_settings_json(
+        hook_container_path=CONTAINER_HOOK_PATH,
+        include_pull=include_pull,
+    )
     path = staging / "settings.json"
     path.write_text(
         json.dumps(settings, ensure_ascii=False, indent=2) + "\n",
@@ -508,7 +545,10 @@ def _wire_hook_trial(
     lib_path, q_path, emb_path, calls_log_path = _write_state_files(
         trial_dir, lib, mgr, emb_cache
     )
-    settings_path = _settings_json_path(lib_path.parent)
+    settings_path = _settings_json_path(
+        lib_path.parent,
+        include_pull=(method.retrieval_mode == "pull"),
+    )
 
     # 2. Build the hook env (read every tunable from MethodConfig).
     port = handle.embedding["port"]
@@ -524,7 +564,19 @@ def _wire_hook_trial(
         top_k=method.hook_top_k,
         lambda_=method.hook_lambda,
         c_ucb=method.hook_c_ucb,
+        # 2026-06-24: scoring mode + multiplicative params + Hard Gate
+        score_mode=method.hook_score_mode,
+        mult_beta=method.hook_multiplicative_beta,
+        mult_gamma=method.hook_multiplicative_gamma,
+        q_clip_min=method.hook_q_clip_min,
+        q_clip_max=method.hook_q_clip_max,
+        sim_gate_min_score=method.sim_gate_min_score,
+        sim_gate_floor=method.sim_gate_floor,
     )
+    # Pull-mode (2026-06-23): also inject SKILLQ_PULL_TOP_K so the
+    # SessionStart branch in hook.py uses the configured K.
+    if method.retrieval_mode == "pull":
+        env["SKILLQ_PULL_TOP_K"] = str(method.hook_pull_top_k)
 
     # 3. Inject env into the trial's agent config.
     cfg = event.config
@@ -585,11 +637,84 @@ def _wire_hook_trial(
     # existing CLAUDE.md via user_claude_md_path, or written fresh
     # to trial_dir/CLAUDE.md.merged if that path is unset (the
     # helper falls back gracefully).
-    from skillq.paper_mode.agentic_search import render_hook_instructions
+    from skillq.paper_mode.agentic_search import (
+        render_hook_instructions,
+        render_pull_recommendation,
+    )
+    from skillq.method.embedding_service import sync_embed  # late import
+    from skillq.paper_mode.hook import _score_skills  # reuse Eq.4 scorer
+
+    snippet = render_hook_instructions()
+
+    # Pull-mode (2026-06-23): in claude --print mode Claude Code does
+    # NOT fire UserPromptSubmit, only SessionStart and PreToolUse. So
+    # we render a Top-K recommendation into CLAUDE.md at trial start
+    # and rely on the agent reading it on its first turn. Use the
+    # task_name as the query text (it's the closest thing to the
+    # user's task prompt available pre-trial).
+    if method.retrieval_mode == "pull":
+        task_name = event.task_name or trial_dir.name
+        # Try to embed via the host daemon (already started by
+        # start_container_wiring). Falls back to None on failure.
+        # The host value (method.hook_embedding_service_host) defaults
+        # to "host.docker.internal" for container→host reachability,
+        # but we run on the host side here, so always use 127.0.0.1
+        # (or whichever local address the daemon is bound to).
+        try:
+            subtask_emb = sync_embed(
+                text=task_name,
+                host="127.0.0.1",
+                port=handle.embedding["port"],
+            )
+        except Exception:
+            subtask_emb = None
+
+        # Build q_table dict for _score_skills. lib.skills is
+        # dict[str, Skill] (see skillq/method/types.py:Qlib).
+        # Read skills_list back from lib.json (just written above) so
+        # the description field is available — Skill objects don't
+        # carry it.
+        lib_data = json.loads(lib_path.read_text(encoding="utf-8"))
+        skills_list = lib_data["skills"]
+        q_table = {s["skill_id"]: mgr.q_for(s["skill_id"]) for s in skills_list}
+        emb_dict = json.loads(emb_path.read_text(encoding="utf-8"))
+        # emb_cache.json wraps the dict under "embeddings" (see
+        # _write_state_files line 230ish). Tolerate flat dict too.
+        if "embeddings" in emb_dict and isinstance(emb_dict["embeddings"], dict):
+            emb_dict = emb_dict["embeddings"]
+        top_k = _score_skills(
+            subtask_emb=subtask_emb,
+            skills=skills_list,
+            q_table=q_table,
+            emb_cache=emb_dict,
+            lambda_=method.hook_lambda,
+            c_ucb=method.hook_c_ucb,
+            top_k=method.hook_pull_top_k,
+            # 2026-06-24: pass Hard Gate + scoring-mode params so the
+            # host-side pull-mode rendering matches what the container's
+            # PreToolUse hook will use.
+            sim_gate_threshold=method.sim_gate_min_score,
+            sim_gate_floor=method.sim_gate_floor,
+            sim_gate_min_score=method.sim_gate_min_score,
+            score_mode=method.hook_score_mode,
+            mult_beta=method.hook_multiplicative_beta,
+            mult_gamma=method.hook_multiplicative_gamma,
+            q_clip_min=method.hook_q_clip_min,
+            q_clip_max=method.hook_q_clip_max,
+        )
+        skills_by_id = {s["skill_id"]: s for s in skills_list}
+        snippet += "\n\n" + render_pull_recommendation(
+            task_name=task_name,
+            top_k=top_k,
+            skills_by_id=skills_by_id,
+            lambda_=method.hook_lambda,
+            c_ucb=method.hook_c_ucb,
+            subtask_emb=subtask_emb,
+        )
 
     _mount_merged_claude_md(
         method=method,
-        snippet=render_hook_instructions(),
+        snippet=snippet,
         trial_dir=trial_dir,
         cfg=cfg,
     )
