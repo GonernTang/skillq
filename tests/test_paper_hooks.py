@@ -333,9 +333,10 @@ def test_score_skills_gate_floor_fallback():
     assert {sid for sid, _ in result} == {"A"}
 
 
-def test_score_skills_gate_disabled_by_default():
-    """Default sim_gate_min_score=0.0 → gate effectively disabled;
-    all candidates pass through.
+def test_score_skills_gate_aggressive_default():
+    """sim_gate_threshold=0.75 → aggressive gate: only the highest-sim
+    candidates pass through. In our 3-skill fixture where only A has
+    sim=1.0 and B/C have sim=0.0, only A survives (floor=1 retains it).
     """
     subtask_emb, skills, q_table, emb_cache = _build_score_input()
     result = _score_skills_hook(
@@ -347,9 +348,14 @@ def test_score_skills_gate_disabled_by_default():
         c_ucb=0.5,
         top_k=3,
         score_mode="multiplicative",
+        # explicit threshold — the production YAML opts in at 0.75
+        sim_gate_threshold=0.75,
+        sim_gate_min_score=0.75,
+        sim_gate_floor=1,
     )
-    # All 3 candidates should be present (no gate applied)
-    assert {sid for sid, _ in result} == {"A", "B", "C"}
+    # sims: A=1.0, B=0.0, C=0.0. Gate at 0.75 → only A survives.
+    # floor=1 means at least 1 candidate retained (A).
+    assert {sid for sid, _ in result} == {"A"}
 
 
 def test_score_skills_zero_sim_only_ucb():

@@ -64,7 +64,8 @@ hook_q_clip_max: 1.0
 # === Hard Gate (Fix 1: drop low-sim candidates) ===
 # sim < sim_gate_min_score → dropped before scoring. floor=1 ensures
 # Top-K is never empty on early trials with poor embedding coverage.
-sim_gate_min_score: 0.30
+# 0.75 is aggressive: only highly semantically relevant skills pass.
+sim_gate_min_score: 0.75
 sim_gate_floor: 1
 
 # === Q-update (Layer 2) ===
