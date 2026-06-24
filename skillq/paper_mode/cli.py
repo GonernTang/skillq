@@ -156,6 +156,24 @@ def _prime_uv_cache_command(args: argparse.Namespace) -> int:
     wheels_dir.mkdir(exist_ok=True)
     envs_dir = cache / "environments-v2"
     envs_dir.mkdir(exist_ok=True)
+    # Pre-create the XDG CACHEDIR.TAG marker file. `uvx` inside the
+    # container tries to write this when it first touches the cache
+    # directory. If the cache is bind-mounted RO (which it is, for
+    # safety — the container must not be able to mutate the host
+    # cache), that write fails with "Read-only file system (os
+    # error 30)" and `uvx` aborts before even checking the wheels.
+    # Standard XDG CACHEDIR.TAG contents — see
+    # https://bford.info/cachedir/
+    cache_dir_tag = cache / "CACHEDIR.TAG"
+    if not cache_dir_tag.exists():
+        cache_dir_tag.write_text(
+            "Signature: 8a477f597d28d172789f06886806bc55\n"
+            "# This file is a cache directory tag created by `skillq paper "
+            "prime-uv-cache`.\n"
+            "# For information about cache directory tags, see:\n"
+            "#   https://bford.info/cachedir/\n",
+            encoding="utf-8",
+        )
 
     # Sanity check: `uv` must be on PATH. (test.sh installs uv 0.9.5
     # inside the container; the host should also have a recent uv.)
