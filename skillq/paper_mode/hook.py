@@ -138,7 +138,7 @@ MULT_BETA = float(os.environ.get("SKILLQ_HOOK_MULT_BETA", "0.5"))
 MULT_GAMMA = float(os.environ.get("SKILLQ_HOOK_MULT_GAMMA", "0.2"))
 Q_CLIP_MIN = float(os.environ.get("SKILLQ_HOOK_Q_CLIP_MIN", "0.0"))
 Q_CLIP_MAX = float(os.environ.get("SKILLQ_HOOK_Q_CLIP_MAX", "1.0"))
-SIM_GATE_MIN_SCORE = float(os.environ.get("SKILLQ_SIM_GATE_MIN_SCORE", "0.75"))
+SIM_GATE_MIN_SCORE = float(os.environ.get("SKILLQ_SIM_GATE_MIN_SCORE", "0.7"))
 SIM_GATE_FLOOR = int(os.environ.get("SKILLQ_SIM_GATE_FLOOR", "1"))
 
 

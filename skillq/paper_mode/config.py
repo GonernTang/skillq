@@ -158,13 +158,12 @@ class MethodConfig(BaseModel):
     # soft gating: skills with sim=0 can only rank by their UCB term,
     # so they only appear when truly nothing else is relevant.
     sim_gate_min_score: float = Field(
-        default=0.75, ge=0.0, le=1.0,
+        default=0.7, ge=0.0, le=1.0,
         description=(
             "Hard Gate: minimum raw cosine similarity to enter the "
             "scoring pool. Candidates with sim < this are dropped "
             "before any z-scoring / additive or multiplicative "
-            "formula. Default 0.75 = aggressive gate (only highly "
-            "relevant candidates pass). Set 0.0 to disable the gate "
+            "formula. Default 0.7 = moderate gate. Set 0.0 to disable "
             "(the multiplicative formula's inherent sim=0 → γ·UCB "
             "behavior still applies). Set 0.99 to effectively keep "
             "only the top-1 by raw sim."
