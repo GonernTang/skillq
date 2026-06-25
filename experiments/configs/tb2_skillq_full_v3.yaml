@@ -80,7 +80,8 @@ agents:
       # is a direct subclass of Harbor ClaudeCode (no longer inherits
       # SkillsVoteClaudeCode), so the `recommend` kwarg is a no-op
       # historical leftover. Paper method uses hook-based retrieval
-      # (TwoStageRanker) instead of LLM-based step_recommend.
+      # (skillq_runtime/hook.py:_score_skills) instead of LLM-based
+      # step_recommend.
       # 2026-06-25: removed the `paper_retrieval:` block. It was dead
       # code — agent.py read k2/lambda_/c_ucb into a private dict
       # that was never propagated to the container env, so the

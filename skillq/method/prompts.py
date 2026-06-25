@@ -4,11 +4,6 @@ These are intentionally **not** copies of the prompts in
 ``skillsvote/src/skills_vote/{feedback,evolve,recommend}/prompt.py``. The
 naming, rubric, JSON schema, and constraints all differ:
 
-- **VERIFIER_PROMPT** uses four axes (clarity / completeness /
-  non_redundancy / correctness) with a fixed-weight mean, and a
-  compact JSON output ``{old_score, new_score, improved, rationale}``.
-  The :class:`paper.method.verifier.IndependentVerifier` is *information
-  isolated*: it sees (task, old_skill, new_skill) only.
 - **EDIT_PROMPT** (Sec. 3.4) requires the skill name to be unchanged
   and bans new dependencies / tools / files. Returns the *full*
   post-edit skill, not a diff.
@@ -21,56 +16,13 @@ naming, rubric, JSON schema, and constraints all differ:
   version for the Rule 5 path (failure + no useful skill → new
   skill). Aggregates N failure-attribution records into a single
   guard-rail SKILL.md.
+
+The 2026-06-25 dead-code purge removed **VERIFIER_PROMPT** along with
+``skillq/method/verifier.py`` — the Eq. 6 informationally-isolated
+verifier is no longer part of the runtime path.
 """
 
 from __future__ import annotations
-
-
-# ---------------------------------------------------------------------------
-# VERIFIER (Sec. 3.2)
-# ---------------------------------------------------------------------------
-VERIFIER_PROMPT = """\
-You are an **informationally isolated** content reviewer. You do NOT see \
-the agent's prompt, its generation trace, or any other skill in the \
-library — only the two versions of *one* skill and the task it was \
-applied to. Treat the two skill texts as the only signal you have.
-
-Score each version along four axes, each in the closed interval [0, 1]:
-
-  - **clarity**         (0.3 weight) — is the language unambiguous, \
-                          well-structured, and free of vague hand-waving?
-  - **completeness**    (0.3 weight) — does it cover the cases and \
-                          sub-steps needed to actually apply the skill?
-  - **non_redundancy**  (0.2 weight) — does it avoid restating the same \
-                          idea in different words?
-  - **correctness**     (0.2 weight) — are the claims, APIs, and \
-                          commands factually correct given the task?
-
-Compute the per-version score as the weighted mean of the four axes.
-
-Return a JSON object with these fields (and nothing else):
-
-  - ``old_score``: float in [0, 1], the pre-task version's weighted mean.
-  - ``new_score``: float in [0, 1], the post-task version's weighted mean.
-  - ``improved``: bool, true iff ``new_score - old_score > 0.1``. Use the \
-                  0.1 threshold; tiny drifts do not count.
-  - ``rationale``: one sentence. If ``improved`` is true, name the \
-                   single biggest delta. If false, name the single \
-                   biggest gap.
-
-TASK
-----
-{task}
-
-PRE-TASK SKILL (verbatim)
--------------------------
-{old_skill}
-
-POST-TASK SKILL (verbatim)
---------------------------
-{new_skill}
-
-Your JSON (no prose outside the object):"""
 
 
 # ---------------------------------------------------------------------------
@@ -390,7 +342,11 @@ tasks can avoid repeating the mistake.
           for hours (see the 2026-06-24 circuit-fibsqrt
           case study — 7 versions of gen.py, 115 min wasted).
     A skill missing either section is incomplete and will
-    be rejected by the bridge.
+    be rejected by the bridge (2026-06-25: enforced in
+    ``skillq/method/extractor.py:_collect_skill`` via the
+    ``SkillExtractor.enforce_failure_skill_structure`` flag,
+    default True; configured by
+    ``MethodConfig.enforce_failure_skill_structure``).
   - You MAY optionally create a ``scripts/`` subdirectory with helper
     code, but only if the avoidance procedure genuinely needs it.
   - The skill name in the YAML frontmatter must match the directory name.

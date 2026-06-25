@@ -77,6 +77,13 @@ class SkillExtractor:
     body_min_tokens: int = 50
     body_max_tokens: int = 2000
     prompt_mode: str = "success"
+    # 2026-06-25: when True (default), ``_collect_skill`` rejects
+    # failure-prompt skills that omit the required "Diagnostic
+    # checklist" / "Stop signal" sections. The
+    # BATCHED_EXTRACT_SKILL_FROM_FAILURE_PROMPT instructs the LLM that
+    # "a skill missing either section is incomplete and will be
+    # rejected by the bridge" — this flag is the enforcement.
+    enforce_failure_skill_structure: bool = True
 
     async def extract_batch(
         self,
@@ -293,6 +300,33 @@ class SkillExtractor:
                 self.body_max_tokens,
             )
             return None
+
+        # 2026-06-25: structural validation for failure-mode skills.
+        # BATCHED_EXTRACT_SKILL_FROM_FAILURE_PROMPT requires both a
+        # "Diagnostic checklist" section and a "Stop signal" section
+        # in the body. Without these, the skill lacks the guard-rail
+        # semantics the prompt is trying to enforce, so we reject.
+        # Only checked for failure-prompt extraction; success-prompt
+        # skills have no such requirement.
+        if (
+            self.prompt_mode == "failure"
+            and self.enforce_failure_skill_structure
+        ):
+            body_lower = body.lower()
+            if "diagnostic checklist" not in body_lower:
+                logger.warning(
+                    "_collect_skill: failure-mode skill %s missing "
+                    "'Diagnostic checklist' section; rejected.",
+                    skill_dir.name,
+                )
+                return None
+            if "stop signal" not in body_lower:
+                logger.warning(
+                    "_collect_skill: failure-mode skill %s missing "
+                    "'Stop signal' section; rejected.",
+                    skill_dir.name,
+                )
+                return None
 
         # Derive the skill name from the directory name. The LLM is
         # told to use kebab-case; we keep the directory name verbatim.

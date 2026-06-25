@@ -16,8 +16,8 @@
   1. Two-stage UCB retrieval (cosine → UCB-augmented re-rank, Eq. 4)
   2. β-layered Q-learning (Eq. 6 with informationally isolated verifier)
   3. Q-driven library management (admission / eviction / rejuvenation)
-  4. Near-miss-aware incremental editing (verifier-generative, no
-     fixed token cap — quality controlled by `r_learning`)
+  4. Near-miss-aware incremental editing (LLM-generative via
+     `EditRefiner` + `LiteLLMEditBackend`, no fixed token cap)
 
   The paper method is implemented from the
   `implementation_guide/lqrl/` Python skeleton but with renamed
@@ -72,8 +72,11 @@ uv run skillq skillsvote run --help
 ├── skillq/
 │   ├── skillsvote_mode/  # pass-through to upstream skills_vote (baseline)
 │   ├── skillq_runtime/   # bridge + agent + entrypoint for the SkillQ method
-│   ├── method/           # the four paper layers (TwoStageRanker, BetaLayeredQ,
-│   │                     #   LibManager, EditRefiner, IndependentVerifier)
+│   ├── method/           # orchestration primitives consumed by skillq_runtime/
+│   │                     #   (LibManager, EditRefiner, SkillExtractor,
+│   │                     #    AttributionAnalyzer, VectorTable, LiteLLMEmbedder)
+│   │                     # NOTE: the actual algorithms live in skillq_runtime/
+│   │                     #   (hook.py for L1 retrieval, bridge.py for L2-L4)
 │   └── prompts/          # external prompt templates (optional)
 ├── integration/skills/skillq-method/  # SKILL.md for the agent
 ├── tests/                # unit + integration tests
@@ -90,9 +93,9 @@ policies for the same lifecycle:
   (`create_skill`, `error_fix`, `knowledge_addition`,
   `prerequisite_addition`, `skip`).
 - The SkillQ paper method maintains a Q-table over
-  `(intent, skill)` pairs and edits skills on near-miss failures
-  (the edit size is unconstrained; quality is controlled by
-  `r_learning`).
+  `(intent, skill)` pairs and edits skills on failed trials via
+  `EditRefiner` (the edit size is unconstrained; quality comes from
+  the underlying LLM judgement).
 
 The two are not composable in a single Job without aliasing skill
 identifiers, and they have different state files. So they share

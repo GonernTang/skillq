@@ -1,16 +1,15 @@
 """Core data types for the SkillQ paper method (paper/method).
 
-Naming is intentionally distinct from both the vendored ``skillsvote/``
-package (``skills_vote``) and the ``implementation_guide`` skeleton. Specifically:
+Naming is intentionally distinct from the vendored ``skillsvote/`` package
+(``skills_vote``). Specifically:
 
 - A :class:`Skill` is a reusable non-parametric memory unit, stored as a
   folder of files (typically ``SKILL.md`` plus optional ``scripts/``).
 - A :class:`Qlib` is the bounded library $M_t$ of size $B_t \\le B_{\\max}$.
-- A :class:`Verdict` is the result of the informationally isolated verifier
-  on a (old, new) skill content delta; the scalar ``r_learning`` is the
-  *learning reward* used by :class:`~paper.method.layered_q.BetaLayeredQ`.
-- A :class:`RetrievalResult` is one ranked skill returned by
-  :class:`~paper.method.retrieval.TwoStageRanker`.
+
+The 2026-06-25 dead-code purge removed :class:`Verdict` (Eq. 6 information-
+isolated verifier) and :class:`RetrievalResult` (paper Eq. 4 TwoStageRanker)
+because the runtime path no longer executes either algorithm.
 """
 
 from __future__ import annotations
@@ -65,32 +64,3 @@ class Qlib:
     def replace(self, skill: Skill) -> None:
         """In-place update of a skill's body / metadata, preserving identity."""
         self.skills[skill.skill_id] = skill
-
-
-@dataclass
-class Verdict:
-    """Informationally isolated verifier verdict on a (old, new) content delta.
-
-    ``r_learning`` is the *learning reward* used in Eq. 6 of the paper:
-
-        r_learning = clamp(new_score - old_score, -1, 1)
-    """
-
-    old_score: float
-    new_score: float
-    improved: bool
-    rationale: str
-
-    @property
-    def r_learning(self) -> float:
-        return max(-1.0, min(1.0, self.new_score - self.old_score))
-
-
-@dataclass
-class RetrievalResult:
-    """One ranked skill returned by :class:`TwoStageRanker`."""
-
-    skill: Skill
-    score: float
-    phase_a_rank: int
-    phase_b_rank: int

@@ -5,7 +5,6 @@ Layout (mirrors ``lqrl/scripts/`` ):
     experiments/
     ├── prebuild/    core ops: prebuild_images.py (vendored from upstream)
     ├── run/         benchmark drivers (run_benchmark.py, run_terminalbench.py)
-    │                + parameter sweeps (beta_sweep.py, kappa_sweep.py)
     │                + ablation matrix (ablation.py)
     ├── smoke/       end-to-end smoke test (run_smoke.sh + configs)
     ├── configs/     per-benchmark / per-mode YAML configs

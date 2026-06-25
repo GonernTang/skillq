@@ -17,10 +17,10 @@ class MethodConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    # Layered-Q learning (Layer 2, Eq. 6)
-    alpha: float = Field(default=0.3, ge=0.0, le=1.0)
-    beta: float = Field(default=0.5, ge=0.0, le=1.0)
-    increment_clip: float = Field(default=1.0, ge=0.0)
+    # 2026-06-25: removed ``alpha`` / ``beta`` / ``increment_clip`` —
+    # those were the Eq. 6 ``BetaLayeredQ`` knobs. The runtime uses
+    # plain Eq. 5 with cosine-weighted delta (``q_alpha`` below).
+    # See CHANGELOG "Dead-code purge" entry.
 
     # Bug 5: optional bilateral clip on Q-values applied inside
     # ``LibManager.update_q`` / ``set_q``. Default (None, None) =
@@ -40,6 +40,38 @@ class MethodConfig(BaseModel):
         description=(
             "Optional upper bound for Q-values. update_q / set_q "
             "clip Q to <= this value. Default None: no upper bound."
+        ),
+    )
+
+    # === Layer 4 extraction quality gates (2026-06-25) ===
+    enforce_failure_skill_structure: bool = Field(
+        default=True,
+        description=(
+            "When True (default), ``_collect_skill`` rejects "
+            "failure-prompt skills whose body does not contain "
+            "both 'Diagnostic checklist' and 'Stop signal' "
+            "sections (BATCHED_EXTRACT_SKILL_FROM_FAILURE_PROMPT "
+            "requirement). The prompt claims 'will be rejected by "
+            "the bridge' — this flag is the enforcement. Set to "
+            "False to accept any body within the token-count guard."
+        ),
+    )
+    semantic_dedup_threshold: float = Field(
+        default=0.85,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Cosine threshold for semantic dedup at the L4 extract "
+            "boundary: a new skill's description embedding is "
+            "compared against every existing skill's cached "
+            "embedding; if max cosine ≥ this threshold, the new "
+            "skill is skipped (treated as a duplicate even if its "
+            "kebab-case name differs from the existing skill). "
+            "Set to 0.0 to disable semantic dedup (the name-based "
+            "dedup at bridge.py:_flush_buffer still runs as a "
+            "fast-path). 0.85 is the conventional paraphrase-"
+            "detection threshold; raise to be stricter, lower to "
+            "allow more near-duplicates in."
         ),
     )
 

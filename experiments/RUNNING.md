@@ -247,23 +247,20 @@ uv run harbor view output/      # Harbor 自带 viewer
 
 ---
 
-## 5. 跑多 seed / 跑 β sweep / 跑 ablation
+## 5. 跑多 seed / 跑 ablation
 
-`experiments/` 下还有三个 driver:
+`experiments/run/` 下有 `ablation.py` (2026-06-25 后只剩下 with/without UCB 维度，因为 verifier / near-miss 模块已删):
 
 ```bash
-# β sweep: 7 个 β 值 × 同一份 job config
-uv run python -m skillq.experiments.run.beta_sweep \
-    --job-config experiments/configs/tb2_skillq.yaml
-
-# Ablation: 6 个 cell(with/without UCB, with/without verifier, with/without near-miss)
+# Ablation: with/without UCB
 uv run python -m skillq.experiments.run.ablation \
     --job-config experiments/configs/tb2_skillq.yaml
-
-# Inter-rater κ: 用三个 verifier 后端跑同样的 (old, new) 对
-uv run python -m skillq.experiments.run.kappa_sweep \
-    --n-pairs 50 --backends stub gpt-4o claude-sonnet-4-5
 ```
+
+> **2026-06-25 dead-code purge** removed `beta_sweep.py` (the Eq. 6
+> `BetaLayeredQ` β-blend knob is no longer wired) and `kappa_sweep.py`
+> (the informationally-isolated `IndependentVerifier` is no longer in
+> the runtime path).
 
 `run_benchmark.py` 不带 seed 参数(每个 trial 内部 `n_attempts` 决定
 跑几次;`n_concurrent_trials` 决定并行度)。要做 5-seed 完整跑,
@@ -300,10 +297,10 @@ done
    是不是真的在演化(看 `method_state.json` 的 `q_table` 长度)。
 2. **基线对比**:同一份 task 列表,paper 模式 + skillsvote 模式 + 无方法(bare
    `harbor run`)各跑一遍,统计 `verifier_result.rewards["reward"]`。
-3. **β sweep**:在第 1 步的 5 个 task 上跑 `beta_sweep.py`,挑甜区。
+3. **β sweep**:在第 1 步的 5 个 task 上跑 β-sweep（删除：2026-06-25 dead-code purge 后 `BetaLayeredQ` 移除,无 β 维度可扫）。
 4. **主实验**:TB 2.0 全 89 task × 5 seed,paper 模式 24-48 小时。
-5. **Ablation**:同 4 的 task 集,跑 `ablation.py` 的 6 个 cell,验证 UCB
-   bonus / verifier / near-miss 各自的贡献。
+5. **Ablation**:同 4 的 task 集,跑 `ablation.py`,验证 UCB bonus 的贡献
+   （verifier / near-miss 维度已删除,2026-06-25）。
 6. **TB Pro / SWE-Bench Pro**:在 TB 2.0 收敛后,把同一份 agent + 同样的
    `MethodConfig` 平移到这两个 benchmark。**`MethodConfig` 不需要重调**,
    因为它跟 benchmark 解耦,只跟 skill 库的统计性质有关。

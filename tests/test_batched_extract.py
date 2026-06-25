@@ -156,7 +156,7 @@ def test_buffer_accumulates_until_threshold(tmp_path: Path, monkeypatch):
         seed_initial_q=0.0,
         extract_every_n_trials=4,       # > #trials
         new_skill_initial_q=0.0,
-        alpha=0.0,                       # freeze Q so the seed doesn't accumulate
+        q_alpha=0.0,    # freeze Q so the seed doesn't accumulate
     )
     _seed_lib(method)
     job = _MockJob(n_trials=100)        # long job → no force-flush
@@ -189,7 +189,7 @@ def test_threshold_hit_aggregates_n_records(tmp_path: Path, monkeypatch):
         seed_initial_q=0.0,
         extract_every_n_trials=4,
         new_skill_initial_q=0.0,
-        alpha=0.0,
+        q_alpha=0.0,
     )
     _seed_lib(method)
     job = _MockJob(n_trials=4)
@@ -224,7 +224,7 @@ def test_two_batches_in_eight_trials(tmp_path: Path, monkeypatch):
         seed_initial_q=0.0,
         extract_every_n_trials=4,
         new_skill_initial_q=0.0,
-        alpha=0.0,
+        q_alpha=0.0,
     )
     _seed_lib(method)
     job = _MockJob(n_trials=8)
@@ -259,7 +259,7 @@ def test_force_flush_on_last_trial_drains_partial(tmp_path: Path, monkeypatch):
         seed_initial_q=0.0,
         extract_every_n_trials=4,       # > #trials → no threshold hit
         new_skill_initial_q=0.0,
-        alpha=0.0,
+        q_alpha=0.0,
     )
     _seed_lib(method)
     # IMPORTANT: n_trials matches actual #trials so force-flush fires.
@@ -293,7 +293,7 @@ def test_no_force_flush_when_more_trials_remain(tmp_path: Path, monkeypatch):
         seed_initial_q=0.0,
         extract_every_n_trials=4,
         new_skill_initial_q=0.0,
-        alpha=0.0,
+        q_alpha=0.0,
     )
     _seed_lib(method)
     job = _MockJob(n_trials=100)   # long job; we only run 3 trials
@@ -325,7 +325,7 @@ def test_threshold_n_2_flushes_every_2_trials(tmp_path: Path, monkeypatch):
         seed_initial_q=0.0,
         extract_every_n_trials=2,
         new_skill_initial_q=0.0,
-        alpha=0.0,
+        q_alpha=0.0,
     )
     _seed_lib(method)
     job = _MockJob(n_trials=5)

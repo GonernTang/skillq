@@ -6,9 +6,12 @@
   baseline verbatim. No implementation code in
   ``paper.skillsvote_mode``.
 - ``skillq.skillq_runtime.entrypoint.main`` — runs the **SkillQ paper's**
-  four-layer method (TwoStageRanker → BetaLayeredQ → LibManager →
-  EditRefiner) via a single ``on_trial_ended`` hook. ``paper paper
-  run -c X`` runs the SkillQ method.
+  four-layer method (L1 retrieval + L2 Q-learning + L3 Lib/Edit + L4
+  extraction) via a single ``on_trial_ended`` hook. ``paper paper
+  run -c X`` runs the SkillQ method. The runtime algorithm is in
+  ``skillq/skillq_runtime/hook.py`` (L1) and
+  ``skillq/skillq_runtime/bridge.py`` (L2-L4); ``skillq/method/``
+  exposes the orchestration primitives those import.
 
 The :mod:`paper.cli` module dispatches between them.
 """

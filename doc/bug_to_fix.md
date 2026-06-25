@@ -563,8 +563,9 @@ Kept:
 - `Skill.n_success` (per-trial task-success counter; was already
   task-keyed)
 - `r_learning` / `IndependentVerifier` / `BetaLayeredQ` (the paper's
-  Eq.6 informationally-isolated path — distinct from the deleted
-  sub-task judge)
+  Eq.6 informationally-isolated path — **deleted 2026-06-25 dead-code
+  purge** along with `TwoStageRanker` / `Verdict` / `RetrievalResult`;
+  distinct from the deleted sub-task judge)
 
 New tests: `tests/test_q_update_task_only.py` (6 tests covering
 formula, n_retrievals increment, session-log fallback, no-calls

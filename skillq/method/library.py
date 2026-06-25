@@ -117,19 +117,3 @@ class LibManager:
         if library.size == 0:
             return None
         return min(library, key=lambda s: self.q_for(s.skill_id)).skill_id
-
-
-# ---------------------------------------------------------------------------
-# Theoretical helpers (used in experiments; Theorems 1 + 2 of the paper).
-# ---------------------------------------------------------------------------
-def forgetting_rate_upper_bound(
-    alpha: float,
-    var_task: float,
-    q_max: float,
-    q_min: float,
-) -> float:
-    """Upper bound on the forgetting rate from Theorem 2."""
-    denom = (q_max - q_min) ** 2
-    if denom <= 0:
-        return float("inf")
-    return alpha * var_task / ((2.0 - alpha) * denom)
