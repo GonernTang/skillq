@@ -4,7 +4,67 @@ All notable changes to `skillq` (the branch-style entrypoint that re-uses
 the upstream `skills_vote` lifecycle AND runs the SkillQ paper's
 four-layer method on top of Harbor) are documented here.
 
-> **2026-06-25 — Bridge skips Q-update for hook-denied calls**
+> **2026-06-25 — L4 quality gates: structural validation + semantic dedup**
+>
+> Two new gates at the L4 extract boundary:
+>
+> 1. **`_collect_skill` enforces failure-prompt structure.** Failure-mode
+>    skills produced by `BATCHED_EXTRACT_SKILL_FROM_FAILURE_PROMPT` must
+>    contain both a "Diagnostic checklist" section and a "Stop signal"
+>    section (case-insensitive). The prompt advertises this as a contract;
+>    this commit makes the bridge actually enforce it.
+>    - `SkillExtractor.enforce_failure_skill_structure` (default `True`)
+>    - `MethodConfig.enforce_failure_skill_structure` (default `True`)
+>
+> 2. **`bridge._flush_buffer` adds cosine semantic dedup.** Previously,
+>    dedup was kebab-case name-only — two semantically equivalent skills
+>    with different names would both enter the lib. The new dedup embeds
+>    the new skill's description and skips it if max cosine ≥ threshold
+>    against any existing skill's cached embedding. Falls open on embed
+>    failure (warn, proceed to name-based dedup).
+>    - `MethodConfig.semantic_dedup_threshold` (default `0.85`, range
+>      `[0, 1]`; set to `0.0` to disable)
+>
+> Implementation:
+> - `skillq/method/extractor.py` — new dataclass field + structural guard
+>   in `_collect_skill`
+> - `skillq/skillq_runtime/bridge.py` — `_extractor_for_mode` propagates
+>   the flag; `_flush_buffer` gains the cosine-dedup block
+> - `skillq/skillq_runtime/config.py` — two new fields
+>
+> Tests: 34 new (10 for structural validation, 9 for semantic dedup
+> full-flow, 8 for the new MethodConfig fields, 7 for dead-code
+> removal). **253/253 pass**.
+
+>> **2026-06-25 — Dead-code purge: BetaLayeredQ / IndependentVerifier / TwoStageRanker**
+
+> Three classes in `skillq/method/` were never wired into the runtime:
+>
+> | Deleted | Reason |
+> |---|---|
+> | `BetaLayeredQ` (Eq. 6 β-mixed Q-update) | Runtime uses plain Eq. 5 since 2026-06-23 |
+> | `IndependentVerifier` (Sec. 3.2 information-isolated verifier) | Only consumer was `kappa_sweep.py`; with `BetaLayeredQ` gone, `r_learning` has no consumer |
+> | `TwoStageRanker` (Eq. 4 two-stage retrieval) | Superseded by `hook.py:_score_skills` (Hard Gate + multiplicative scoring) |
+>
+> Also removed:
+> - `Verdict` / `RetrievalResult` (`skillq/method/types.py`) — only used by deleted modules
+> - `forgetting_rate_upper_bound` (`skillq/method/library.py`) — theoretical helper
+> - `VERIFIER_PROMPT` (`skillq/method/prompts.py`) — only used by `IndependentVerifier`
+> - `MethodConfig.alpha / beta / increment_clip` — Eq. 6 knobs
+> - `experiments/run/kappa_sweep.py` — only consumer of `IndependentVerifier`
+>
+> `skillq/method/__init__.py` rewritten to export only what the runtime
+> imports. `skillq/method/retrieval.py` trimmed to keep only
+> `Embedder / StubEmbedder / LiteLLMEmbedder` (which the bridge still
+> uses for `emb_cache.json` population).
+>
+> The algorithmic truth now lives entirely in `skillq/skillq_runtime/`
+> (`hook.py` for L1, `bridge.py` for L2–L4). `skillq/method/` is
+> reduced to orchestration primitives.
+>
+> 219/219 tests pass after the deletion.
+
+>>> **2026-06-25 — Bridge skips Q-update for hook-denied calls**
 >
 > The strict Hard Gate (entry below) fixed **context pollution** but
 > the bridge was still updating the Q-table for denied calls. Smoke
