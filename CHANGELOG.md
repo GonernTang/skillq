@@ -4,7 +4,55 @@ All notable changes to `skillq` (the branch-style entrypoint that re-uses
 the upstream `skills_vote` lifecycle AND runs the SkillQ paper's
 four-layer method on top of Harbor) are documented here.
 
-> **2026-06-25 — `MethodConfig.reuse_q_table` + `reuse_embedding_cache`
+> **2026-06-25 — Strict Hard Gate: `sim_gate_floor` default 1 → 0**
+>
+> The Hard Gate (`sim_gate_min_score=0.7`) drops candidates whose
+> raw cosine similarity to the sub-task intent is below threshold.
+> The accompanying `sim_gate_floor` parameter was the **minimum
+> number of candidates to keep** when the gate would otherwise
+> leave the list empty. Its old default of 1 was a footgun:
+>
+> - The agent's PreToolUse hook received a "best of a bad lot"
+>   top-k of irrelevant skills (scored by UCB-only), which
+>   polluted its context ("maybe try one of these?").
+> - Those same skills got their `n_retrievals` counter incremented
+>   in the Q-table, polluting Q-value evolution.
+>
+> New default: `sim_gate_floor=0` (strict mode). When every
+> candidate is below the 0.7 sim gate, the hook returns an
+> **empty top-k** and emits an explicit "no relevant skills"
+> message — the agent is expected to solve the sub-task
+> directly without invoking Skill(). Q-table `n_retrievals`
+> does NOT increment for any skill in that trial.
+>
+> Opt back into the legacy behavior by setting
+> `sim_gate_floor: 1` (or higher) in `method-config`. The
+> pre-fix fall-through is replaced with a stricter "keep
+> top-N by raw sim" path: if the gate leaves fewer than
+> `sim_gate_floor` survivors, we keep exactly the top-N
+> (not the entire pre-gate list).
+>
+> Implementation:
+> - `MethodConfig.sim_gate_floor` default 1 → 0
+>   (`skillq/skillq_runtime/config.py`).
+> - `SKILLQ_SIM_GATE_FLOOR` env var default `"1"` → `"0"`
+>   (`hook.py:147`).
+> - `_score_skills` gate branch rewritten to enforce
+>   `len(kept) == sim_gate_floor` instead of falling through
+>   to the full pre-gate list.
+> - `_format_top_k` and `_format_pull_context` explicit
+>   "No skills in the library are relevant" message when
+>   `top_k` is empty (replaces the confusing "Top-0 ... Re-call
+>   Skill with one of these" wording).
+> - `_cosine` tolerates numpy arrays (`not a` raised ValueError
+>   on `np.ndarray`).
+>
+> Smoke verification (chess-best-move, 1-task): with strict
+> mode, the hook returned `top_k=[]` and `chess-image-to-move`
+> Q went 0.5 → 0.6174 (positive update; agent got reward=1
+> without being distracted by an irrelevant top-k). 232/232
+> tests pass (10 new in `tests/test_hard_gate_strict.py`).
+>> **2026-06-25 — `MethodConfig.reuse_q_table` + `reuse_embedding_cache`
 > + opt-in state co-location**
 >
 > Two independent bool flags (both default `True`) let users force

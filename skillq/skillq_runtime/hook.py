@@ -144,7 +144,7 @@ MULT_GAMMA = float(os.environ.get("SKILLQ_HOOK_MULT_GAMMA", "0.2"))
 Q_CLIP_MIN = float(os.environ.get("SKILLQ_HOOK_Q_CLIP_MIN", "0.0"))
 Q_CLIP_MAX = float(os.environ.get("SKILLQ_HOOK_Q_CLIP_MAX", "1.0"))
 SIM_GATE_MIN_SCORE = float(os.environ.get("SKILLQ_SIM_GATE_MIN_SCORE", "0.7"))
-SIM_GATE_FLOOR = int(os.environ.get("SKILLQ_SIM_GATE_FLOOR", "1"))
+SIM_GATE_FLOOR = int(os.environ.get("SKILLQ_SIM_GATE_FLOOR", "0"))
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +217,9 @@ def _zscore(values: Sequence[float]) -> list[float]:
 
 
 def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
-    if not a or not b:
+    # 2026-06-25: tolerate numpy arrays (the emb cache stores float32
+    # vectors); `not a` raises on ndarray. Use len-based check.
+    if len(a) == 0 or len(b) == 0:
         return 0.0
     na = math.sqrt(sum(x * x for x in a)) + 1e-9
     nb = math.sqrt(sum(x * x for x in b)) + 1e-9
@@ -285,13 +287,33 @@ def _score_skills(
             sims.append(0.0)
 
     # 2. Hard Gate — drop low-sim candidates (Fix 1)
+    #
+    # 2026-06-25: previous "fall through with full list when gated<floor"
+    # behavior was too permissive — it let irrelevant skills reach the
+    # agent's context and the Q-table's n_retrievals++ counter, polluting
+    # both. New behavior: if gated has at least sim_gate_floor candidates,
+    # use gated. Otherwise, keep EXACTLY the top-(sim_gate_floor) by raw
+    # sim (descending). When sim_gate_floor=0 and gated is empty, the
+    # kept-list is empty — strict mode (the new default).
     if sim_gate_threshold > 0.0 and skills:
         gated = [(s, sim) for s, sim in zip(skills, sims) if sim >= sim_gate_min_score]
         if len(gated) >= sim_gate_floor:
             skills = [s for s, _ in gated]
             sims = [sim for _, sim in gated]
-        # else: gate too aggressive → fall through with full list
-        # (top-k still works; just means threshold needs tuning)
+        else:
+            # Not enough survivors — keep top-(sim_gate_floor) by raw sim.
+            # floor=0 → kept=[] (strict mode).
+            # floor=1 → kept=[best-by-sim].
+            sorted_by_sim = sorted(
+                zip(skills, sims), key=lambda pair: -pair[1]
+            )
+            kept = sorted_by_sim[: max(sim_gate_floor, 0)]
+            if kept:
+                skills = [s for s, _ in kept]
+                sims = [sim for _, sim in kept]
+            else:
+                skills = []
+                sims = []
 
     # 3. Q-values per candidate (needed for both modes)
     qs = [q_table.get(s["skill_id"], 0.0) for s in skills]
@@ -409,6 +431,28 @@ def _make_deny(reason: str) -> dict[str, Any]:
 
 
 def _format_top_k(top_k: list[tuple[str, float]]) -> str:
+    """Format the deny-reason text the agent sees after a blocked Skill() call.
+
+    Two cases:
+      1. ``top_k`` non-empty — list the gated+scored candidates so the
+         agent can re-call with one of them. The agent still chooses
+         to call or skip; we don't force either.
+      2. ``top_k`` empty (sim_gate_floor=0 + all sim<threshold) —
+         emit an explicit "no relevant skills" message. This is the
+         strict-gate design (2026-06-25): if every candidate is below
+         ``sim_gate_min_score`` AND there's no floor to keep fallbacks,
+         we DO NOT hand the agent an irrelevant list. Irrelevant
+         skills would otherwise pollute both the agent's context
+         ("maybe I should try one of these?") and the Q-table's
+         per-trial UCB update (n_retrievals++ for skills that should
+         never have been retrieved). Tell the agent to solve directly.
+    """
+    if not top_k:
+        return (
+            "No skills in the library are relevant to this sub-task "
+            "(every candidate is below the sim=0.7 similarity gate). "
+            "Skip the Skill() call and solve this directly."
+        )
     lines = [f"Top-{len(top_k)} relevant skills (re-rank by Eq. 4 global-Q):"]
     for i, (sid, score) in enumerate(top_k, 1):
         lines.append(f"  {i}. {sid}   score={score:+.3f}")
@@ -424,7 +468,19 @@ def _format_pull_context(top_k: list[tuple[str, float]],
     Shows skill_id (used by the Skill tool) and description (truncated to
     120 chars). Body is intentionally excluded — at full lib size 1000
     bodies would blow the agent's context budget.
+
+    2026-06-25 (strict Hard Gate): when ``top_k`` is empty (no skill
+    above the sim gate), we DO NOT emit a confusing "Top-0 skills"
+    list. Instead the agent gets an explicit "no relevant skills"
+    message so it doesn't burn turns trying to invoke Skill() with
+    nothing useful to choose from.
     """
+    if not top_k:
+        return (
+            "No skills in the library are relevant to this task "
+            "(every candidate is below the sim=0.7 similarity gate). "
+            "Don't invoke the Skill tool for this turn — solve directly."
+        )
     by_id = {s["skill_id"]: s for s in skills}
     lines = [
         f"Top-{len(top_k)} skills available for this task "

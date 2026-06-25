@@ -192,13 +192,25 @@ class MethodConfig(BaseModel):
         ),
     )
     sim_gate_floor: int = Field(
-        default=1, ge=0,
+        default=0, ge=0,
         description=(
             "Hard Gate: minimum number of candidates to retain when "
             "the gate is active. If the gate would leave fewer than "
             "this many, keep this many by descending raw sim "
-            "regardless of the threshold. Default 1 ensures Top-K "
-            "is never empty on early trials."
+            "regardless of the threshold. "
+            "Default 0 (2026-06-25, strict mode) = if every candidate "
+            "is below sim_gate_min_score, return empty top-k; the hook "
+            "emits a 'no relevant skills' deny and the agent is "
+            "expected to solve directly without invoking Skill(). "
+            "This strictly prevents irrelevant skills from "
+            "(a) polluting the agent's context (no 'maybe try one of "
+            "these?') and (b) polluting Q-table evolution (no spurious "
+            "n_retrievals++ for skills that should never have been "
+            "retrieved). "
+            "Set 1+ for the legacy 'always keep a fallback candidate' "
+            "behavior, useful for very-early trials with poor embedding "
+            "coverage where the agent benefits from a 'best of a bad "
+            "lot' Top-K to choose from."
         ),
     )
 

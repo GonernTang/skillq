@@ -268,9 +268,17 @@ def test_handle_session_start_degrades_when_embed_returns_none(tmp_path: Path, c
     out = capsys.readouterr().out
     decision = json.loads(out)
     ctx = decision["hookSpecificOutput"]["additionalContext"]
-    # Still produces a ranked list, plus the "embedding unavailable" caveat.
+    # Still produces output with the "embedding unavailable" caveat.
+    # 2026-06-25 (strict Hard Gate): with sim_gate_floor=0 (the new
+    # default) and embed unavailable, _score_skills returns [].
+    # We DO NOT pollute the agent's context with skill names that
+    # are ranked by Q + UCB only (those are noise, not relevance).
+    # The caveat is the only thing the agent sees.
     assert "embedding unavailable" in ctx.lower()
-    assert "sk0" in ctx  # some skill_id appears
+    # No skill_ids should be listed when sim is unavailable.
+    assert "sk0" not in ctx
+    assert "sk1" not in ctx
+    assert "sk2" not in ctx
 
 
 def test_handle_session_start_fail_open_on_missing_lib(tmp_path: Path, capsys):
