@@ -64,6 +64,11 @@ agents:
     model_name: ${oc.env:ANTHROPIC_MODEL,anthropic/claude-sonnet-4-5}
     override_timeout_sec: 3600.0    # 1h ABSOLUTE ceiling per trial
     kwargs:
+      # Force reasoning_effort=high on the in-container Claude Code.
+      # Harbor's env_fallback would otherwise pick up CLAUDE_CODE_EFFORT_LEVEL
+      # from the parent shell, which on this host is "max" (invalid; Harbor
+      # only accepts low/medium/high). Explicit kwarg wins over env_fallback.
+      reasoning_effort: high
       # recommend: null — skip SkillsVote's LLM-based step_recommend.
       # Paper method replaces it with embedding+Q retrieval (TwoStageRanker).
       recommend: null

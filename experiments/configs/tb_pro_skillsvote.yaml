@@ -19,6 +19,8 @@ agents:
 - import_path: skills_vote.harbor.claude_code:SkillsVoteClaudeCode
   model_name: anthropic/claude-sonnet-4-5
   kwargs:
+    # Bypass CLAUDE_CODE_EFFORT_LEVEL=max inherited from host shell.
+    reasoning_effort: high
     allowed_skills: []
     recommend:
       skills_dir: ${abspath:.skillq_library/seed}

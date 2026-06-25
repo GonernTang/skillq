@@ -1,3 +1,0 @@
-library_root: /home/gonern/workspace/skillq/output/tb2_git_smoke_with_skills/.skillq_library
-state_path: /home/gonern/workspace/skillq/output/tb2_git_smoke_with_skills/.skillq_library/.state/method_state.json
-attribution_model: anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-flash}
