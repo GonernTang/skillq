@@ -28,7 +28,7 @@ from skillq.method.library import (  # noqa: E402
     LibManager,
     forgetting_rate_upper_bound,
 )
-from skillq.method.near_miss import NearMissRefiner, StubEditBackend  # noqa: E402
+from skillq.method.edit import EditRefiner, StubEditBackend  # noqa: E402
 from skillq.method.retrieval import StubEmbedder, TwoStageRanker  # noqa: E402
 from skillq.method.types import Qlib, Skill, Verdict  # noqa: E402
 from skillq.method.verifier import IndependentVerifier, StubVerifierBackend  # noqa: E402
@@ -225,41 +225,41 @@ def test_two_stage_ranker_returns_top_k2_in_descending_score():
     assert results[0].score >= results[1].score
 
 
-def test_near_miss_refiner_accepts_any_size_edit():
+def test_edit_refiner_accepts_any_size_edit():
     """The previous 20%-of-original-token cap has been removed: the
     LLM is free to rewrite as much or as little as it judges
     necessary. The stub backend appends a comment, which is
     accepted regardless of size.
     """
-    refiner = NearMissRefiner(backend=StubEditBackend(), model="test")
+    refiner = EditRefiner(backend=StubEditBackend(), model="test")
     skill = Skill(skill_id="s1", body="short body here")
     out = refiner.propose_edit(skill, "task", "trace")
     # Accepted (the stub comment is appended; not the same skill).
     assert out.skill_id == skill.skill_id
-    assert "NEAR-MISS" in out.body
+    assert "EDIT:" in out.body
 
 
-def test_near_miss_refiner_keeps_original_on_empty_body():
+def test_edit_refiner_keeps_original_on_empty_body():
     """Empty LLM response → keep the original skill unchanged."""
 
     class EmptyBackend:
         def __call__(self, prompt, model):
             return ""
 
-    refiner = NearMissRefiner(backend=EmptyBackend(), model="test")
+    refiner = EditRefiner(backend=EmptyBackend(), model="test")
     skill = Skill(skill_id="s1", body="original body")
     out = refiner.propose_edit(skill, "task", "trace")
     assert out is skill  # same object — original returned
 
 
-def test_near_miss_refiner_keeps_original_on_no_op_edit():
+def test_edit_refiner_keeps_original_on_no_op_edit():
     """LLM echoes the original unchanged → keep the original skill."""
 
     class EchoBackend:
         def __call__(self, prompt, model):
             return "original body"
 
-    refiner = NearMissRefiner(backend=EchoBackend(), model="test")
+    refiner = EditRefiner(backend=EchoBackend(), model="test")
     skill = Skill(skill_id="s1", body="original body")
     out = refiner.propose_edit(skill, "task", "trace")
     assert out is skill

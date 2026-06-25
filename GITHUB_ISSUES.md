@@ -156,3 +156,15 @@ Reproduce: `pkill -9 pytest; uv run pytest tests/` → hangs at ~86% mark.
 Workaround: `pytest tests/<file>.py` per file, or `pytest tests/ --forked`.
 
 Proper fix: convert `asyncio.run(...)` to `@pytest.mark.asyncio` async fixtures, or add a finalizer that closes httpx / litellm / anyio global resources. Investigate whether `httpx.Client` instances are being leaked across `asyncio.run` boundaries.
+
+
+---
+
+<!-- HISTORICAL: Sub-task judge path deleted 2026-06-23 -->
+
+The pre-2026-06-23 sub-task-verifier issues (Bug 8 fan-out, Bug 11
+n_retrievals, body-visibility prompt change) are **superseded** by
+the 2026-06-23 simplification. The bridge now uses standard Eq.5
+(task-level reward only) and there is no per-call LLM judge. See
+`bug_to_fix.md` "Sub-task judge path removed on 2026-06-23" for the
+full inventory of what was removed.

@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from skillq.paper_mode.config import MethodConfig
+from skillq.skillq_runtime.config import MethodConfig
 
 
 def build_parser(parent: argparse.ArgumentParser) -> None:
@@ -132,7 +132,7 @@ def _run_command(args: argparse.Namespace) -> int:
         return 2
 
     method = _load_method_config(args.method_config_path)
-    from skillq.paper_mode.bridge import run_paper_job_sync
+    from skillq.skillq_runtime.bridge import run_paper_job_sync
 
     return run_paper_job_sync(args.config_path, method)
 
@@ -156,6 +156,35 @@ def _prime_uv_cache_command(args: argparse.Namespace) -> int:
     wheels_dir.mkdir(exist_ok=True)
     envs_dir = cache / "environments-v2"
     envs_dir.mkdir(exist_ok=True)
+    # sdists-v9/ is where `uv` stores source distributions (vs the
+    # wheel-only wheels-v0/). On a fresh cache the container's first
+    # `uvx` call triggers uv to mkdir this dir + drop .gitignore +
+    # .lock + CACHEDIR.TAG inside it. On an RO bind mount each of
+    # those writes raises "Read-only file system (os error 30)" and
+    # aborts the verifier before it can install any wheels — this was
+    # the root cause of chess-best-move reward=0 in the 2026-06-25
+    # mini smoke (the verifier got uv 0.9.5 installed but never made
+    # it to the `pytest --ctrf …` step). We pre-create the dir + the
+    # same marker files we already lay down in wheels-v0/ and
+    # environments-v2/ so the RO bind mount looks complete to uv.
+    # The CACHEDIR.TAG is also written here (vs wheels-v0/ and
+    # environments-v2/ where it was empirically not required) because
+    # sdists-v9/ is created lazily on first use and uv touches it
+    # before any wheel/sdist work — the cost of writing the marker
+    # file is one tiny disk write, the failure mode of missing it is
+    # the verifier aborts entirely.
+    sdists_dir = cache / "sdists-v9"
+    sdists_dir.mkdir(exist_ok=True)
+    sdists_cachedir_tag = sdists_dir / "CACHEDIR.TAG"
+    if not sdists_cachedir_tag.exists():
+        sdists_cachedir_tag.write_text(
+            "Signature: 8a477f597d28d172789f06886806bc55\n"
+            "# This file is a cache directory tag created by `skillq paper "
+            "prime-uv-cache`.\n"
+            "# For information about cache directory tags, see:\n"
+            "#   https://bford.info/cachedir/\n",
+            encoding="utf-8",
+        )
     # Pre-create the XDG CACHEDIR.TAG marker file. `uvx` inside the
     # container tries to write this when it first touches the cache
     # directory. If the cache is bind-mounted RO (which it is, for
@@ -184,15 +213,25 @@ def _prime_uv_cache_command(args: argparse.Namespace) -> int:
     #   - .lock: zero-byte lockfile uv uses to serialize concurrent
     #     cache writers
     # We pre-create them at the cache root AND inside each subdir
-    # (wheels-v0, environments-v2) so uv's recursive walk never hits
-    # an RO error.
-    for sub in (cache, wheels_dir, envs_dir):
+    # (wheels-v0, environments-v2, sdists-v9) so uv's recursive walk
+    # never hits an RO error.
+    for sub in (cache, wheels_dir, envs_dir, sdists_dir):
         gitignore = sub / ".gitignore"
         if not gitignore.exists():
             gitignore.write_text("*\n", encoding="utf-8")
         lockfile = sub / ".lock"
         if not lockfile.exists():
             lockfile.touch()
+        # uv also drops an empty `.git` file in each cache subdir so
+        # git won't recurse into it. On an RO bind mount this also
+        # raises "Read-only file system (os error 30)" — pre-create
+        # an empty one. (Discovered empirically 2026-06-25: chess
+        # verifier with sdists-v9/ + CACHEDIR.TAG + .gitignore + .lock
+        # still failed on `failed to open file
+        # /root/.cache/uv/sdists-v9/.git` until we added this.)
+        git_marker = sub / ".git"
+        if not git_marker.exists():
+            git_marker.touch()
 
     # Sanity check: `uv` must be on PATH. (test.sh installs uv 0.9.5
     # inside the container; the host should also have a recent uv.)

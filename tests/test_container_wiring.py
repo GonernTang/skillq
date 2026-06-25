@@ -17,8 +17,8 @@ from skillq.method.library import LibManager  # noqa: E402
 from skillq.method.state import QlibState  # noqa: E402
 from skillq.method.types import Qlib, Skill  # noqa: E402
 from skillq.method.vector_table import VectorTable  # noqa: E402
-from skillq.paper_mode.config import MethodConfig  # noqa: E402
-from skillq.paper_mode.container_wiring import (  # noqa: E402
+from skillq.skillq_runtime.config import MethodConfig  # noqa: E402
+from skillq.skillq_runtime.container_wiring import (  # noqa: E402
     CONTAINER_CALLS_LOG_PATH,
     CONTAINER_EMB_CACHE_PATH,
     CONTAINER_HOOK_PATH,
@@ -151,7 +151,7 @@ def test_wire_one_trial_populates_env_and_mounts(tmp_path: Path):
     """End-to-end: build event, call wire_one_trial, check the
     mutation landed in agent.env and environment.mounts_json.
     """
-    from skillq.paper_mode.container_wiring import ContainerWiringHandle
+    from skillq.skillq_runtime.container_wiring import ContainerWiringHandle
 
     _, _, _ = _seed_state(tmp_path)
     method = MethodConfig(
@@ -213,11 +213,13 @@ def test_wire_one_trial_populates_env_and_mounts(tmp_path: Path):
     # created by the hook on first Skill() call.
     assert (trial_dir / "skillq_state" / "settings.json").exists()
 
-    # All SkillQ-injected mounts are read-only. The calls_log is
-    # written into Harbor's auto-injected ``agent_dir`` mount,
-    # which is read-write by default (no ``read_only`` key — the
-    # TypedDict allows this; Docker treats it as read-write).
-    rw = [m for m in mounts if not m["read_only"]]
+    # All SkillQ-injected mounts are read-only EXCEPT the uv cache
+    # mount (target ``/root/.cache/uv``), which is intentionally RW
+    # since uv 0.9.5 truncates & rewrites marker files on every
+    # startup and an RO mount causes "Read-only file system (os
+    # error 30)" aborts. See Bug #4 round 2 (2026-06-25).
+    rw = [m for m in mounts if m["target"] != "/root/.cache/uv"
+          and not m["read_only"]]
     assert rw == []
 
     # Verify the container-side targets are what hook.py reads
@@ -231,7 +233,7 @@ def test_wire_one_trial_populates_env_and_mounts(tmp_path: Path):
 
 def test_wire_one_trial_uses_method_config_tunables(tmp_path: Path):
     """Verify the env forwards MethodConfig values, not hardcoded."""
-    from skillq.paper_mode.container_wiring import ContainerWiringHandle
+    from skillq.skillq_runtime.container_wiring import ContainerWiringHandle
 
     _, _, _ = _seed_state(tmp_path)
     method = MethodConfig(
@@ -263,7 +265,7 @@ def test_wire_one_trial_uses_method_config_tunables(tmp_path: Path):
 
 def test_wire_one_trial_handles_empty_lib(tmp_path: Path):
     """No skills in lib → lib.json has empty skills list (hook no-ops)."""
-    from skillq.paper_mode.container_wiring import ContainerWiringHandle
+    from skillq.skillq_runtime.container_wiring import ContainerWiringHandle
 
     method = MethodConfig(
         library_root=tmp_path / ".skillq_library",
@@ -294,7 +296,7 @@ def test_wire_one_trial_agentic_writes_skill_tree(tmp_path: Path):
     PAPER_METHOD_INSTRUCTIONS.md) and bind-mounts it to
     $CLAUDE_CONFIG_DIR/<agentic_skill_dir_name>/.
     """
-    from skillq.paper_mode.container_wiring import ContainerWiringHandle
+    from skillq.skillq_runtime.container_wiring import ContainerWiringHandle
 
     _, _, _ = _seed_state(tmp_path)
     method = MethodConfig(
@@ -340,7 +342,7 @@ def test_wire_one_trial_agentic_no_claude_md_overwrite(tmp_path: Path):
     """Without user_claude_md_path, the user's CLAUDE.md is NOT
     bind-mounted (i.e. the writer doesn't touch it).
     """
-    from skillq.paper_mode.container_wiring import ContainerWiringHandle
+    from skillq.skillq_runtime.container_wiring import ContainerWiringHandle
 
     _, _, _ = _seed_state(tmp_path)
     method = MethodConfig(
@@ -371,7 +373,7 @@ def test_wire_one_trial_agentic_merges_user_claude_md(tmp_path: Path):
     is read, the skillq-method snippet is appended, and the merged
     result is bind-mounted to $CLAUDE_CONFIG_DIR/CLAUDE.md.
     """
-    from skillq.paper_mode.container_wiring import ContainerWiringHandle
+    from skillq.skillq_runtime.container_wiring import ContainerWiringHandle
 
     _, _, _ = _seed_state(tmp_path)
 
@@ -425,7 +427,7 @@ def test_wire_one_trial_agentic_merges_user_claude_md(tmp_path: Path):
 # ---------------------------------------------------------------------------
 def _run_wire_with_uv_cache(tmp_path: Path, uv_cache_path: Path | None) -> MagicMock:
     """Helper: run wire_one_trial with optional verifier_uv_cache_path."""
-    from skillq.paper_mode.container_wiring import ContainerWiringHandle
+    from skillq.skillq_runtime.container_wiring import ContainerWiringHandle
 
     _, _, _ = _seed_state(tmp_path)
     method = MethodConfig(
@@ -452,8 +454,18 @@ def _run_wire_with_uv_cache(tmp_path: Path, uv_cache_path: Path | None) -> Magic
 
 def test_verifier_uv_cache_mount_added_when_path_set(tmp_path: Path):
     """Bug #4 fix: when verifier_uv_cache_path points at an existing
-    directory, wire_one_trial adds a RO bind mount to
-    /root/.cache/uv in the container."""
+    directory, wire_one_trial adds a bind mount to /root/.cache/uv
+    in the container.
+
+    2026-06-25 (Bug #4 round 2): the mount is now RW (not RO). uv
+    0.9.5 truncates & rewrites marker files (``.git`` / ``.lock`` /
+    ``.gitignore`` / ``CACHEDIR.TAG``) inside each cache subdir on
+    every startup, not just first use. RO mount fails those writes
+    with "Read-only file system (os error 30)" and the verifier
+    aborts. Harbor's ``ServiceVolumeConfig.read_only`` TypedDict is
+    ``NotRequired[Literal[True]]`` — omitting the key is valid and
+    means "use default (RW for bind mounts)".
+    """
     cache = tmp_path / ".skillq_cache" / "uv"
     cache.mkdir(parents=True)
     # Drop a fake wheel file so is_dir() is True and the helper is exercised.
@@ -466,7 +478,10 @@ def test_verifier_uv_cache_mount_added_when_path_set(tmp_path: Path):
     uv_mounts = [m for m in mounts if m["target"] == "/root/.cache/uv"]
     assert len(uv_mounts) == 1, f"expected 1 uv cache mount, got {len(uv_mounts)}: {mounts}"
     m = uv_mounts[0]
-    assert m["read_only"] is True
+    # read_only is absent (Harbor interprets absent as RW). The
+    # old assertion was ``m["read_only"] is True`` — that was true
+    # for the original RO mount, but uv 0.9.5 forces a switch to RW.
+    assert "read_only" not in m
     assert m["type"] == "bind"
     # The source must resolve to the absolute path of the cache dir.
     assert Path(m["source"]).resolve() == cache.resolve()
@@ -513,7 +528,7 @@ def test_verifier_uv_cache_mount_omitted_when_field_unset(tmp_path: Path):
 def test_verifier_uv_cache_mount_works_in_agentic_mode(tmp_path: Path):
     """The mount logic also applies to Method A (agentic). Test the
     non-hook branch by setting retrieval_mode='agentic'."""
-    from skillq.paper_mode.container_wiring import ContainerWiringHandle
+    from skillq.skillq_runtime.container_wiring import ContainerWiringHandle
 
     _, _, _ = _seed_state(tmp_path)
     cache = tmp_path / ".skillq_cache" / "uv"
@@ -539,4 +554,6 @@ def test_verifier_uv_cache_mount_works_in_agentic_mode(tmp_path: Path):
     mounts = event.config.environment.mounts_json or []
     uv_mounts = [m for m in mounts if m["target"] == "/root/.cache/uv"]
     assert len(uv_mounts) == 1
-    assert uv_mounts[0]["read_only"] is True
+    # 2026-06-25 (Bug #4 round 2): read_only is now absent (= RW).
+    # See test_verifier_uv_cache_mount_added_when_path_set for why.
+    assert "read_only" not in uv_mounts[0]

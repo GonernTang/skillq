@@ -1,0 +1,61 @@
+# MethodConfig for the PULL-MODE smoke (added 2026-06-23).
+#
+# Same shape as method_5task_autoextract.yaml except:
+#   - retrieval_mode: pull   (registers SessionStart hook in addition to
+#                              PreToolUse; see hook.py:_handle_session_start)
+#   - hook_pull_top_k: 3     (Top-K skills shown in the additionalContext
+#                              injected at session start)
+#
+# What this exercises:
+#   1. SessionStart fires once per `claude` invocation (per trial under
+#      harbor), embeds the user's task via the host embed daemon, and
+#      emits a hookSpecificOutput.additionalContext block listing the
+#      Top-3 skills available for the task.
+#   2. The agent sees the reminder on its first turn and (we hope)
+#      invokes one or more of the listed skills via Skill tool calls,
+#      which the existing PreToolUse branch still gates + Q-updates.
+#
+# Verification (manual):
+#   - inspect trial_dir/agent/sessions/skillq_skill_calls.jsonl — should
+#     have ≥1 record per trial after pull-mode is enabled
+#   - inspect trial_dir/agent/sessions/<transcript>.jsonl — look for
+#     type=user records whose content includes the Top-K reminder
+#   - jq '.q_table' trial_dir/.skillq_library/.state/method_state.json —
+#     ≥1 entry with Q != 0.5 (i.e. the agent actually called Skill)
+
+library_root: /home/gonern/workspace/skillq/output/tb2_skillq_pull_smoke/.skillq_library
+state_path: /home/gonern/workspace/skillq/output/tb2_skillq_pull_smoke/.skillq_library/.state/method_state.json
+seed_skills_dir: /home/gonern/workspace/skillq/skills
+
+# === Pull-mode (new in 2026-06-23) ===
+# 'pull' = Method B (PreToolUse gate) + SessionStart Top-K inject.
+retrieval_mode: pull
+hook_top_k: 3
+hook_pull_top_k: 3
+hook_lambda: 0.5
+hook_c_ucb: 0.5
+
+# b_max kept small (50) for the smoke so eviction behavior is observable
+# in a 5-task window if any auto_extract inserts push us over. Matches
+# the pre-2026-06-23 default; intentional override.
+b_max: 50
+seed_initial_q: 0.5
+new_skill_initial_q: 0.5
+
+user_claude_md_path: /home/gonern/workspace/skillq/experiments/smoke/_user_claude_md_stub.md
+
+# === LLM models ===
+attribution_model: anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-flash}
+editor_model: anthropic/${oc.env:EDITOR_MODEL,openai/gpt-4o}
+embedder_model: openai/${oc.env:EMBEDDING_MODEL,text-embedding-v4}
+embedder_dim: 1024
+
+# === auto-extract path (kept on for direct comparison with autoextract
+#                          smoke; can be turned off to isolate pull-mode
+#                          effect) ===
+enable_auto_extract: true
+extract_every_n_trials: 1
+extract_max_new_per_trial: 1
+extract_timeout_sec: 600
+
+benchmark_input_path: ${oc.env:SkillQ_INPUT_ROOT,/home/gonern/workspace/skillq/input}

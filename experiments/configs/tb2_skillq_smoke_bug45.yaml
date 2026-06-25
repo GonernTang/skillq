@@ -1,0 +1,65 @@
+# Smoke config for Bug #4 + #5 verification (2026-06-24).
+#
+# 3 tasks chosen to exercise both fixes:
+#   - pytorch-model-recovery: the canonical "uvx -w torch" slow task;
+#     verifies the uv cache mount lets the verifier finish within
+#     the 900s ceiling (Bug #4).
+#   - caffe-cifar-10: OOM-kill case; verifies the post-trial chown
+#     helper recovers the session jsonl ownership (Bug #5).
+#   - kv-store-grpc: small/fast control task; should pass cleanly
+#     and confirms the uv-cache mount + chown helper don't regress
+#     non-pytorch / non-OOM trials.
+#
+# Wall-clock estimate: 5-30 min per task (pytorch ~20-30 min, caffe
+# ~2-5 min until OOM, kv-store ~2-5 min).
+#
+# Diff vs `tb2_skillq_smoke_5task.yaml`:
+#   - 3 task_names instead of 5
+#   - job_name distinguishes this run
+#   - no `agent_timeout_multiplier` override (default 1.0; 900s agent
+#     ceiling from task.toml applies — we only care about the verifier
+#     timing out, not the agent)
+
+jobs_dir: output
+job_name: tb2_skillq_smoke_bug45_2026-06-24_v2
+n_attempts: 1
+n_concurrent_trials: 3
+quiet: false
+retry:
+  max_retries: 0
+  exclude_exceptions:
+    - VerifierTimeoutError
+    - RewardFileNotFoundError
+    - RewardFileEmptyError
+    - VerifierOutputParseError
+environment:
+  type: docker
+  force_build: false
+  delete: false               # keep containers after the run for debugging
+  mounts_json:
+    # Bind-mount the host's seed-skill library into the container at
+    # /skills. Required for the Skill tool to see the curated skills
+    # in pull-mode. (Same as other smoke configs.)
+    - type: bind
+      source: /home/gonern/workspace/skillq/skills
+      target: /skills
+      read_only: true
+agents:
+  - import_path: skillq.skillq_runtime.agent:SkillQClaudeCodeAgent
+    model_name: ${oc.env:ANTHROPIC_MODEL,anthropic/claude-sonnet-4-5}
+    kwargs:
+      # recommend: null — skip SkillsVote's LLM-based step_recommend.
+      # Paper method replaces it with embedding+Q retrieval.
+      recommend: null
+      paper_retrieval:
+        enabled: true
+        k1: 10
+        k2: 3
+        c_ucb: 0.5
+        lambda_: 0.5
+datasets:
+  - path: ${oc.env:SkillQ_INPUT,./input/terminal-bench}
+    task_names:
+      - pytorch-model-recovery
+      - caffe-cifar-10
+      - kv-store-grpc

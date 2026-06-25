@@ -50,7 +50,7 @@ environment:
       target: /skills
       read_only: true
 agents:
-  - import_path: skillq.paper_mode.agent:SkillQClaudeCodeAgent
+  - import_path: skillq.skillq_runtime.agent:SkillQClaudeCodeAgent
     # oc.env is a built-in OmegaConf resolver; falls back to Sonnet 4.5
     # if ANTHROPIC_MODEL is unset.
     model_name: ${oc.env:ANTHROPIC_MODEL,anthropic/claude-sonnet-4-5}
@@ -98,7 +98,7 @@ datasets:
     task_names:
       # Single task smoke for the container-wiring refactor
       # (issue #2). gcode-to-text is the smallest prebuilt task;
-      # we verify the per-subtask hook fires, the Q-table gets
+      # we verify the PreToolUse hook fires, the Q-table gets
       # the trial's reward, and the container sees the SKILLQ_*
       # env vars + bind-mounted state files.
       - gcode-to-text                 # medium, 300 min (LLM usually 1-2 min)

@@ -1,6 +1,6 @@
 """End-to-end bridge tests for the new auto-extract path.
 
-These tests verify that :func:`paper.paper_mode.bridge.attach_paper_registers`
+These tests verify that :func:`paper.skillq_runtime.bridge.attach_paper_registers`
 correctly triggers the extractor on the right attribution verdicts,
 adds the new skill to the library, and resets its probation counter.
 """
@@ -11,6 +11,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -21,16 +22,23 @@ from skillq.method.attribution import Attribution, TrialAttribution  # noqa: E40
 from skillq.method.library import LibManager  # noqa: E402
 from skillq.method.state import QlibState  # noqa: E402
 from skillq.method.types import Qlib, Skill  # noqa: E402
-from skillq.paper_mode.config import MethodConfig  # noqa: E402
+from skillq.skillq_runtime.config import MethodConfig  # noqa: E402
 
 
 class _MockJob:
     def __init__(self) -> None:
         self.on_ended: Any = None
-        self.config = MagicMock()
-        self.config.retry = MagicMock()
-        self.config.retry.exclude_exceptions = None
-        self.config.retry.include_exceptions = None
+        # 2026-06-25: SimpleNamespace + max_retries=0 to match the
+        # production YAML and to avoid MagicMock's
+        # `is not None` / __contains__ semantics silently corrupting
+        # the retry-classification.
+        self.config = SimpleNamespace(
+            retry=SimpleNamespace(
+                max_retries=0,
+                exclude_exceptions=None,
+                include_exceptions=None,
+            )
+        )
 
     def on_trial_ended(self, callback: Any) -> None:
         self.on_ended = callback
@@ -47,7 +55,7 @@ def _patch_litellm_backends(monkeypatch) -> None:
     """Replace LiteLLM + subprocess with stub shims that accept the
     kwargs the bridge passes and return predictable outputs.
     """
-    from skillq.paper_mode import bridge as bridge_mod
+    from skillq.skillq_runtime import bridge as bridge_mod
     from skillq.method.attribution import StubAttributionBackend
     from skillq.method.retrieval import StubEmbedder
 
@@ -72,7 +80,7 @@ def _patch_extractor_to_return(monkeypatch, skill: Skill | None) -> None:
     """Replace :class:`SkillExtractor.extract_batch` with a coroutine
     that immediately returns ``skill`` (no subprocess).
     """
-    from skillq.paper_mode import bridge as bridge_mod
+    from skillq.skillq_runtime import bridge as bridge_mod
 
     async def fake_extract_batch(self, **kwargs) -> Skill | None:
         return skill
@@ -128,7 +136,7 @@ def test_bridge_extracts_on_success_no_skill_seen(tmp_path: Path, monkeypatch):
     _patch_extractor_to_return(monkeypatch, new_skill)
 
     # Make the attribution analyzer return SUCCESS_NO_SKILL_SEEN
-    from skillq.paper_mode import bridge as bridge_mod
+    from skillq.skillq_runtime import bridge as bridge_mod
     from skillq.method.attribution import Attribution, StubAttributionBackend
 
     def returning_no_skill_seen(self, **kwargs):
@@ -175,7 +183,7 @@ def test_bridge_skips_extract_on_failure(tmp_path: Path, monkeypatch):
         called["n"] += 1
         return new_skill
 
-    from skillq.paper_mode import bridge as bridge_mod
+    from skillq.skillq_runtime import bridge as bridge_mod
     monkeypatch.setattr(bridge_mod.SkillExtractor, "extract_batch", fake_extract_batch)
     monkeypatch.setattr(
         bridge_mod.AttributionAnalyzer,
@@ -213,7 +221,7 @@ def test_bridge_skips_extract_on_skill_used(tmp_path: Path, monkeypatch):
         called["n"] += 1
         return new_skill
 
-    from skillq.paper_mode import bridge as bridge_mod
+    from skillq.skillq_runtime import bridge as bridge_mod
     monkeypatch.setattr(bridge_mod.SkillExtractor, "extract_batch", fake_extract_batch)
     monkeypatch.setattr(
         bridge_mod.AttributionAnalyzer,
@@ -253,7 +261,7 @@ def test_bridge_skips_extract_when_disabled(tmp_path: Path, monkeypatch):
     _seed_lib(method)
     job = _MockJob()
 
-    from skillq.paper_mode import bridge as bridge_mod
+    from skillq.skillq_runtime import bridge as bridge_mod
 
     bridge_mod.attach_paper_registers(job, method)
     # The hook closes over an `extractor` var; if it's None the extract
@@ -273,7 +281,7 @@ def test_viewed_but_not_used_bumps_q(tmp_path: Path, monkeypatch):
     _patch_litellm_backends(monkeypatch)
     _patch_extractor_to_return(monkeypatch, None)
 
-    from skillq.paper_mode import bridge as bridge_mod
+    from skillq.skillq_runtime import bridge as bridge_mod
 
     def returning_viewed(self, **kwargs):
         # Use a plain dict for the subtask; TrialAttribution is
@@ -343,7 +351,7 @@ def test_bridge_extracts_on_failure_no_skill(tmp_path: Path, monkeypatch):
     )
     _patch_extractor_to_return(monkeypatch, new_skill)
 
-    from skillq.paper_mode import bridge as bridge_mod
+    from skillq.skillq_runtime import bridge as bridge_mod
     from skillq.method.attribution import Attribution, TrialAttribution
 
     def returning_failure(self, **kwargs):
@@ -366,7 +374,6 @@ def test_bridge_extracts_on_failure_no_skill(tmp_path: Path, monkeypatch):
         # Disable the incremental-edit path (it would call the LLM
         # to propose a SKILL.md edit; we don't have a stub for
         # that in this test file).
-        theta_near_miss=1.0,
     )
     _seed_lib(method)
     job = _MockJob()
@@ -407,7 +414,7 @@ def test_bridge_extracts_on_failure_even_when_skill_exists(tmp_path: Path, monke
         called["n"] += 1
         return new_skill
 
-    from skillq.paper_mode import bridge as bridge_mod
+    from skillq.skillq_runtime import bridge as bridge_mod
     from skillq.method.attribution import Attribution, TrialAttribution
 
     monkeypatch.setattr(bridge_mod.SkillExtractor, "extract_batch", fake_extract_batch)
@@ -467,7 +474,7 @@ def test_bridge_flush_writes_mirror_to_seed_dir(tmp_path: Path, monkeypatch):
     new_skill = Skill(skill_id="auto-mirrored", body=body)
     _patch_extractor_to_return(monkeypatch, new_skill)
 
-    from skillq.paper_mode import bridge as bridge_mod
+    from skillq.skillq_runtime import bridge as bridge_mod
 
     monkeypatch.setattr(
         bridge_mod.AttributionAnalyzer,
@@ -501,3 +508,323 @@ def test_bridge_flush_writes_mirror_to_seed_dir(tmp_path: Path, monkeypatch):
         f"mirror SKILL.md not written; expected at {mirror}"
     )
     assert mirror.read_text(encoding="utf-8") == body
+
+
+# ---------------------------------------------------------------------------
+# 2026-06-25: classifier + NonZeroAgentExitCodeError / AgentTimeoutError
+# must still fire the extract path when a usable trajectory exists.
+# Before the fix, the blanket "exception_info != None bails" rule
+# silently dropped these trials.
+# ---------------------------------------------------------------------------
+def _write_usable_trajectory(trial_dir: Path) -> None:
+    """Write a 1-entry trajectory.json so the classifier promotes
+    NonZeroAgentExitCodeError to RUN_TASK_FAILURE."""
+    (trial_dir / "agent").mkdir(parents=True, exist_ok=True)
+    (trial_dir / "agent" / "trajectory.json").write_text(
+        json.dumps([{"type": "assistant", "message": {"content": "ok"}}]),
+        encoding="utf-8",
+    )
+
+
+def test_bridge_extracts_on_nonzero_agent_exit_with_trajectory(
+    tmp_path: Path, monkeypatch
+):
+    """Agent `claude --print` exited non-zero AFTER writing a full
+    trajectory. The classifier must promote this to RUN_TASK_FAILURE
+    and the extract path must fire. Pre-fix, this entire branch
+    was silently skipped at line 1052 of bridge.py."""
+    _patch_litellm_backends(monkeypatch)
+    new_skill = Skill(
+        skill_id="from-failed-run",
+        body="x" * 200,
+        metadata={"source": "skillq_extract", "extract_mode": "failure"},
+    )
+    _patch_extractor_to_return(monkeypatch, new_skill)
+
+    from skillq.skillq_runtime import bridge as bridge_mod
+
+    # Return FAIL_AGENT_ISSUE so Rule 5 fires (failure-mode extract).
+    monkeypatch.setattr(
+        bridge_mod.AttributionAnalyzer,
+        "analyze",
+        lambda self, **kwargs: TrialAttribution(
+            overall_attribution=Attribution.FAIL_AGENT_ISSUE,
+            overall_rationale="test",
+            knowledge_to_extract="reflection on the failed run",
+        ),
+    )
+
+    method = MethodConfig(
+        library_root=tmp_path / "lib",
+        b_max=4,
+        enable_auto_extract=True,
+        seed_initial_q=0.0,
+        extract_every_n_trials=1,  # flush on the first qualifying trial
+    )
+    _seed_lib(method)
+    job = _MockJob()
+    bridge_mod.attach_paper_registers(job, method)
+
+    trial_dir = tmp_path / "trial-x"
+    trial_dir.mkdir(parents=True, exist_ok=True)
+    _write_usable_trajectory(trial_dir)
+
+    result = _fake_trial_result(reward=0.0, trial_uri=str(trial_dir))
+    # Simulate agent exit 1 — a non-OOM, non-infra failure.
+    result.exception_info = MagicMock()
+    result.exception_info.exception_type = "NonZeroAgentExitCodeError"
+    result.exception_info.exception_message = "Command failed (exit 1): claude"
+    event = _fake_hook_event("trial-x", result=result)
+    asyncio.run(job.on_ended(event))
+
+    state = json.loads(method.resolved_state_path().read_text(encoding="utf-8"))
+    assert "from-failed-run" in state["library"]["skills"], (
+        "auto_extract should have fired on NonZeroAgentExitCodeError "
+        "with a usable trajectory"
+    )
+    new_meta = state["library"]["skills"]["from-failed-run"]["metadata"]
+    assert new_meta.get("extract_mode") == "failure"
+
+
+def test_bridge_skips_extract_on_oom_even_with_trajectory(
+    tmp_path: Path, monkeypatch
+):
+    """OOM (exit 137) is ALWAYS infra failure per user direction
+    (2026-06-25), even if a partial trajectory was written. The
+    extract path must NOT fire — the OOM signal is the more
+    informative outcome."""
+    _patch_litellm_backends(monkeypatch)
+    called = {"n": 0}
+    new_skill = Skill(skill_id="should-not-appear", body="x" * 200)
+
+    from skillq.skillq_runtime import bridge as bridge_mod
+
+    async def fake_extract_batch(self, **kwargs):
+        called["n"] += 1
+        return new_skill
+
+    monkeypatch.setattr(bridge_mod.SkillExtractor, "extract_batch", fake_extract_batch)
+    monkeypatch.setattr(
+        bridge_mod.AttributionAnalyzer,
+        "analyze",
+        lambda self, **kwargs: TrialAttribution(
+            overall_attribution=Attribution.FAIL_AGENT_ISSUE,
+            overall_rationale="won't run",
+            knowledge_to_extract="x",
+        ),
+    )
+
+    method = MethodConfig(
+        library_root=tmp_path / "lib", b_max=4, enable_auto_extract=True,
+        seed_initial_q=0.0, extract_every_n_trials=1,
+    )
+    _seed_lib(method)
+    job = _MockJob()
+    bridge_mod.attach_paper_registers(job, method)
+
+    trial_dir = tmp_path / "trial-x"
+    trial_dir.mkdir(parents=True, exist_ok=True)
+    _write_usable_trajectory(trial_dir)  # trajectory exists
+
+    result = _fake_trial_result(reward=0.0, trial_uri=str(trial_dir))
+    result.exception_info = MagicMock()
+    result.exception_info.exception_type = "NonZeroAgentExitCodeError"
+    result.exception_info.exception_message = "Command failed (exit 137): killed"
+    event = _fake_hook_event("trial-x", result=result)
+    asyncio.run(job.on_ended(event))
+
+    assert called["n"] == 0
+    state = json.loads(method.resolved_state_path().read_text(encoding="utf-8"))
+    assert "should-not-appear" not in state["library"]["skills"]
+
+
+def test_bridge_skips_extract_on_failed_run_without_trajectory(
+    tmp_path: Path, monkeypatch
+):
+    """NonZeroAgentExitCodeError but no usable trajectory on disk
+    (e.g. the agent died before writing anything) → SKIP_ALL. There
+    is nothing to extract from a half-flushed trial."""
+    _patch_litellm_backends(monkeypatch)
+    called = {"n": 0}
+    new_skill = Skill(skill_id="should-not-appear", body="x" * 200)
+
+    from skillq.skillq_runtime import bridge as bridge_mod
+
+    monkeypatch.setattr(
+        bridge_mod.AttributionAnalyzer,
+        "analyze",
+        lambda self, **kwargs: TrialAttribution(
+            overall_attribution=Attribution.FAIL_AGENT_ISSUE,
+            overall_rationale="won't run",
+            knowledge_to_extract="x",
+        ),
+    )
+
+    method = MethodConfig(
+        library_root=tmp_path / "lib", b_max=4, enable_auto_extract=True,
+        seed_initial_q=0.0, extract_every_n_trials=1,
+    )
+    _seed_lib(method)
+    job = _MockJob()
+    bridge_mod.attach_paper_registers(job, method)
+
+    # trial_dir exists but agent/trajectory.json does NOT
+    trial_dir = tmp_path / "trial-x"
+    trial_dir.mkdir(parents=True, exist_ok=True)
+
+    result = _fake_trial_result(reward=0.0, trial_uri=str(trial_dir))
+    result.exception_info = MagicMock()
+    result.exception_info.exception_type = "NonZeroAgentExitCodeError"
+    result.exception_info.exception_message = "Command failed (exit 1): claude"
+    event = _fake_hook_event("trial-x", result=result)
+    asyncio.run(job.on_ended(event))
+
+    assert called["n"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 2026-06-25: gap_description thread-through
+# ---------------------------------------------------------------------------
+def test_extract_buffer_carries_gap_description_to_extractor(
+    tmp_path: Path, monkeypatch
+):
+    """When the attribution step returns a non-empty
+    library_gap_skill_description, the bridge must thread it
+    through extract_buffer into the per-trial record the
+    extractor formats into the failure-path prompt.
+
+    Pins the contract that
+    ``extract_buffer.pending[0]["gap_description"]`` ==
+    ``attribution.library_gap_skill_description``. The extractor
+    reads ``trial["gap_description"]`` (see
+    ``extractor.py:extract_batch``) and emits a
+    ``library_gap_skill_description: <repr>`` line that the
+    failure-path prompt uses as the primary seed.
+    """
+    _patch_litellm_backends(monkeypatch)
+
+    from skillq.skillq_runtime import bridge as bridge_mod
+
+    GAP_TEXT = (
+        "a skill whose description names 'hardware-circuit-synthesis' "
+        "and includes a sanity-test checklist for N=0, 1, 4 plus a "
+        "stop signal after 3 failed versions"
+    )
+
+    # Capture the trials list the extractor sees — extract_buffer
+    # is drained into (mode, records) tuples by extract_batch.
+    captured: dict[str, Any] = {}
+
+    async def _capture_extract_batch(self, *, trials, **_kwargs):
+        captured["trials"] = trials
+        return None
+
+    # Monkeypatch the SkillExtractor.extract_batch method (the
+    # actual entry point the bridge calls in
+    # _attribution_and_extract_dispatch's _flush_buffer).
+    monkeypatch.setattr(
+        bridge_mod.SkillExtractor, "extract_batch", _capture_extract_batch
+    )
+
+    monkeypatch.setattr(
+        bridge_mod.AttributionAnalyzer,
+        "analyze",
+        lambda self, **kwargs: TrialAttribution(
+            overall_attribution=Attribution.FAIL_AGENT_ISSUE,
+            overall_rationale="agent debug-spiraled",
+            knowledge_to_extract="wrote 7 versions of gen.py",
+            library_gap_skill_description=GAP_TEXT,
+        ),
+    )
+
+    method = MethodConfig(
+        library_root=tmp_path / "lib",
+        b_max=4,
+        enable_auto_extract=True,
+        seed_initial_q=0.0,
+        extract_every_n_trials=1,
+    )
+    _seed_lib(method)
+    job = _MockJob()
+    bridge_mod.attach_paper_registers(job, method)
+
+    trial_dir = tmp_path / "trial-x"
+    trial_dir.mkdir(parents=True, exist_ok=True)
+    _write_usable_trajectory(trial_dir)
+
+    result = _fake_trial_result(reward=0.0, trial_uri=str(trial_dir))
+    result.exception_info = MagicMock()
+    result.exception_info.exception_type = "NonZeroAgentExitCodeError"
+    result.exception_info.exception_message = "Command failed (exit 1): claude"
+    event = _fake_hook_event("trial-x", result=result)
+    asyncio.run(job.on_ended(event))
+
+    # Buffer must have drained into the extractor with the gap
+    # description intact.
+    assert "trials" in captured, (
+        "extract_batch was not called; Rule 5 didn't fire. Check "
+        "the attribution override and the failure-path gate."
+    )
+    assert len(captured["trials"]) == 1
+    assert captured["trials"][0]["gap_description"] == GAP_TEXT
+    # knowledge still present so the prompt has both fields.
+    assert captured["trials"][0]["knowledge"] == "wrote 7 versions of gen.py"
+
+
+def test_extract_buffer_gap_description_empty_by_default(
+    tmp_path: Path, monkeypatch
+):
+    """When the attribution step returns an empty
+    library_gap_skill_description (success paths, FAIL_ENV_ISSUE,
+    or stubs), the buffer record must carry an empty string, not
+    a missing key — the failure-path extractor's per-trial line
+    formatter checks ``t.get('gap_description', '')``."""
+    _patch_litellm_backends(monkeypatch)
+
+    from skillq.skillq_runtime import bridge as bridge_mod
+
+    captured: dict[str, Any] = {}
+
+    async def _capture_extract_batch(self, *, trials, **_kwargs):
+        captured["trials"] = trials
+        return None
+
+    monkeypatch.setattr(
+        bridge_mod.SkillExtractor, "extract_batch", _capture_extract_batch
+    )
+
+    monkeypatch.setattr(
+        bridge_mod.AttributionAnalyzer,
+        "analyze",
+        lambda self, **kwargs: TrialAttribution(
+            overall_attribution=Attribution.FAIL_AGENT_ISSUE,
+            overall_rationale="agent failed",
+            knowledge_to_extract="some reflection",
+            # library_gap_skill_description omitted → defaults to ''
+        ),
+    )
+
+    method = MethodConfig(
+        library_root=tmp_path / "lib",
+        b_max=4,
+        enable_auto_extract=True,
+        seed_initial_q=0.0,
+        extract_every_n_trials=1,
+    )
+    _seed_lib(method)
+    job = _MockJob()
+    bridge_mod.attach_paper_registers(job, method)
+
+    trial_dir = tmp_path / "trial-x"
+    trial_dir.mkdir(parents=True, exist_ok=True)
+    _write_usable_trajectory(trial_dir)
+
+    result = _fake_trial_result(reward=0.0, trial_uri=str(trial_dir))
+    result.exception_info = MagicMock()
+    result.exception_info.exception_type = "NonZeroAgentExitCodeError"
+    result.exception_info.exception_message = "Command failed (exit 1): claude"
+    event = _fake_hook_event("trial-x", result=result)
+    asyncio.run(job.on_ended(event))
+
+    assert "trials" in captured
+    assert captured["trials"][0]["gap_description"] == ""

@@ -58,6 +58,7 @@ uv run pytest tests/
 uv run skillq skillsvote run -c configs/job_skillsvote.yaml
 
 # paper mode — runs the *SkillQ paper's* four-layer method
+# (module path: skillq.skillq_runtime/)
 uv run skillq paper run -c configs/job_paper.yaml
 
 # Inspect the baseline-side help text (it's the same as `svt run --help`)
@@ -70,9 +71,9 @@ uv run skillq skillsvote run --help
 (skillq)/
 ├── skillq/
 │   ├── skillsvote_mode/  # pass-through to upstream skills_vote (baseline)
-│   ├── paper_mode/       # bridge + agent + entrypoint for the SkillQ method
+│   ├── skillq_runtime/   # bridge + agent + entrypoint for the SkillQ method
 │   ├── method/           # the four paper layers (TwoStageRanker, BetaLayeredQ,
-│   │                     #   LibManager, NearMissRefiner, IndependentVerifier)
+│   │                     #   LibManager, EditRefiner, IndependentVerifier)
 │   └── prompts/          # external prompt templates (optional)
 ├── integration/skills/skillq-method/  # SKILL.md for the agent
 ├── tests/                # unit + integration tests

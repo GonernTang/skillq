@@ -19,7 +19,7 @@
 
 jobs_dir: output
 # Stable name; the runner `rm -rf`s this before each run.
-job_name: tb2_skillq_smoke_5task_autoextract
+job_name: tb2_skillq_smoke_5task_ucb_fix
 n_attempts: 1
 n_concurrent_trials: 5
 quiet: false
@@ -45,7 +45,7 @@ environment:
       target: /skills
       read_only: true
 agents:
-  - import_path: skillq.paper_mode.agent:SkillQClaudeCodeAgent
+  - import_path: skillq.skillq_runtime.agent:SkillQClaudeCodeAgent
     model_name: ${oc.env:ANTHROPIC_MODEL,anthropic/claude-sonnet-4-5}
     kwargs:
       # recommend: null — skip SkillsVote's LLM-based step_recommend.

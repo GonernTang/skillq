@@ -7,10 +7,10 @@ deliberately drops the recommend-step (the SkillQ method uses a
 container-side PreToolUse hook for ranking instead of in-prompt
 recommendation). All the per-subtask hook wiring (embed daemon
 lifecycle, state dump, ``SKILLQ_*`` env injection, bind mounts)
-is owned by the bridge in :mod:`skillq.paper_mode.container_wiring`.
+is owned by the bridge in :mod:`skillq.skillq_runtime.container_wiring`.
 The agent class only exists because Harbor's :class:`Job` looks
 up the agent by ``import_path`` (e.g.
-``skillq.paper_mode.agent:SkillQClaudeCodeAgent``).
+``skillq.skillq_runtime.agent:SkillQClaudeCodeAgent``).
 
 The legacy alias :class:`PaperClaudeCodeAgent` is kept for
 backwards compatibility with experiment YAML configs that still
@@ -33,7 +33,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from harbor.environments.base import BaseEnvironment
     from harbor.models.agent.context import AgentContext
 
-logger = logging.getLogger("paper.paper_mode.agent")
+logger = logging.getLogger("skillq.skillq_runtime.agent")
 
 
 # Where the hook source script lives on the host. The container
@@ -46,11 +46,11 @@ class SkillQClaudeCodeAgent(ClaudeCode):
     """Direct Harbor ``ClaudeCode`` subclass for ``skillq paper run``.
 
     All per-trial wiring happens in
-    :func:`skillq.paper_mode.container_wiring.wire_one_trial` (env
+    :func:`skillq.skillq_runtime.container_wiring.wire_one_trial` (env
     vars, bind mounts, settings.json) before this agent's run loop
     is invoked. This class is intentionally minimal: it adds no
     recommend step, no skill whitelisting, no plugin-dir handling
-    — the PreToolUse hook in :mod:`skillq.paper_mode.hook` does
+    — the PreToolUse hook in :mod:`skillq.skillq_runtime.hook` does
     the retrieval ranking instead.
 
     The :meth:`setup` override mirrors
@@ -86,7 +86,7 @@ class SkillQClaudeCodeAgent(ClaudeCode):
         # them here. The container import is deferred to avoid a
         # circular import (container_wiring imports back from this
         # module for the hook helpers).
-        from skillq.paper_mode.container_wiring import (
+        from skillq.skillq_runtime.container_wiring import (
             CONTAINER_CALLS_LOG_PATH,
             CONTAINER_EMB_CACHE_PATH,
             CONTAINER_LIB_PATH,
@@ -201,14 +201,14 @@ class SkillQClaudeCodeAgent(ClaudeCode):
         """Run the agent in the container (no in-prompt UCB header).
 
         All retrieval ranking happens at the container-side
-        PreToolUse hook (see :mod:`skillq.paper_mode.hook`); we do
+        PreToolUse hook (see :mod:`skillq.skillq_runtime.hook`); we do
         not pre-pend a UCB breakdown to the instruction.
         """
         await super().run(instruction, environment, context)
 
 
 # Backwards-compatible alias. Older experiment YAML configs still
-# reference ``skillq.paper_mode.agent:PaperClaudeCodeAgent`` — keep
+# reference ``skillq.skillq_runtime.agent:PaperClaudeCodeAgent`` — keep
 # the name pointing at the same class so old configs keep working.
 PaperClaudeCodeAgent = SkillQClaudeCodeAgent
 
@@ -255,7 +255,7 @@ def hook_env(
     # for the second-order reason. Import the constants lazily to
     # avoid a circular import (container_wiring imports back from
     # this module for the hook helpers).
-    from skillq.paper_mode.container_wiring import (
+    from skillq.skillq_runtime.container_wiring import (
         CONTAINER_CALLS_LOG_PATH,
         CONTAINER_EMB_CACHE_PATH,
         CONTAINER_LIB_PATH,
@@ -317,7 +317,7 @@ def hook_settings_json(
     When ``include_pull=True`` (used by retrieval_mode='pull'), also
     registers a ``UserPromptSubmit`` hook under the same ``hooks`` key.
     The script dispatches on ``hook_event_name`` (see
-    ``skillq/paper_mode/hook.py:main``), so a single command covers
+    ``skillq/skillq_runtime/hook.py:main``), so a single command covers
     both events.
 
     Why ``UserPromptSubmit`` and not ``SessionStart``: smoke test on

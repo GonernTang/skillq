@@ -25,8 +25,8 @@
 # two failed trials (chess-best-move, gcode-to-text) IF the attribution
 # LLM says FAIL_AGENT_ISSUE and returns a knowledge string.
 
-library_root: /home/gonern/workspace/skillq/output/tb2_skillq_smoke_5task_autoextract/.skillq_library
-state_path: /home/gonern/workspace/skillq/output/tb2_skillq_smoke_5task_autoextract/.skillq_library/.state/method_state.json
+library_root: /home/gonern/workspace/skillq/output/tb2_skillq_smoke_5task_ucb_fix/.skillq_library
+state_path: /home/gonern/workspace/skillq/output/tb2_skillq_smoke_5task_ucb_fix/.skillq_library/.state/method_state.json
 seed_skills_dir: /home/gonern/workspace/skillq/skills
 retrieval_mode: hook
 hook_top_k: 3
@@ -34,7 +34,7 @@ hook_lambda: 0.5
 hook_c_ucb: 0.5
 user_claude_md_path: /home/gonern/workspace/skillq/experiments/smoke/_user_claude_md_stub.md
 attribution_model: anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-flash}
-q_subtask_verifier_model: anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-flash}
+editor_model: anthropic/${oc.env:EDITOR_MODEL,openai/gpt-4o}
 embedder_model: openai/${oc.env:EMBEDDING_MODEL,text-embedding-v4}
 embedder_dim: 1024
 

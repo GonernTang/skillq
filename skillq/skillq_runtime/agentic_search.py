@@ -345,31 +345,49 @@ HOOK_INSTRUCTIONS_SNIPPET = """\
 You have a curated library of skills at `$CLAUDE_CONFIG_DIR/skills/`.
 Each subdirectory contains a `SKILL.md` describing one skill.
 
-**Required: before running any shell command, edit, or write, you
-MUST call the Skill tool at least once with the skill whose
-description best matches the current task.** This is not optional
-— the host process records every Skill() call, re-ranks them
-against the curated library, and updates the Q-table. Trials
-without a Skill() call produce no attribution signal and the
-host has nothing to learn from.
+**Required: read the catalog and decide if any skill clearly
+matches the current task before your first shell action.** This
+is not optional — but "no match" is also a valid answer (see
+step 3 below). The host records every Skill() call, re-ranks
+them against the curated library, and updates the Q-table.
 
 Concretely:
 
-1. Before your first shell action, do
-   `Skill("<name>")` for the best-matching skill. To inspect
-   the catalog, run `ls $CLAUDE_CONFIG_DIR/skills/` or
-   `cat $CLAUDE_CONFIG_DIR/skills/*/SKILL.md`.
-2. Pick the skill whose `SKILL.md` description most directly
-   covers the user's request. If multiple apply, prefer the one
-   whose description is most specific to the current step.
-3. After loading the skill, follow its instructions before
-   continuing with shell or edit actions. Do not skip the
-   skill call.
+1. Read the catalog (SessionStart injection or
+   `ls $CLAUDE_CONFIG_DIR/skills/`) and pick the skill
+   whose `SKILL.md` description most directly covers the
+   user's request. Prefer specificity over breadth.
+2. **Only call `Skill("<name>")` if the skill's description
+   clearly matches the task** — i.e., it names the
+   technology, file format, or procedure the task requires.
+   Match is a judgment call, not a keyword match; a Python
+   regex skill is NOT a match for a circuit-synthesis task
+   even if both involve "code generation".
+3. **If no skill clearly matches, do NOT call Skill() at all.**
+   Instead, write one line in your reasoning, in this exact
+   form:
+   `LIBRARY_GAP: no skill in $CLAUDE_CONFIG_DIR/skills/
+   matches this task (need <one-line description of what
+   would have helped, e.g. "a skill covering hardware
+   circuit synthesis with sanity-test checklist">)`
+   The host treats this as a signal to potentially
+   auto-extract a new skill at trial end — leaving it
+   blank is a missed opportunity for the library to grow.
+4. After loading a matching skill, follow its instructions
+   before continuing with shell or edit actions.
 
-The host process re-ranks skill calls on a per-trial basis; you
-do not need to pre-sort or evaluate skills yourself. Calling
-the wrong skill is fine — the hook will allow it and update
-the ranking on the next trial.
+**Why "wrong" calls hurt:** Calling an unrelated skill
+produces a bad attribution signal that demotes genuinely
+relevant skills in future trials. The hook logs every
+Skill() call; "wrong" calls hurt future ranking. The
+host re-ranks on a per-trial basis — you do not need
+to pre-sort, but you do need to call only when the
+match is real.
+
+(2026-06-25: rewrote the compliance clause above. The
+previous wording "calling the wrong skill is fine" caused
+agents to invoke irrelevant skills as a "tick-the-box"
+gesture — see the 2026-06-24 circuit-fibsqrt case study.)
 """
 
 
@@ -383,6 +401,80 @@ def render_hook_instructions() -> str:
     through a search script.
     """
     return HOOK_INSTRUCTIONS_SNIPPET
+
+
+# ---------------------------------------------------------------------------
+# Pull-mode (2026-06-23): CLAUDE.md fallback for the agent's first turn
+# ---------------------------------------------------------------------------
+def render_pull_recommendation(
+    *,
+    task_name: str,
+    top_k: list[tuple[str, float]],
+    skills_by_id: dict[str, Any],
+    lambda_: float = 0.5,
+    c_ucb: float = 0.5,
+    subtask_emb: list[float] | None = None,
+) -> str:
+    """Render a Top-K skills recommendation block for the agent's CLAUDE.md.
+
+    Used by retrieval_mode='pull'. Why this exists instead of just the
+    UserPromptSubmit hook: in ``claude --print`` (non-interactive) mode
+    Claude Code does NOT fire the UserPromptSubmit hook — only SessionStart
+    and PreToolUse fire. So the recommendation has to land in CLAUDE.md
+    where the agent will see it on its first turn.
+
+    Args:
+        task_name: Used as the query text when subtask_emb is None
+            (no live embed available at trial start). Falls back to
+            Q + UCB-only ranking.
+        top_k: Pre-computed ``[(skill_id, score), ...]`` from a
+            scoring call. If None or empty, returns a degraded
+            reminder text.
+        skills_by_id: ``{skill_id: skill_dict}`` for description lookup.
+        lambda_/c_ucb: Score equation params — only used for the hint
+            footer, not for re-ranking.
+        subtask_emb: Optional embedding vector for the task. When
+            None, footer flags "Q + UCB only" (no semantic similarity).
+    """
+    if not top_k:
+        return (
+            "# Top-K skills recommendation (pull-mode)\n\n"
+            "The skillq library is empty or scoring failed. "
+            "Call `Skill(\"<name>\")` for any skill whose description "
+            "matches the task — the host will gate the call.\n"
+        )
+    lines = [
+        "# Top-K skills recommendation (pull-mode, 2026-06-23)",
+        "",
+        "Before your first shell action, call `Skill(\"<id>\")` for "
+        "one of the Top-K skills below. The host re-ranks these "
+        "against the curated library, gates the call, and updates "
+        "the Q-table. **Use the Skill tool — do not `cat` the SKILL.md "
+        "manually.**",
+        "",
+        f"Task query used for ranking: `{task_name}`",
+        f"Score = (1-λ={1 - lambda_:.1f}) sim_z + λ={lambda_:.1f} q_z "
+        f"+ c_ucb={c_ucb} sqrt(log N/(n+1))",
+        "",
+        f"**Top-{len(top_k)} skills for this task** (invoke via "
+        "`Skill(\"<skill_id>\")`):",
+        "",
+    ]
+    for i, (sid, score) in enumerate(top_k, 1):
+        sk = skills_by_id.get(sid, {})
+        desc = (sk.get("description") or "").replace("\n", " ").strip()
+        if len(desc) > 120:
+            desc = desc[:117] + "..."
+        lines.append(f"{i}. **{sid}**   score={score:+.3f}")
+        if desc:
+            lines.append(f"   - {desc}")
+    if subtask_emb is None:
+        lines.append("")
+        lines.append(
+            "*(embedding unavailable at trial start; ranking used "
+            "Q + UCB only — semantic similarity term is 0)*"
+        )
+    return "\n".join(lines) + "\n"
 
 
 # ---------------------------------------------------------------------------

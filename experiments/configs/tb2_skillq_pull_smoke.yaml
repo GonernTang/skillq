@@ -1,0 +1,52 @@
+# TB 2.0 PULL-MODE smoke — 2 tasks, paper mode, all layers on.
+#
+# Added 2026-06-23 alongside the retrieval_mode='pull' change. Run with:
+#
+#   set -a && source ./.env && set +a
+#   env -u CLAUDE_CODE_EFFORT_LEVEL -u CLAUDE_EFFORT \
+#       uv run skillq paper run \
+#           -c experiments/configs/tb2_skillq_pull_smoke.yaml \
+#           --method-config experiments/smoke/method_5task_pull_smoke.yaml
+#
+# Wall-clock estimate: 5-15 min per task at ~1 trial / 5min LLM time.
+
+jobs_dir: output
+job_name: tb2_skillq_pull_smoke
+n_attempts: 1
+n_concurrent_trials: 2
+quiet: false
+retry:
+  max_retries: 0
+  exclude_exceptions:
+    - VerifierTimeoutError
+    - RewardFileNotFoundError
+    - RewardFileEmptyError
+    - VerifierOutputParseError
+agent_timeout_multiplier: 4.0
+environment:
+  type: docker
+  force_build: false
+  delete: false
+  mounts_json:
+    - type: bind
+      source: /home/gonern/workspace/skillq/skills
+      target: /skills
+      read_only: true
+agents:
+  - import_path: skillq.skillq_runtime.agent:SkillQClaudeCodeAgent
+    model_name: ${oc.env:ANTHROPIC_MODEL,anthropic/claude-sonnet-4-5}
+    override_timeout_sec: 600.0    # 10 min for smoke; 1h would be full-run territory
+    kwargs:
+      recommend: null
+      paper_retrieval:
+        enabled: true
+        k1: 10
+        k2: 3
+        c_ucb: 0.5
+        lambda_: 0.5
+      pull_top_k: 3
+datasets:
+  - path: ${oc.env:SkillQ_INPUT_ROOT,/home/gonern/workspace/skillq/input}/terminal-bench
+    task_names:
+      - chess-best-move
+      - gcode-to-text

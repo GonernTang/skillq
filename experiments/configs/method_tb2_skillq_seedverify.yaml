@@ -1,0 +1,16 @@
+# MethodConfig for the 1-task seed verify smoke.
+
+library_root: /home/gonern/workspace/skillq/output/tb2_skillq_seedverify_1__2026-06-25/.skillq_library
+state_path: /home/gonern/workspace/skillq/output/tb2_skillq_seedverify_1__2026-06-25/.skillq_library/.state/method_state.json
+
+seed_skills_dir: /home/gonern/workspace/skillq/skills
+retrieval_mode: hook
+hook_top_k: 3
+hook_lambda: 0.5
+hook_c_ucb: 0.5
+
+user_claude_md_path: /home/gonern/workspace/skillq/experiments/smoke/_user_claude_md_stub.md
+
+attribution_model: anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-flash}
+embedder_model: openai/${oc.env:EMBEDDING_MODEL,text-embedding-v4}
+embedder_dim: 1024

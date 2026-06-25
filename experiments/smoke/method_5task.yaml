@@ -11,7 +11,7 @@
 # - user_claude_md_path         — bridge synthesizes CLAUDE.md.merged with
 #                                 the skillq snippet so the agent knows about
 #                                 Skill()
-# - attribution_model + q_subtask_verifier_model — same env provider as the
+# - attribution_model        — same env provider as the
 #                                 agent (this host has no OPENAI_API_KEY)
 # - embedder_model + embedder_dim                — DashScope via openai/ prefix;
 #                                 required because Plan D pre-embeds
@@ -25,6 +25,5 @@ hook_lambda: 0.5
 hook_c_ucb: 0.5
 user_claude_md_path: /home/gonern/workspace/skillq/experiments/smoke/_user_claude_md_stub.md
 attribution_model: anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-flash}
-q_subtask_verifier_model: anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-flash}
 embedder_model: openai/${oc.env:EMBEDDING_MODEL,text-embedding-v4}
 embedder_dim: 1024

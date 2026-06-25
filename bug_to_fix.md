@@ -526,3 +526,46 @@ By "value / effort" ratio:
    forbid negative Q, set ``q_clip_floor: 0.0`` in the method
    config.
 9. **Bug 1, 7, 11** — leave alone, working as intended.
+
+
+---
+
+## Sub-task judge path removed on 2026-06-23
+
+The per-call LLM judge (`SubTaskVerifier` / `mean_r_subtask` /
+`SUBTASK_VERIFIER_PROMPT` / `MAX_CONCURRENT_JUDGES`) has been removed
+from the codebase. The blend formula
+`target = q_w_subtask * r_subtask_mean + q_w_task * r_task` collapsed
+to `target = r_task` (standard Q-learning, paper Eq.5). Rationale:
+
+- Pull-mode Top-K injection makes the agent typically call exactly
+  one skill per trial → `r_subtask` collapses to a single binary
+  verdict that almost always equals `r_task`.
+- The judge LLM call (1 per skill per trial) was wasted compute.
+- Bug 8 (the `asyncio.Semaphore(8)` fan-out that made the judge
+  fast enough to be tolerable) is now obsolete.
+
+Removed:
+- `skillq/method/sub_task_verifier.py` (338 lines, full module)
+- `tests/test_sub_task_verifier.py` (4 tests)
+- `MethodConfig.q_w_subtask`, `q_w_task`, `q_subtask_verifier_model`,
+  `q_max_body_chars`, `debug_keep_subtask_log` (5 fields)
+- `QlibState.sub_task_log` and `debug_keep_subtask_log` (2 fields)
+- 7 experiment YAMLs (`q_subtask_verifier_model` line in each)
+- `_q_update_from_subtask` (~250 lines in `bridge.py`); replaced by
+  a sync `_q_update` (~80 lines)
+- `_slice_sub_task_trace` (~60 lines)
+- `LiteLLMCompletion.acall` (the async shim added for Bug 8)
+
+Kept:
+- `Skill.n_uses` (per-trial "was called at all" counter; user decision)
+- `Skill.n_retrievals` (per-trial call count; drives Eq.4 UCB)
+- `Skill.n_success` (per-trial task-success counter; was already
+  task-keyed)
+- `r_learning` / `IndependentVerifier` / `BetaLayeredQ` (the paper's
+  Eq.6 informationally-isolated path — distinct from the deleted
+  sub-task judge)
+
+New tests: `tests/test_q_update_task_only.py` (6 tests covering
+formula, n_retrievals increment, session-log fallback, no-calls
+no-op, n_success increment).

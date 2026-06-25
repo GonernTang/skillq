@@ -230,7 +230,7 @@ def sync_lib_to_vector_table(
 def vector_table_to_json_payload(vector_table: VectorTable) -> dict[str, Any]:
     """Serialise a VectorTable to the JSON dict format the container hook reads.
 
-    The container's :class:`paper.paper_mode.hook.PreToolUseHook` reads
+    The container's :class:`skillq.skillq_runtime.hook.PreToolUseHook` reads
     ``emb_cache.json`` and consumes this same shape. Keeping the
     serialiser here means the host's load + sync + write path and the
     container's read path share a single source of truth.

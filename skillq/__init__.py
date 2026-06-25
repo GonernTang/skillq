@@ -5,9 +5,9 @@
   method for the SkillQ paper). ``paper skillsvote run -c X`` runs the
   baseline verbatim. No implementation code in
   ``paper.skillsvote_mode``.
-- ``paper.paper_mode.entrypoint.main`` — runs the **SkillQ paper's**
+- ``skillq.skillq_runtime.entrypoint.main`` — runs the **SkillQ paper's**
   four-layer method (TwoStageRanker → BetaLayeredQ → LibManager →
-  NearMissRefiner) via a single ``on_trial_ended`` hook. ``paper paper
+  EditRefiner) via a single ``on_trial_ended`` hook. ``paper paper
   run -c X`` runs the SkillQ method.
 
 The :mod:`paper.cli` module dispatches between them.
@@ -19,7 +19,7 @@ The :mod:`paper.cli` module dispatches between them.
 # JobConfig YAML.
 from skillq import _resolvers  # noqa: F401  (side-effect import)
 
-from skillq.paper_mode.entrypoint import main as paper_main
+from skillq.skillq_runtime.entrypoint import main as paper_main
 from skillq.skillsvote_mode.entrypoint import main as skillsvote_main
 
 __all__ = ["skillsvote_main", "paper_main"]

@@ -10,7 +10,7 @@ Public API:
   implementation (the bridge uses a generalised weighted target).
 - :class:`paper.method.library.LibManager` — admission / eviction /
   rejuvenation (Sec. 3.3).
-- :class:`paper.method.near_miss.NearMissRefiner` — Layer 4.
+- :class:`paper.method.edit.EditRefiner` — Layer 3 (in-place Edit).
 - :class:`paper.method.verifier.IndependentVerifier` — Sec. 3.2 information
   isolation, 4-axis scoring.
 - :class:`paper.method.editor_backend.LiteLLMEditBackend` — LiteLLM
@@ -33,9 +33,9 @@ from skillq.method.library import (
     LibManager,
     forgetting_rate_upper_bound,
 )
-from skillq.method.near_miss import (
+from skillq.method.edit import (
     EditProposalBackend,
-    NearMissRefiner,
+    EditRefiner,
     StubEditBackend,
 )
 from skillq.method.prompts import (
@@ -85,9 +85,9 @@ __all__ = [
     # library
     "LibManager",
     "forgetting_rate_upper_bound",
-    # near-miss
+    # Layer 3 (Edit)
     "EditProposalBackend",
-    "NearMissRefiner",
+    "EditRefiner",
     "StubEditBackend",
     # verifier
     "VerifierBackend",

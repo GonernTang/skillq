@@ -7,12 +7,12 @@ This module is the glue between:
   `bridge.run_paper_job`),
 - the **embed daemon** (`paper.method.embedding_service`),
 - the **per-subtask hook** running inside the agent container
-  (`paper.paper_mode.hook`), and
+  (`skillq.skillq_runtime.hook`), and
 - Harbor's per-trial lifecycle hooks (`on_trial_started`).
 
 At Job start we spin up one host-side FastAPI daemon that serves
 ``POST /embed`` for the duration of the run. For each trial the
-mode is resolved (see ``paper.paper_mode.bridge.resolve_retrieval_mode``)
+mode is resolved (see ``skillq.skillq_runtime.bridge.resolve_retrieval_mode``)
 and the wiring branches:
 
 - **Method A (agentic)** — write the SKILL.md/manifest/search.sh
@@ -25,14 +25,14 @@ and the wiring branches:
   tunables) into ``event.config.agent.env`` so the hook script
   picks them up. Bind-mount the hook script + a generated
   ``settings.json`` + the state files + the calls log into the
-  container at the paths ``paper.paper_mode.hook`` reads from.
+  container at the paths ``skillq.skillq_runtime.hook`` reads from.
   Reset the ``skillq_skill_calls.jsonl`` for the new trial.
 
 The TrialHookEvent's config is a Pydantic model — we mutate it in
 place, which is fine because Harbor copies the config when
 constructing each ``Trial``.
 
-See ``paper/paper_mode/bridge.py:run_paper_job`` for the entry
+See ``skillq/skillq_runtime/bridge.py:run_paper_job`` for the entry
 point.
 """
 
@@ -53,14 +53,14 @@ from skillq.method.library import LibManager
 from skillq.method.state import QlibState
 from skillq.method.types import Qlib
 from skillq.method.vector_table import VectorTable
-from skillq.paper_mode.agent import (
+from skillq.skillq_runtime.agent import (
     hook_env,
     hook_script_path,
     hook_settings_json,
 )
-from skillq.paper_mode.config import MethodConfig
+from skillq.skillq_runtime.config import MethodConfig
 
-logger = logging.getLogger("paper.paper_mode.container_wiring")
+logger = logging.getLogger("skillq.skillq_runtime.container_wiring")
 
 # Container-side paths (resolved against the agent's $CLAUDE_CONFIG_DIR,
 # which SkillsVoteClaudeCode sets to /logs/agent/sessions inside the
@@ -281,7 +281,7 @@ def _settings_json_path(staging: Path, *, include_pull: bool = False) -> Path:
     When ``include_pull=True`` (retrieval_mode='pull'), also registers
     a ``SessionStart`` hook so the agent sees a Top-K skills reminder
     on its first turn. See
-    ``skillq/paper_mode/hook.py:_handle_session_start``.
+    ``skillq/skillq_runtime/hook.py:_handle_session_start``.
     """
     settings = hook_settings_json(
         hook_container_path=CONTAINER_HOOK_PATH,
@@ -299,7 +299,7 @@ def wire_one_trial(handle: ContainerWiringHandle, event: Any) -> None:
     """Run at ``on_trial_started`` to wire the trial.
 
     Dispatches based on the resolved retrieval mode
-    (see :func:`paper.paper_mode.bridge.resolve_retrieval_mode`):
+    (see :func:`skillq.skillq_runtime.bridge.resolve_retrieval_mode`):
 
     - ``"agentic"`` (Method A) — write the SKILL.md/manifest/search.sh
       artifact tree into a staging dir, bind-mount it into the
@@ -334,7 +334,7 @@ def wire_one_trial(handle: ContainerWiringHandle, event: Any) -> None:
     # 2. Resolve the retrieval mode based on the lib size at this
     #    moment. (avoid an import cycle by doing the resolve inline
     #    rather than calling back into bridge.)
-    from skillq.paper_mode.bridge import resolve_retrieval_mode  # late import
+    from skillq.skillq_runtime.bridge import resolve_retrieval_mode  # late import
     n_lib = len(lib.skills)
     mode = resolve_retrieval_mode(method, n_lib)
 
@@ -368,7 +368,7 @@ def _wire_agentic_trial(
     mgr: LibManager,
 ) -> None:
     method = handle.method
-    from skillq.paper_mode.agentic_search import (
+    from skillq.skillq_runtime.agentic_search import (
         AgenticSearchWriter,
         render_instructions,
     )
@@ -412,24 +412,35 @@ def _wire_agentic_trial(
     # Verifier warm cache (2026-06-24, Method A branch): share a
     # host-side uv cache with the agent container so the verifier's
     # `uvx -w torch==2.7.1` doesn't cold-download 200 MB+ of wheels
-    # per trial. RO mount — the container can read cached wheels
-    # but cannot modify the host cache. Gated on the path existing
-    # (and being a directory); if absent we log a warning and the
-    # verifier falls back to its current cold-download behavior.
-    # Default None = no mount.
+    # per trial. Originally RO (safer — container can't corrupt the
+    # host cache), but uv 0.9.5 truncates & rewrites `.git` /
+    # `.lock` / `.gitignore` / `CACHEDIR.TAG` inside each cache
+    # subdir on **every** startup, not just first use. RO mount
+    # fails those writes with "Read-only file system (os error 30)"
+    # and the verifier aborts. Switched to RW on 2026-06-25 (Bug #4
+    # round 2): the only writer is uv's own cache-management code,
+    # which only ever writes back the same marker files and new
+    # sdist metadata — both safe to merge into the host cache.
+    # Gated on the path existing (and being a directory); if absent
+    # we log a warning and the verifier falls back to its current
+    # cold-download behavior. Default None = no mount.
     if method.verifier_uv_cache_path is not None:
         uv_cache_host = Path(method.verifier_uv_cache_path).expanduser().resolve()
         if uv_cache_host.is_dir():
+            # Build inline (NOT via _bind_mount) so we can omit the
+            # ``read_only`` key — Harbor's TypedDict is
+            # ``read_only: NotRequired[Literal[True]]``, so omitting
+            # it is valid and means "use default (RW for bind)".
             mounts.append(
-                _bind_mount(
-                    str(uv_cache_host),
-                    "/root/.cache/uv",
-                    read_only=True,
-                )
+                {
+                    "type": "bind",
+                    "source": str(uv_cache_host),
+                    "target": "/root/.cache/uv",
+                }
             )
             logger.info(
                 "verifier_uv_cache_path mounted (Method A): "
-                "%s -> /root/.cache/uv (RO)",
+                "%s -> /root/.cache/uv (RW)",
                 uv_cache_host,
             )
         else:
@@ -480,7 +491,7 @@ def _maybe_merge_user_claude_md(
     the user's CLAUDE.md and return the path of the merged file.
     Returns ``None`` when no merge was performed.
     """
-    from skillq.paper_mode.config import MethodConfig
+    from skillq.skillq_runtime.config import MethodConfig
 
     if not isinstance(method, MethodConfig):
         return None
@@ -661,24 +672,35 @@ def _wire_hook_trial(
     # Verifier warm cache (2026-06-24, Method B branch): share a
     # host-side uv cache with the agent container so the verifier's
     # `uvx -w torch==2.7.1` doesn't cold-download 200 MB+ of wheels
-    # per trial. RO mount — the container can read cached wheels
-    # but cannot modify the host cache. Gated on the path existing
-    # (and being a directory); if absent we log a warning and the
-    # verifier falls back to its current cold-download behavior.
-    # Default None = no mount.
+    # per trial. Originally RO (safer — container can't corrupt the
+    # host cache), but uv 0.9.5 truncates & rewrites `.git` /
+    # `.lock` / `.gitignore` / `CACHEDIR.TAG` inside each cache
+    # subdir on **every** startup, not just first use. RO mount
+    # fails those writes with "Read-only file system (os error 30)"
+    # and the verifier aborts. Switched to RW on 2026-06-25 (Bug #4
+    # round 2): the only writer is uv's own cache-management code,
+    # which only ever writes back the same marker files and new
+    # sdist metadata — both safe to merge into the host cache.
+    # Gated on the path existing (and being a directory); if absent
+    # we log a warning and the verifier falls back to its current
+    # cold-download behavior. Default None = no mount.
     if method.verifier_uv_cache_path is not None:
         uv_cache_host = Path(method.verifier_uv_cache_path).expanduser().resolve()
         if uv_cache_host.is_dir():
+            # Build inline (NOT via _bind_mount) so we can omit the
+            # ``read_only`` key — Harbor's TypedDict is
+            # ``read_only: NotRequired[Literal[True]]``, so omitting
+            # it is valid and means "use default (RW for bind)".
             mounts.append(
-                _bind_mount(
-                    str(uv_cache_host),
-                    "/root/.cache/uv",
-                    read_only=True,
-                )
+                {
+                    "type": "bind",
+                    "source": str(uv_cache_host),
+                    "target": "/root/.cache/uv",
+                }
             )
             logger.info(
                 "verifier_uv_cache_path mounted (Method B): "
-                "%s -> /root/.cache/uv (RO)",
+                "%s -> /root/.cache/uv (RW)",
                 uv_cache_host,
             )
         else:
@@ -698,12 +720,12 @@ def _wire_hook_trial(
     # existing CLAUDE.md via user_claude_md_path, or written fresh
     # to trial_dir/CLAUDE.md.merged if that path is unset (the
     # helper falls back gracefully).
-    from skillq.paper_mode.agentic_search import (
+    from skillq.skillq_runtime.agentic_search import (
         render_hook_instructions,
         render_pull_recommendation,
     )
     from skillq.method.embedding_service import sync_embed  # late import
-    from skillq.paper_mode.hook import _score_skills  # reuse Eq.4 scorer
+    from skillq.skillq_runtime.hook import _score_skills  # reuse Eq.4 scorer
 
     snippet = render_hook_instructions()
 

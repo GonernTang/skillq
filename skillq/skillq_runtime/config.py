@@ -56,10 +56,32 @@ class MethodConfig(BaseModel):
     b_max: int = Field(default=1000, ge=1)
 
     # LLM models
-    editor_model: str = "openai/gpt-4o"
+    # editor_model default is env-driven (ANTHROPIC_MODEL →
+    # anthropic/<model>) so hosts without OPENAI_API_KEY don't
+    # silently hit the InternalServerError that the bridge swallows
+    # (was: editor_model="openai/gpt-4o" — bit us on the 2026-06-25
+    # full run because every trial's Layer 3 edit + Layer 4 extract
+    # failed). See Task #10 in SKILLQ_RUN_RESULTS_2026-06-25.md.
+    editor_model: str = Field(
+        default_factory=lambda: (
+            f"anthropic/{os.environ.get('ANTHROPIC_MODEL', 'deepseek-v4-flash')}"
+        ),
+        description=(
+            "Layer 3 (Edit) LLM. Default reads $ANTHROPIC_MODEL and "
+            "wraps with anthropic/ prefix for litellm."
+        ),
+    )
+    # Same env-driven default for attribution (Layer 2).
+    attribution_model: str = Field(
+        default_factory=lambda: (
+            f"anthropic/{os.environ.get('ANTHROPIC_MODEL', 'deepseek-v4-flash')}"
+        ),
+        description=(
+            "Layer 2 (Attribution) LLM. Default reads $ANTHROPIC_MODEL."
+        ),
+    )
     embedder_model: str = "openai/text-embedding-3-small"
     embedder_dim: int = 1536
-    attribution_model: str = "openai/gpt-4o"
     extractor_claude_cli: str = "claude"  # the CLI binary invoked for extract
 
     # === Per-subtask hook (refactor 2026-06-11) ===
@@ -81,7 +103,7 @@ class MethodConfig(BaseModel):
     # Eq.4 scoring as the PreToolUse branch, and emits a
     # `hookSpecificOutput.additionalContext` block listing the top-K
     # skills available. Enabled when retrieval_mode == "pull".
-    # See skillq/paper_mode/hook.py `_handle_session_start` for details.
+    # See skillq/skillq_runtime/hook.py `_handle_session_start` for details.
     hook_pull_top_k: int = Field(default=3, ge=1, le=10)
 
     # === Scoring mode (2026-06-24) ===
@@ -228,7 +250,7 @@ class MethodConfig(BaseModel):
     # before (cold-downloads every trial).
     #
     # Prime once via:
-    #   uv run python -m skillq.paper_mode.cli prime-uv-cache \
+    #   uv run python -m skillq.skillq_runtime.cli prime-uv-cache \
     #       --cache-path /home/gonern/.skillq_cache/uv \
     #       --python-version 3.13 \
     #       --wheels torch==2.7.1 pytest==8.4.1 pytest-json-ctrf==0.3.5

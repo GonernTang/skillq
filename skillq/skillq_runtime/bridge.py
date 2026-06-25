@@ -5,7 +5,7 @@ Two public functions:
 
 - :func:`attach_paper_registers` — wires Harbor's per-trial lifecycle
   hooks for the paper method: ``on_trial_started`` (container
-  wiring — see :mod:`paper.paper_mode.container_wiring`) and
+  wiring — see :mod:`skillq.skillq_runtime.container_wiring`) and
   ``on_trial_ended`` (per-trial Q-update + library maintenance).
 - :func:`run_paper_job` — high-level orchestrator that creates a Harbor
   :class:`Job`, starts the host-side embedding daemon, attaches both
@@ -52,6 +52,7 @@ import os
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -70,7 +71,7 @@ from skillq.method.editor_backend import LiteLLMEditBackend
 from skillq.method.embedding_service import sync_embed
 from skillq.method.extractor import SkillExtractor
 from skillq.method.library import LibManager
-from skillq.method.near_miss import NearMissRefiner
+from skillq.method.edit import EditRefiner
 from skillq.method.retrieval import LiteLLMEmbedder
 from skillq.method.skill_mirror import mirror_skill_to_host_dir
 from skillq.method.state import QlibState
@@ -80,14 +81,14 @@ from skillq.method.vector_table import (
 )
 from skillq.method.types import Qlib, Skill
 from skillq.method.vector_table import VectorTable
-from skillq.paper_mode.config import MethodConfig
-from skillq.paper_mode.container_wiring import (
+from skillq.skillq_runtime.config import MethodConfig
+from skillq.skillq_runtime.container_wiring import (
     ContainerWiringHandle,
     start_container_wiring,
     stop_container_wiring,
     wire_one_trial,
 )
-from skillq.paper_mode.hook import _cosine  # per-pair cosine for Q-update weight
+from skillq.skillq_runtime.hook import _cosine  # per-pair cosine for Q-update weight
 
 logger = logging.getLogger("paper.paper.bridge")
 
@@ -172,6 +173,173 @@ def _is_retryable_failure(event: TrialHookEvent, retry_config) -> bool:
 
 def _trial_dir(event: TrialHookEvent) -> Path:
     return Path(urlparse(event.result.trial_uri).path)  # type: ignore[union-attr]
+
+
+# ---------------------------------------------------------------------------
+# Trial-failure classification (2026-06-25)
+# ---------------------------------------------------------------------------
+# The ``on_ended`` hook used to skip all SkillQ bookkeeping on ANY
+# ``event.result.exception_info is not None``. That conflated three
+# very different shapes: (1) infra failure (env never came up, OOM,
+# cancelled, install failure), (2) task failure with a usable
+# trajectory (``NonZeroAgentExitCodeError`` after a 7-min run,
+# ``AgentTimeoutError`` on a stuck sub-step), (3) verifier failure
+# (agent finished, verifier itself errored). Only (1) is uninteresting
+# from the paper-method's point of view; (2) and (3) carry a
+# failure-mode reflection that the auto-extract pipeline can use.
+#
+# This block replaces the blanket skip with a small classifier. See
+# plan: ~/.claude/plans/bug-3-per-trial-q-table-json-hashed-quilt.md
+# (2026-06-25 revision).
+
+
+class TrialFailureClass(str, Enum):
+    """Per-trial classifier outcome.
+
+    - ``RUN_NORMAL``       — no exception_info, or the user has
+      explicitly excluded this exception from retries. Full path.
+    - ``RUN_TASK_FAILURE`` — task-side exception (agent ran but
+      ``claude --print`` exited non-zero; or agent hit per-task
+      ``AgentTimeoutError``; or verifier errored) AND a usable
+      trajectory exists on disk. We treat the agent's failure
+      reflection as worth extracting from.
+    - ``SKIP_ALL``         — everything else. Do nothing. (Per
+      2026-06-25 user decision, infra failures and OOM kills both
+      fold into this single outcome; no Q-update, no library
+      maintenance, no state.save.)
+    """
+
+    RUN_NORMAL = "run_normal"
+    RUN_TASK_FAILURE = "run_task_failure"
+    SKIP_ALL = "skip_all"
+
+
+# Exception types that ALWAYS land in SKIP_ALL — no useful trajectory
+# can be expected, so even Q-update has nothing to learn from.
+# ``NonZeroAgentExitCodeError`` is NOT in this set: when its message
+# does NOT contain "exit 137" (OOM) AND a trajectory exists, it
+# promotes to RUN_TASK_FAILURE. See ``_is_oom_kill`` below.
+_INFRA_EXCEPTIONS: frozenset[str] = frozenset({
+    "EnvironmentStartTimeoutError",
+    "HealthcheckError",
+    "AgentSetupTimeoutError",
+    "asyncio.TimeoutError",     # top-level — escapes unconverted (trial.py:1009)
+    "asyncio.CancelledError",
+    "RuntimeError",              # "Agent install failed: …" + step setup non-zero
+    "ValueError",
+    "FileNotFoundError",
+})
+
+
+def _is_oom_kill(exception_info: Any) -> bool:
+    """True iff exception is ``NonZeroAgentExitCodeError`` AND message
+    contains ``"exit 137"`` (kernel OOM-kill signal).
+
+    Per 2026-06-25 user direction, OOM is ALWAYS infra failure even
+    if a partial trajectory was written. The user wants the OOM
+    signal preserved, not papered over with a partial-extract.
+    """
+    if exception_info is None:
+        return False
+    if getattr(exception_info, "exception_type", None) != "NonZeroAgentExitCodeError":
+        return False
+    msg = getattr(exception_info, "exception_message", "") or ""
+    return "exit 137" in msg
+
+
+def _has_usable_trajectory(trial_dir: Path) -> bool:
+    """True iff ``<trial_dir>/agent/trajectory.json`` exists, parses,
+    and contains ≥ 1 ``type == "assistant"`` entry.
+
+    Used by the classifier to gate RUN_TASK_FAILURE promotion. A
+    truncated JSON file (last line mid-object) will fail
+    ``json.loads`` and return False — that case falls through to
+    SKIP_ALL, which is the safer default. (A finer-grained truncation
+    detector that would partial-extract a single-line tail is left as
+    a TODO; see plan Gap B.)
+    """
+    if not trial_dir:
+        return False
+    traj = Path(trial_dir) / "agent" / "trajectory.json"
+    if not traj.is_file():
+        return False
+    try:
+        text = traj.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(data, list):
+        return False
+    return any(
+        isinstance(e, dict) and e.get("type") == "assistant"
+        for e in data
+    )
+
+
+def _classify_trial_failure(
+    event: TrialHookEvent,
+    retry_config: Any,
+    trial_dir: Path,
+) -> TrialFailureClass:
+    """Decide which ``on_ended`` paths run for a given trial.
+
+    Order matters: the OOM check runs before the
+    ``_INFRA_EXCEPTIONS`` membership test because
+    ``NonZeroAgentExitCodeError`` is in neither set and we need to
+    short-circuit on "exit 137" first.
+
+    The retryable check below is *not* delegated to
+    :func:`_is_retryable_failure` because that helper ignores
+    ``max_retries`` and returns True for the common default
+    configuration of ``include_exceptions=None, exclude_exceptions=None``,
+    which would silently classify every failed trial as
+    SKIP_ALL. The user explicitly runs with ``max_retries: 0`` and
+    wants the paper method to *learn* from a failed agent run; we
+    re-implement the retry semantics here with the correct default.
+    """
+    if event.result is None:
+        return TrialFailureClass.SKIP_ALL
+
+    exc = event.result.exception_info
+
+    # 1. No exception → normal path.
+    if exc is None:
+        return TrialFailureClass.RUN_NORMAL
+
+    # 2. Retryable. The user is responsible for setting
+    #    ``max_retries`` AND the include/exclude lists; the
+    #    default ``max_retries=0`` makes the trial non-retryable
+    #    even with no include/exclude filters.
+    max_retries = getattr(retry_config, "max_retries", 0) or 0
+    if max_retries > 0:
+        exc_type = exc.exception_type
+        exclude = getattr(retry_config, "exclude_exceptions", None)
+        include = getattr(retry_config, "include_exceptions", None)
+        if exclude is not None and exc_type in exclude:
+            pass  # explicitly excluded → treat as durable failure
+        elif include is not None and exc_type not in include:
+            pass  # not in the include-list → treat as durable failure
+        else:
+            # Retryable: Harbor will re-run. Do nothing this trial.
+            return TrialFailureClass.SKIP_ALL
+
+    # 3. OOM: always infra failure.
+    if _is_oom_kill(exc):
+        return TrialFailureClass.SKIP_ALL
+
+    # 4. Other infra exceptions.
+    if exc.exception_type in _INFRA_EXCEPTIONS:
+        return TrialFailureClass.SKIP_ALL
+
+    # 5. Task-side failures (NonZeroAgentExitCodeError no-OOM,
+    #    AgentTimeoutError, VerifierTimeoutError, RewardFile*,
+    #    VerifierOutputParseError, etc.). Trajectory decides.
+    if _has_usable_trajectory(trial_dir):
+        return TrialFailureClass.RUN_TASK_FAILURE
+    return TrialFailureClass.SKIP_ALL
 
 
 def _find_skills_dir(event: TrialHookEvent) -> Path | None:
@@ -278,13 +446,28 @@ class _ExtractBuffer:
         task: str,
         knowledge: str,
         mode: str = "success",
+        gap_description: str = "",
     ) -> bool:
         """Add a record. Returns ``True`` when the buffer has hit its
         threshold (caller should then call :meth:`flush`).
+
+        ``gap_description`` (2026-06-25) is the explicit "what skill
+        the library should have contained" string from the
+        attribution step. Empty for success paths; populated
+        when ``Attribution.FAIL_AGENT_ISSUE`` /
+        ``Attribution.SUCCESS_NO_SKILL_SEEN`` /
+        ``Attribution.SUCCESS_VIEWED_SKILL_BUT_NOT_USED`` was
+        the verdict. The failure-path extract prompt uses this
+        as the primary seed.
         """
         if not knowledge.strip():
             return False
-        self.pending.append({"task": task, "knowledge": knowledge, "mode": mode})
+        self.pending.append({
+            "task": task,
+            "knowledge": knowledge,
+            "gap_description": gap_description,
+            "mode": mode,
+        })
         return len(self.pending) >= self.n_trials_threshold
 
     def flush(self) -> list[tuple[str, list[dict[str, Any]]]]:
@@ -553,7 +736,7 @@ def attach_paper_registers(
                 "ranking. The hook will still work but cosine will be 0."
             )
 
-    refiner = NearMissRefiner(
+    refiner = EditRefiner(
         backend=LiteLLMEditBackend(model=method.editor_model),
         model=method.editor_model,
     )
@@ -674,7 +857,7 @@ def attach_paper_registers(
         Per-skill counters updated as a side-effect:
 
         - ``n_retrievals += n_calls`` — feeds the next trial's UCB
-          exploration bonus (see :mod:`paper_mode.hook`). Counts
+          exploration bonus (see :mod:`skillq_runtime.hook`). Counts
           every approved call so skills that get called a lot see
           their exploration bonus decay.
         - ``n_uses += 1`` — "did the agent use this skill at all in
@@ -891,6 +1074,14 @@ def attach_paper_registers(
             r_task=r_task,
         )
         knowledge = attribution.knowledge_to_extract.strip()
+        # 2026-06-25: thread the new library_gap_skill_description
+        # field through to the buffer. The failure-path extract
+        # prompt uses this as the primary seed for the synthesized
+        # skill (see BATCHED_EXTRACT_SKILL_FROM_FAILURE_PROMPT,
+        # "Preferred seed" section). Empty string on success paths
+        # (no gap signal needed) and on FAIL_ENV_ISSUE / FAIL_SKILL_ISSUE
+        # where the attribution step didn't populate it.
+        gap_description = attribution.library_gap_skill_description.strip()
         triggered = False
         if knowledge:
             if r_task and attribution.overall_attribution in (
@@ -900,7 +1091,10 @@ def attach_paper_registers(
                 # Rule 2: success trajectory with no relevant skill
                 # in lib → new skill from the success trajectory.
                 buffer_full = extract_buffer.add(
-                    task=intent_text, knowledge=knowledge, mode="success"
+                    task=intent_text,
+                    knowledge=knowledge,
+                    gap_description=gap_description,
+                    mode="success",
                 )
                 if buffer_full:
                     await _flush_buffer()
@@ -915,7 +1109,10 @@ def attach_paper_registers(
                 # excluded because the failure was external, not a
                 # missing-skill problem.
                 buffer_full = extract_buffer.add(
-                    task=intent_text, knowledge=knowledge, mode="failure"
+                    task=intent_text,
+                    knowledge=knowledge,
+                    gap_description=gap_description,
+                    mode="failure",
                 )
                 if buffer_full:
                     await _flush_buffer()
@@ -1036,9 +1233,9 @@ def attach_paper_registers(
         # Harbor's post-run trajectory converter can read it even when
         # the agent was OOM-killed (caffe-cifar-10, fasttext) and
         # Harbor's prepare_logs_for_host() was skipped. Runs BEFORE
-        # the exception_info early-return so it fires on OOM-killed
-        # trials too. Best-effort: never raises (the chown helper
-        # swallows its own errors).
+        # the classifier check so it fires on OOM-killed trials
+        # too. Best-effort: never raises (the chown helper swallows
+        # its own errors).
         if event.result is not None:
             try:
                 _chown_agent_sessions_to_host_user(
@@ -1049,19 +1246,25 @@ def attach_paper_registers(
 
         if event.result is None:
             return
-        if event.result.exception_info is not None:
-            return
-        if _is_retryable_failure(event, job.config.retry):
+        trial_dir = _trial_dir(event)
+
+        # 2026-06-25: replaced the blanket "any exception_info bails"
+        # rule with the classifier. SKIP_ALL folds together
+        # infra-failure, OOM, missing trajectory, and retryable
+        # outcomes — all cases where we have nothing durable to
+        # learn from. RUN_NORMAL and RUN_TASK_FAILURE both run the
+        # full steps 1-6.
+        failure = _classify_trial_failure(event, job.config.retry, trial_dir)
+        if failure is TrialFailureClass.SKIP_ALL:
             logger.debug(
-                "Skipping paper method for retryable failed trial %s",
-                event.trial_id,
+                "Skipping paper method for trial %s (classification=%s)",
+                event.trial_id, failure.value,
             )
             return
 
         try:
             r_task = _harbor_r_task(event.result)
-            intent_text = event.task_name or _trial_dir(event).name
-            trial_dir = _trial_dir(event)
+            intent_text = event.task_name or trial_dir.name
 
             # 1. Per-trial Q-update (task-only, Eq.5). Synchronous:
             # no LLM call, just a per-skill dict update.
@@ -1071,7 +1274,12 @@ def attach_paper_registers(
                 r_task=r_task,
             )
 
-            # 2. Attribution + auto-extract dispatch.
+            # 2. Attribution + auto-extract dispatch. RUN_TASK_FAILURE
+            # may have a truncated session log; the attribution
+            # analyzers and the extract buffer's downstream code
+            # handle empty/partial traces best-effort without
+            # raising (see _attribution_and_extract_dispatch
+            # docstring).
             await _attribution_and_extract_dispatch(
                 intent_text=intent_text,
                 trial_dir=trial_dir,

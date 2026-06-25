@@ -14,6 +14,7 @@ import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -25,7 +26,7 @@ sys.path.insert(0, str(ROOT))
 from skillq.method.library import LibManager  # noqa: E402
 from skillq.method.state import QlibState  # noqa: E402
 from skillq.method.types import Qlib, Skill  # noqa: E402
-from skillq.paper_mode.config import MethodConfig  # noqa: E402
+from skillq.skillq_runtime.config import MethodConfig  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -77,11 +78,17 @@ class _MockJob:
 
     def __init__(self) -> None:
         self.on_ended: Any = None
-        self.config = MagicMock()
-        # Default: no include/exclude list.
-        self.config.retry = MagicMock()
-        self.config.retry.exclude_exceptions = None
-        self.config.retry.include_exceptions = None
+        # 2026-06-25: switched from MagicMock to SimpleNamespace —
+        # MagicMock's __contains__ and `is not None` semantics silently
+        # corrupt the retry-classification inside the bridge. Pinning
+        # max_retries=0 matches the production YAML.
+        self.config = SimpleNamespace(
+            retry=SimpleNamespace(
+                max_retries=0,
+                exclude_exceptions=None,
+                include_exceptions=None,
+            )
+        )
 
     def on_trial_ended(self, callback: Any) -> None:
         # The bridge calls ``job.on_trial_ended(callback)`` (note: method,
@@ -114,7 +121,7 @@ def test_attach_paper_registers_wires_on_trial_ended(tmp_path: Path, monkeypatch
     state.save(lib, _fresh_manager(method), lib_root=method.library_root)
 
     job = _MockJob()
-    from skillq.paper_mode import bridge as bridge_mod
+    from skillq.skillq_runtime import bridge as bridge_mod
     bridge_mod.attach_paper_registers(job, method)
     assert job.on_ended is not None
 
@@ -143,7 +150,7 @@ def test_attach_paper_registers_skips_failed_trials(tmp_path: Path, monkeypatch)
     state.save(Qlib(b_max=4), _fresh_manager(method), lib_root=method.library_root)
 
     job = _MockJob()
-    from skillq.paper_mode import bridge as bridge_mod
+    from skillq.skillq_runtime import bridge as bridge_mod
     bridge_mod.attach_paper_registers(job, method)
 
     # Failed trial — exception_info is set.
@@ -165,7 +172,7 @@ def _patch_litellm_backends(monkeypatch) -> None:
     """Replace LiteLLM embedder/verifier/attribution with stub shims
     that accept the ``model=`` kwarg the bridge passes.
     """
-    from skillq.paper_mode import bridge as bridge_mod
+    from skillq.skillq_runtime import bridge as bridge_mod
     from skillq.method.attribution import StubAttributionBackend
     from skillq.method.retrieval import StubEmbedder
 
@@ -214,7 +221,7 @@ def _build_fake_hook_event(trial_id: str, result: Any) -> MagicMock:
 # _score_skills — Fix 1 (Hard Gate) + Fix 2 (multiplicative scoring)
 # (2026-06-24)
 # ---------------------------------------------------------------------------
-from skillq.paper_mode.hook import _score_skills as _score_skills_hook  # noqa: E402
+from skillq.skillq_runtime.hook import _score_skills as _score_skills_hook  # noqa: E402
 
 
 def _build_score_input():

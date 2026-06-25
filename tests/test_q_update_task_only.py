@@ -36,8 +36,8 @@ from skillq.method.attribution import Attribution, TrialAttribution  # noqa: E40
 from skillq.method.library import LibManager  # noqa: E402
 from skillq.method.state import QlibState  # noqa: E402
 from skillq.method.types import Qlib, Skill  # noqa: E402
-from skillq.paper_mode import bridge as bridge_mod  # noqa: E402
-from skillq.paper_mode.config import MethodConfig  # noqa: E402
+from skillq.skillq_runtime import bridge as bridge_mod  # noqa: E402
+from skillq.skillq_runtime.config import MethodConfig  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

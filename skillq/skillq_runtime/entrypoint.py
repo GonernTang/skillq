@@ -9,7 +9,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Programmatic entrypoint; equivalent to ``paper paper <argv>``."""
     import argparse
 
-    from skillq.paper_mode.cli import build_parser
+    from skillq.skillq_runtime.cli import build_parser
 
     parser = argparse.ArgumentParser(prog="paper paper")
     build_parser(parser)

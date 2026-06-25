@@ -6,7 +6,7 @@ Subcommands:
   package (the SkillsVote baseline; the comparison method for the
   SkillQ paper). See :mod:`paper.skillsvote_mode.cli`.
 - ``paper paper ...``      — run the SkillQ paper's four-layer method
-  (the user's own contribution). See :mod:`paper.paper_mode.cli`.
+  (the user's own contribution). See :mod:`skillq.skillq_runtime.cli`.
 - ``paper prebuild ...``   — pre-build the per-task Docker images that
   benchmark trials need (TB 2.0 / TB Pro / SWE-Bench Pro). Thin
   wrapper around the upstream prebuild script.
@@ -33,7 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     # Defer imports so that, e.g., ``paper skillsvote --help`` does not need
     # to import the paper-side modules (or vice-versa).
     from skillq.skillsvote_mode.cli import build_parser as build_skillsvote
-    from skillq.paper_mode.cli import build_parser as build_paper
+    from skillq.skillq_runtime.cli import build_parser as build_paper
     from skillq.prebuild_cli import build_parser as build_prebuild
 
     sv_sub = sub.add_parser(

@@ -9,8 +9,11 @@ Cells (all on/off against the default hyperparameters):
   - ``with_ucb``         — c_ucb=0.5 (default) vs c_ucb=0.0
   - ``with_verifier``    — verifier_model=gpt-4o vs verifier disabled
                            (replaces r_learning with 0)
-  - ``with_near_miss``   — theta_near_miss=0.5 vs theta_near_miss=10
-                           (effectively disables Layer 4)
+  - ``with_near_miss``   — REMOVED 2026-06-22: the
+                           ``theta_near_miss`` field is gone and the
+                           gate was deleted; the editor LLM now fires
+                           on every failed trial. This ablation is
+                           no longer meaningful.
   - ``with_eviction``    — REMOVED 2026-06-18: admission/stale/lowq
                            queues and rejuvenation are gone; the only
                            eviction rule is b_max-bounded lowest-Q.
@@ -31,7 +34,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from skillq.paper_mode.config import MethodConfig  # noqa: E402
+from skillq.skillq_runtime.config import MethodConfig  # noqa: E402
 
 
 def _config_diff(base: MethodConfig, **overrides: Any) -> MethodConfig:
@@ -63,8 +66,6 @@ def main(argv: list[str] | None = None) -> int:
         ("no_ucb", _config_diff(base, c_ucb=0.0)),
         ("with_verifier", base),
         ("no_verifier", _config_diff(base, beta=0.0)),  # disables r_learning term
-        ("with_near_miss", base),
-        ("no_near_miss", _config_diff(base, theta_near_miss=10.0)),
     ]
 
     cfg_dir = args.output_dir / "method_configs"

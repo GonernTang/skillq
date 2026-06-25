@@ -26,10 +26,10 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from skillq.paper_mode.agent import hook_settings_json, pull_env  # noqa: E402
-from skillq.paper_mode.bridge import resolve_retrieval_mode  # noqa: E402
-from skillq.paper_mode.config import MethodConfig  # noqa: E402
-from skillq.paper_mode.hook import (  # noqa: E402
+from skillq.skillq_runtime.agent import hook_settings_json, pull_env  # noqa: E402
+from skillq.skillq_runtime.bridge import resolve_retrieval_mode  # noqa: E402
+from skillq.skillq_runtime.config import MethodConfig  # noqa: E402
+from skillq.skillq_runtime.hook import (  # noqa: E402
     _format_pull_context,
     _handle_session_start,
     _make_session_start_context,
@@ -203,11 +203,11 @@ def test_handle_session_start_happy_path(tmp_path: Path, capsys, monkeypatch):
     # would drop sk1/sk2 and leave only sk0 in the output, defeating
     # the test's purpose. Hard Gate semantics are exercised
     # separately in test_paper_hooks.py.
-    from skillq.paper_mode import hook as hook_mod
+    from skillq.skillq_runtime import hook as hook_mod
     monkeypatch.setattr(hook_mod, "SIM_GATE_MIN_SCORE", 0.0)
 
     with patch.dict(os.environ, env, clear=True), \
-         patch("skillq.paper_mode.hook._post_embed", return_value=stubbed_emb):
+         patch("skillq.skillq_runtime.hook._post_embed", return_value=stubbed_emb):
         rc = _handle_session_start(payload)
 
     assert rc == 0
@@ -261,7 +261,7 @@ def test_handle_session_start_degrades_when_embed_returns_none(tmp_path: Path, c
     payload = {"hook_event_name": "UserPromptSubmit", "prompt": "anything"}
 
     with patch.dict(os.environ, env, clear=True), \
-         patch("skillq.paper_mode.hook._post_embed", return_value=None):
+         patch("skillq.skillq_runtime.hook._post_embed", return_value=None):
         rc = _handle_session_start(payload)
 
     assert rc == 0
@@ -297,7 +297,7 @@ def test_handle_session_start_does_not_write_calls_log(tmp_path: Path):  # noqa:
     }
     payload = {"hook_event_name": "UserPromptSubmit", "prompt": "x"}
     with patch.dict(os.environ, env, clear=True), \
-         patch("skillq.paper_mode.hook._post_embed", return_value=[1.0, 0, 0, 0]):
+         patch("skillq.skillq_runtime.hook._post_embed", return_value=[1.0, 0, 0, 0]):
         _handle_session_start(payload)
 
     assert not calls_log.exists(), "UserPromptSubmit must not append to calls_log"
@@ -308,7 +308,7 @@ def test_handle_session_start_does_not_write_calls_log(tmp_path: Path):  # noqa:
 # ---------------------------------------------------------------------------
 def _run_hook_subprocess(payload: dict, env: dict) -> tuple[int, str, str]:
     """Invoke hook.py's main() as a subprocess with the given payload+env."""
-    hook_script = ROOT / "skillq" / "paper_mode" / "hook.py"
+    hook_script = ROOT / "skillq" / "skillq_runtime" / "hook.py"
     proc = subprocess.run(
         [sys.executable, str(hook_script)],
         input=json.dumps(payload),

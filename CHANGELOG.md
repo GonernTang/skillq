@@ -4,6 +4,27 @@ All notable changes to `skillq` (the branch-style entrypoint that re-uses
 the upstream `skills_vote` lifecycle AND runs the SkillQ paper's
 four-layer method on top of Harbor) are documented here.
 
+> **2026-06-25 — Rename `paper_mode/` → `skillq_runtime/`**: The
+> sub-package that bridges the four-layer `skillq.method/` algorithm
+> onto the Harbor harness was renamed for clarity. `paper_mode` was
+> confused with the "SkillsVote baseline" (a separate sub-package at
+> `skillq/skillsvote_mode/`) and with the upstream `lqrl` paper code;
+> `skillq_runtime/` makes the "this is SkillQ's own runtime layer"
+> intent explicit and parallels `skillsvote_mode/` cleanly.
+>
+> - Directory: `skillq/paper_mode/` → `skillq/skillq_runtime/`
+> - All `import_path: skillq.paper_mode.agent:SkillQClaudeCodeAgent`
+>   strings in `experiments/configs/*.yaml` and
+>   `experiments/smoke/*.yaml` updated.
+> - All Python imports in `skillq/`, `tests/`, `experiments/run/`,
+>   `experiments/smoke/debug_smoke.py` updated.
+> - README, RUNNING.md updated. Historical CHANGELOG entries
+>   preserved (they document the name at the time).
+> - CLI subcommand `skillq paper …` is **unchanged** — only the
+>   module path moved. Future PR may rename the subcommand itself
+>   (`paper` → `run`) for consistency; tracked separately.
+> - 203/203 unit + integration tests pass after the rename.
+
 > **2026-06-16 — Decouple from upstream `lqrl`**: The repository was
 > previously a sibling of `/home/gonern/workspace/lqrl` and depended
 > on it as an editable Python dependency (`skills_vote`) plus a

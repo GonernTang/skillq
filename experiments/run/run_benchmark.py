@@ -114,7 +114,7 @@ def build_job_config(
                 "path or use --mode skillsvote."
             )
         agent_block: dict[str, Any] = {
-            "import_path": "skillq.paper_mode.agent:SkillQClaudeCodeAgent",
+            "import_path": "skillq.skillq_runtime.agent:SkillQClaudeCodeAgent",
             "model_name": agent_model,
             "kwargs": {
                 "allowed_skills": [],
@@ -123,7 +123,7 @@ def build_job_config(
                     # Intentionally no prompt_path here. skillsvote's
                     # step_recommend calls prompt_path(**kwargs) with
                     # extra kwargs (notably key=...) that
-                    # paper.paper_mode.retrieval_step.rerank_with_ucb
+                    # paper.skillq_runtime.retrieval_step.rerank_with_ucb
                     # does not accept, and would TypeError before
                     # PaperClaudeCodeAgent.run gets a chance to call
                     # rerank_with_ucb on the instruction. The mg UCB

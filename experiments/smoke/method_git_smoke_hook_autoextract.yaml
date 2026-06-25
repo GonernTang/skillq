@@ -14,7 +14,6 @@ hook_lambda: 0.5
 hook_c_ucb: 0.5
 user_claude_md_path: /home/gonern/workspace/skillq/experiments/smoke/_user_claude_md_stub.md
 attribution_model: anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-flash}
-q_subtask_verifier_model: anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-flash}
 embedder_model: openai/${oc.env:EMBEDDING_MODEL,text-embedding-v4}
 embedder_dim: 1024
 # Auto-extract (Layer 4) — opt-in

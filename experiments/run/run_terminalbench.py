@@ -85,7 +85,7 @@ def build_job_config(
         "agents": [
             {
                 "import_path": (
-                    "skillq.paper_mode.agent:SkillQClaudeCodeAgent"
+                    "skillq.skillq_runtime.agent:SkillQClaudeCodeAgent"
                     if mode == "paper"
                     else "skills_vote.harbor.claude_code:SkillsVoteClaudeCode"
                 ),

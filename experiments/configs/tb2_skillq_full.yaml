@@ -1,0 +1,94 @@
+# TB 2.0 FULL run — paper mode, all 89 tasks, single-pass.
+#
+# Wall-clock estimate: 89 tasks × ~1 trial / ~10min LLM time each, with
+# n_concurrent_trials=16 running ~6 batches in parallel. End-to-end ~60-90min
+# for the agent step alone; auto-extract LLM calls add another 10-15%.
+#
+# Model: ANTHROPIC_MODEL=deepseek-v4-flash (.env), wrapped as
+# `anthropic/<model>` so LiteLLM picks the provider. Override per-run by
+# editing .env or by editing the agents[0].model_name line below.
+#
+# Task source: local copy under skillq/input/terminal-bench/ — has all
+# 89 task definitions + 7 harbor hash subdirs, vendored so skillq is
+# self-contained (input/ is in .gitignore). NO prebuild download
+# needed — the images (skills_vote/<task>:20260604) are also already
+# built per the user's confirmation on 2026-06-22.
+#
+# Time budget per trial: 3600s = 1h.
+#
+# CRITICAL (2026-06-25): Harbor's `_resolve_step_timeout`
+# (harbor/trial/trial.py:507-525) computes the effective ceiling as
+# `min(override, max) * multiplier`. With `override_timeout_sec=3600`
+# AND `agent_timeout_multiplier=4.0` the effective ceiling is
+# **14400s = 4 hours**, not 3600s — Harbor multiplies the multiplier
+# ON TOP OF the override. circuit-fibsqrt (2026-06-24 run) hit
+# 6343s/agent before timing out naturally (reward=0.0); the 3600s
+# ceiling never fired. Fix: drop the multiplier to 1.0 so the
+# override becomes the real ABSOLUTE ceiling.
+#
+# A host-side second ceiling (Task #89 carry-over) will be added
+# later in `SkillQClaudeCodeAgent.run()` to defend against future
+# Harbor-side regressions.
+
+jobs_dir: output
+# Stable name; the runner `rm -rf`s this before each run.
+# 2026-06-25: bump from __2026-06-24 (the broken baseline run)
+# to __2026-06-25 — Harbor refuses to resume with a different config.
+job_name: tb2_skillq_full__2026-06-25
+n_attempts: 1
+n_concurrent_trials: 16
+quiet: false
+retry:
+  max_retries: 0
+  exclude_exceptions:
+    - VerifierTimeoutError
+    - RewardFileNotFoundError
+    - RewardFileEmptyError
+    - VerifierOutputParseError
+agent_timeout_multiplier: 1.0   # see top-of-file note 2026-06-25: multiplier×override bug
+environment:
+  type: docker
+  force_build: false
+  delete: false               # keep containers after the run for debugging
+  mounts_json:
+    # Bind-mount the host's seed-skill library into the container at
+    # /skills. SkillQClaudeCodeAgent's `rerank_with_ucb` lists these in
+    # the system prompt header; the agent can also invoke them via
+    # the Skill tool (the PreToolUse hook logs the call and updates Q).
+    - type: bind
+      source: /home/gonern/workspace/skillq/skills
+      target: /skills
+      read_only: true
+agents:
+  - import_path: skillq.skillq_runtime.agent:SkillQClaudeCodeAgent
+    model_name: ${oc.env:ANTHROPIC_MODEL,anthropic/claude-sonnet-4-5}
+    override_timeout_sec: 3600.0    # 1h ABSOLUTE ceiling per trial
+    kwargs:
+      # recommend: null — skip SkillsVote's LLM-based step_recommend.
+      # Paper method replaces it with embedding+Q retrieval (TwoStageRanker).
+      recommend: null
+      paper_retrieval:
+        enabled: true
+        k1: 10
+        k2: 3
+        c_ucb: 0.5
+        lambda_: 0.5
+datasets:
+  # Use the local vendored copy under input/terminal-bench/. input/ is in
+  # .gitignore so the bundled task defs never get committed. Override
+  # with SkillQ_INPUT_ROOT env var to point at a different local input
+  # root (e.g. when running outside this repo).
+  #
+  # Why `path:` instead of `name: + version: + download_dir:`:
+  # The `name+version` form tells Harbor to download the dataset from
+  # the registry, which (a) requires network and (b) creates a
+  # content-addressable hash cache under the same input dir (89
+  # 20-char subdirs alongside the 89 task-name dirs). Those hash
+  # subdirs reference ``alexgshaw/<task>:20251031`` (the upstream
+  # prebuilt images) which we don't have locally — and pulling them
+  # from Docker Hub times out. The ``path:`` form reads the local
+  # task defs directly without downloading or creating a cache, and
+  # our local task defs reference ``skills_vote/<task>:20260604``
+  # which we do have prebuilt. This is the same form lqrl's
+  # baseline.yaml uses.
+  - path: ${oc.env:SkillQ_INPUT_ROOT,/home/gonern/workspace/skillq/input}/terminal-bench

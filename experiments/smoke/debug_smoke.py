@@ -31,7 +31,7 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=Path(".env").resolve(), override=True)
 
 # ---------------------------------------------------------------------------
-# Monkey-patch BEFORE importing paper.paper_mode.bridge
+# Monkey-patch BEFORE importing paper.skillq_runtime.bridge
 # ---------------------------------------------------------------------------
 import harbor.environments.docker.docker as _docker_mod  # noqa: E402
 
@@ -49,8 +49,8 @@ def _patched_docker_init(self, *args, **kwargs):
 _docker_mod.DockerEnvironment.__init__ = _patched_docker_init
 
 # Now import the bridge (this will register paper's machinery).
-from skillq.paper_mode.config import MethodConfig  # noqa: E402
-from skillq.paper_mode.bridge import run_paper_job_sync  # noqa: E402
+from skillq.skillq_runtime.config import MethodConfig  # noqa: E402
+from skillq.skillq_runtime.bridge import run_paper_job_sync  # noqa: E402
 
 
 SMOKE_CONFIG = "experiments/smoke/fix-git_skillq_smoke.yaml"
@@ -66,7 +66,7 @@ async def main() -> int:
     print(f"[debug_smoke] method.hook_top_k = {method.hook_top_k}")
     print(f"[debug_smoke] method.embedder_model = {method.embedder_model}")
     print(f"[debug_smoke] running paper job, then holding for {HOLD_SECONDS}s...")
-    from skillq.paper_mode.bridge import run_paper_job
+    from skillq.skillq_runtime.bridge import run_paper_job
     rc = await run_paper_job(SMOKE_CONFIG, method)
     print(f"[debug_smoke] paper job returned {rc}; holding for post-mortem exec")
     print(f"[debug_smoke] in another terminal: docker ps ; docker exec -it <id> bash")

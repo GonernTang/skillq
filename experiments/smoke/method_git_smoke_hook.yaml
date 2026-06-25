@@ -25,12 +25,6 @@ hook_c_ucb: 0.5
 # user_path doesn't exist.
 user_claude_md_path: /home/gonern/workspace/skillq/experiments/smoke/_user_claude_md_stub.md
 attribution_model: anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-flash}
-# Per-subtask LLM judge (used by bridge._q_update_from_subtask).
-# Default in MethodConfig is "openai/gpt-4o" which would require
-# OPENAI_API_KEY; this smoke env only has ANTHROPIC_API_KEY, so
-# reuse the same model the agent uses. The judge just needs a
-# chat model — model identity doesn't affect Eq. 6.
-q_subtask_verifier_model: anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-flash}
 # Plan D (cont.): pre-compute emb_cache for the seeded skills.
 # Our .env points EMBEDDING_BASE_URL at DashScope (OpenAI-compatible),
 # so we need the ``openai/`` prefix for litellm to pick the right

@@ -53,7 +53,7 @@ environment:
       target: /skills
       read_only: true
 agents:
-  - import_path: skillq.paper_mode.agent:SkillQClaudeCodeAgent
+  - import_path: skillq.skillq_runtime.agent:SkillQClaudeCodeAgent
     model_name: ${oc.env:ANTHROPIC_MODEL,anthropic/claude-sonnet-4-5}
     kwargs:
       # allowed_skills unset (None) — leave upstream default ("no
