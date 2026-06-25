@@ -1,4 +1,4 @@
-"""LiteLLM-backed edit-proposal backend for :class:`paper.method.near_miss.NearMissRefiner`.
+"""LiteLLM-backed edit-proposal backend for :class:`paper.method.edit.EditRefiner`.
 
 Thin subclass of :class:`paper.method._litellm.LiteLLMCompletion`.
 Kept as a named class (rather than instantiating

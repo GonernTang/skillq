@@ -1,7 +1,7 @@
 """Trial-level attribution step for the mg paper method.
 
 Lives in ``paper/method`` because it is consumed by the paper-mode
-bridge in :mod:`paper.paper_mode.bridge`. The schema is intentionally
+bridge in :mod:`skillq.skillq_runtime.bridge`. The schema is intentionally
 **narrower** than the upstream ``lqrl`` ``FeedbackOutputPayload``: we
 do not need a per-subtask 11-class taxonomy, just a small enum that
 drives the two create-vs-edit-vs-bump decisions the bridge needs.
@@ -83,6 +83,15 @@ class TrialAttribution(BaseModel):
     ``knowledge_to_extract`` is the free-form procedural knowledge
     the agent used to succeed. It is *only* meaningful when
     ``overall_attribution`` is one of the success cases.
+
+    ``library_gap_skill_description`` (2026-06-25) is the
+    actionable "what skill SHOULD have been in the library"
+    statement. Populated when the attribution enum signals a
+    missing-skill scenario (see ATTRIBUTION_PROMPT). The
+    failure-path extract prompt uses this field as the
+    *primary seed* for synthesized SKILL.md files; the
+    ``knowledge_to_extract`` field is the agent's diagnosis
+    of what went wrong. Empty by default.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -91,6 +100,11 @@ class TrialAttribution(BaseModel):
     overall_rationale: str = Field(min_length=1)
     subtasks: list[SubtaskOutcome] = Field(default_factory=list)
     knowledge_to_extract: str = ""  # empty when nothing reusable was found
+    # 2026-06-25 (Bug-fix follow-up): explicit "what skill should
+    # the library have contained" signal. Survives as a sibling
+    # field on the attribution result so the failure-path extract
+    # prompt can prefer it over knowledge_to_extract as the seed.
+    library_gap_skill_description: str = ""
 
 
 # ---------------------------------------------------------------------------

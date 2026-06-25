@@ -103,12 +103,21 @@ class SkillExtractor:
         # Format the per-trial lines
         per_trial_lines = []
         for i, t in enumerate(trials, start=1):
-            per_trial_lines.append(
+            # 2026-06-25: include library_gap_skill_description when
+            # present. The failure-path prompt prefers the gap
+            # description as the seed for the synthesized skill body.
+            # We still always emit the reusable_knowledge line so the
+            # prompt has both fields to choose from.
+            line = (
                 f"[Trial {i}]\n"
                 f"  intent_hash: {t.get('intent_hash', 0):016x}\n"
                 f"  task: {t.get('task', '')!r}\n"
                 f"  reusable_knowledge: {t.get('knowledge', '')!r}\n"
             )
+            gap = t.get("gap_description", "")
+            if gap:
+                line += f"  library_gap_skill_description: {gap!r}\n"
+            per_trial_lines.append(line)
         aggregated = "\n".join(per_trial_lines)
 
         # Use the first non-empty task as the "representative" task

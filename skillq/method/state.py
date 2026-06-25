@@ -9,8 +9,6 @@ to survive a Job resume:
   per-skill probation / eviction queues (no per-intent dimension in the
   global-Q refactor);
 - the current :attr:`step` counter used to gate staleness;
-- (optional, debug) a ``sub_task_log`` list of per-trial skill-call verdicts.
-
 The state file lives at a path that does **not** collide with the
 upstream ``lqrl`` package's ``skills_vote_evolve_state.json`` — by
 default we write to ``<library_root>/.state/method_state.json``.
@@ -41,9 +39,6 @@ class QlibState:
         q_table:              [[skill_id: str, q: float], ...]   ← global
         library:              {b_max: int, skills: {skill_id: {...}}}
         seed_initial_q:       float
-        sub_task_log:         [debug entries — only present when
-                               debug_keep_subtask_log=True is set on
-                               the calling bridge]
         library_root:         str (path, optional)
 
     Backward-compat note: older state files written by the
@@ -70,8 +65,6 @@ class QlibState:
         mgr: LibManager,
         lib_root: Path | None = None,
         seed_initial_q: float = 0.5,
-        sub_task_log: list[dict[str, Any]] | None = None,
-        debug_keep_subtask_log: bool = True,
     ) -> None:
         """Persist the library, Q-table, and step counter to JSON."""
         payload: dict[str, Any] = {
@@ -89,8 +82,6 @@ class QlibState:
         }
         if lib_root is not None:
             payload["library_root"] = str(lib_root)
-        if debug_keep_subtask_log and sub_task_log is not None:
-            payload["sub_task_log"] = sub_task_log
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         self.state_path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
@@ -301,8 +292,6 @@ class QlibState:
             mgr=mgr,
             lib_root=None,
             seed_initial_q=seed_initial_q,
-            sub_task_log=None,
-            debug_keep_subtask_log=False,
         )
         return True
 

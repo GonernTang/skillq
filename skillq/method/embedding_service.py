@@ -21,10 +21,10 @@ pool) warm and serves requests in single-digit ms of overhead.
   ``host.docker.internal`` (Docker Desktop) or the host's LAN IP
 
 **Lifecycle**:
-1. :class:`paper.paper_mode.agent.PaperClaudeCodeAgent` (re-)starts
+1. :class:`skillq.skillq_runtime.agent.PaperClaudeCodeAgent` (re-)starts
    the daemon at the start of every trial via
    :func:`start_embedding_service_background`.
-2. The hook (container-side, ``paper/paper_mode/hook.py``) calls
+2. The hook (container-side, ``skillq/skillq_runtime/hook.py``) calls
    ``POST /embed {text: str} -> {vec: [...]}``.
 3. The daemon shuts down at trial end (``stop_embedding_service``).
 """
@@ -152,7 +152,7 @@ def build_fastapi_app(embedder):
         # ``req: EmbedRequest = Body(...)`` because the latter
         # creates a ForwardRef that Pydantic can't resolve in
         # some FastAPI versions. Keep this in sync with
-        # :func:`paper.paper_mode.hook._post_embed`.
+        # :func:`skillq.skillq_runtime.hook._post_embed`.
         if not req.text:
             raise HTTPException(status_code=400, detail="text is empty")
         try:
@@ -179,7 +179,7 @@ def start_embedding_service_background(
     Returns a handle dict: ``{"thread", "server", "port", "stop_event"}``.
     Use :func:`stop_embedding_service` to shut it down.
 
-    This is what :class:`paper.paper_mode.agent.PaperClaudeCodeAgent`
+    This is what :class:`skillq.skillq_runtime.agent.PaperClaudeCodeAgent`
     calls at trial start. It does NOT block — the agent continues
     to start the Claude Code CLI immediately. The hook fires after
     the agent has started, by which time the server is bound.

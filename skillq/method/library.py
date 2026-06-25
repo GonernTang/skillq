@@ -4,7 +4,7 @@
 deprecation list, rejuvenate path are all gone. The single rule is
 hard-bounded eviction: when ``len(library) > b_max``, the lowest-Q
 skill is removed. Per-skill call counts (``update_count``) and
-per-skill subtask-success counts (``probation_count``) are kept as
+per-skill trial-success counts (``probation_count``) are kept as
 telemetry but never influence any decision.
 
 This module is the mg-side rewrite of
@@ -35,7 +35,7 @@ class LibManager:
 
     - ``update_count``: per-skill call count (``+= 1`` every
       :meth:`update_q`).
-    - ``probation_count``: per-skill subtask-success count (same
+    - ``probation_count``: per-skill trial-success count (same
       increment as ``update_count``; kept distinct so future logic
       can split the two without re-introducing a write path).
     """
@@ -52,7 +52,7 @@ class LibManager:
     q_table: Dict[str, float] = field(default_factory=dict)
     # Telemetry: skill_id -> update count
     update_count: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
-    # Telemetry: skill_id -> subtask-success count (one per update_q)
+    # Telemetry: skill_id -> trial-success count (one per update_q)
     probation_count: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
 
     # ------------------------------------------------------------------

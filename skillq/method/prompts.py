@@ -211,6 +211,20 @@ Return a JSON object with these fields:
   also provide a non-empty string unless the failure was strictly
   env-only. DO NOT include task-specific facts, paths, or one-off
   values; only the reusable *procedure*.
+- `library_gap_skill_description`: ONLY set this when
+  ``overall_attribution`` is one of the three gap-signaling
+  enums (``success_no_skill_seen``,
+  ``success_viewed_skill_but_not_used``, ``fail_agent_issue``).
+  Describe in ONE concrete sentence what skill the library
+  SHOULD have contained for this trial — include the domain
+  keyword(s) that should appear in the skill description
+  and any specific guard rails it should encode (e.g.,
+  "a skill whose description names 'hardware-circuit-
+  synthesis' or 'HDL' and includes a sanity-test checklist
+  for N=0, 1, 4 plus a stop signal after 3 failed versions").
+  Empty string otherwise. This field seeds the failure-path
+  auto-extract step — without it the library will not learn
+  from this trial.
 
 TASK INSTRUCTION
 ----------------
@@ -359,6 +373,24 @@ tasks can avoid repeating the mistake.
   - The skill should encode the *reusable guard rail* — concrete
     steps to take, common pitfalls to check, and the failure
     pattern to avoid. Not just a description of what went wrong.
+  - The skill MUST contain TWO structural sections in addition
+    to the procedure body:
+      (a) **Diagnostic checklist** — a numbered list of 2-4
+          testable checks the agent MUST run BEFORE committing
+          to the main approach (e.g., "Run the reference
+          implementation on N=0, N=1, N=4 and confirm the
+          outputs match expectations before scaling up to
+          N=2^20").
+      (b) **Stop signal** — a concrete threshold and reset
+          action (e.g., "If you have written 3 versions of
+          the generator and they all fail the same diagnostic,
+          abandon the architecture and try the alternative
+          listed in this skill"). Without these, the agent
+          enters a debug spiral on the same architecture
+          for hours (see the 2026-06-24 circuit-fibsqrt
+          case study — 7 versions of gen.py, 115 min wasted).
+    A skill missing either section is incomplete and will
+    be rejected by the bridge.
   - You MAY optionally create a ``scripts/`` subdirectory with helper
     code, but only if the avoidance procedure genuinely needs it.
   - The skill name in the YAML frontmatter must match the directory name.
@@ -376,6 +408,34 @@ tasks can avoid repeating the mistake.
   5. Do NOT create a skill that is redundant with one of the
      available skills (list below) — in that case, output
      ``status: skip`` with reason ``redundant``.
+
+## Preferred seed (2026-06-25)
+
+Each failure record below carries TWO knowledge fields:
+
+- ``knowledge_to_extract`` — the agent's diagnosis of *what
+  went wrong* (free-form, sometimes vague).
+- ``library_gap_skill_description`` — the explicit "what skill
+  SHOULD have been in the library" statement from the
+  attribution step. This field is more actionable because it
+  names the domain keyword and the guard rails the missing
+  skill should encode.
+
+When a failure record includes a non-empty
+``library_gap_skill_description``, treat it as the *primary
+seed* for the synthesized skill body. Use it to:
+
+  - Choose the skill name (kebab-case, reflecting the domain
+    keyword from the gap description).
+  - Write the YAML `description` (so future retrieval can
+    find it via the gap keyword).
+  - Write the Diagnostic checklist (concrete checks the new
+    skill should require).
+
+The ``knowledge_to_extract`` field is secondary — use it only
+when the gap description is empty, or to add colour to the
+guard-rail body. When the two disagree, the gap description
+wins.
 
 ## Write location
 

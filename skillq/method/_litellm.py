@@ -1,21 +1,24 @@
 """Shared LiteLLM completion wrapper.
 
-The four skillq-method LLM backends (verifier, editor, sub-task
-verifier, attribution) all wrap a single ``litellm.completion`` call
-with a different temperature / model / ``response_format``. The
-duplicated ``__call__(prompt, model)`` body was identical in all of
-them.
+The three remaining skillq-method LLM backends (verifier, editor,
+attribution) all wrap a single ``litellm.completion`` call with a
+different temperature / model / ``response_format``. The duplicated
+``__call__(prompt, model)`` body was identical in all of them.
 
 This module exposes :class:`LiteLLMCompletion` — the common
-implementation — and the four paper backends are thin subclasses
+implementation — and the three paper backends are thin subclasses
 that only set their own defaults.
 
 Why subclasses instead of one class with parameters? The call site
-already has four named classes; the design intent (per the original
+already has three named classes; the design intent (per the original
 ``editor_backend.py`` comment) is to make the **boundary** between
 verifier and editor visible at the call site, even when the runtime
 behavior is identical. Subclasses are 6 lines each and preserve the
 naming the bridge uses.
+
+Note: a previous ``async def acall(...)`` shim lived here (2026-06-18
+to 2026-06-23) for the sub-task verifier's concurrent fan-out; it
+was removed on 2026-06-23 when the sub-task judge path was deleted.
 """
 
 from __future__ import annotations
@@ -45,24 +48,4 @@ class LiteLLMCompletion:
         if self.response_format is not None:
             kwargs["response_format"] = self.response_format
         response = litellm.completion(**kwargs)
-        return response.choices[0].message.content or ""
-
-    async def acall(self, prompt: str, model: str | None = None) -> str:
-        """Async variant using ``litellm.acompletion``.
-
-        Same kwarg shape as :meth:`__call__`; sync path is kept AS-IS
-        for the three other backend consumers (``verifier``, ``editor``,
-        ``attribution``) that don't need async today. Added in 2026-06-18
-        to support :meth:`SubTaskVerifier.ascore` (Bug 8 fix-by-conversion).
-        """
-        import litellm
-
-        kwargs: dict[str, Any] = {
-            "model": model or self.model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": self.temperature,
-        }
-        if self.response_format is not None:
-            kwargs["response_format"] = self.response_format
-        response = await litellm.acompletion(**kwargs)
         return response.choices[0].message.content or ""
