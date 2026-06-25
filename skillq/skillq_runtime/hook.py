@@ -716,6 +716,12 @@ def _handle_pretooluse_skill(payload: dict[str, Any]) -> int:
                 "requested": requested,
                 "top_k": [{"skill_id": sid, "score": score} for sid, score in top_k],
                 "approved": approved,
+                # 2026-06-25: explicit `denied` flag for the bridge's
+                # Q-update to skip (the user's strict-gate design:
+                # "irrelevant skills must not pollute Q-table evolution").
+                # Equivalent to `not approved` but easier to read in
+                # the bridge's per-trial update loop.
+                "denied": not approved,
                 "embed_ms": embed_ms,
                 "intent_text": intent_text[:500],
                 "_debug_emb_cache_size": len(emb_cache),

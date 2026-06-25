@@ -4,7 +4,58 @@ All notable changes to `skillq` (the branch-style entrypoint that re-uses
 the upstream `skills_vote` lifecycle AND runs the SkillQ paper's
 four-layer method on top of Harbor) are documented here.
 
-> **2026-06-25 — Strict Hard Gate: `sim_gate_floor` default 1 → 0**
+> **2026-06-25 — Bridge skips Q-update for hook-denied calls**
+>
+> The strict Hard Gate (entry below) fixed **context pollution** but
+> the bridge was still updating the Q-table for denied calls. Smoke
+> evidence (chess-best-move, 1-task):
+>
+> | Hook decision | n_retrievals | Q-update | n_uses | n_success |
+> |---|---|---|---|---|
+> | approved=True  | +1 | α·(r−Q) | +1 if r | +1 if r |
+> | approved=False (denied) | **no change** | **skipped** | **no change** | **no change** |
+>
+> Before this fix, a denied call still produced the Eq.5 update
+> (`Q += α·(r_task−Q)`) and incremented `n_retrievals`/`n_uses`/
+> `n_success`. That violated the user's strict-gate design intent:
+>
+> > "严格禁止和当前任务不相关的技能污染agent上下文和污染q值演化逻辑"
+>
+> After the fix, denied records are skipped at the bridge's
+> `by_skill` grouping stage. They are still kept in
+> `skillq_skill_calls.jsonl` (for debugging) but trigger no
+> Q-side effects.
+>
+> Implementation:
+> - `hook.py` writes an explicit `"denied": not approved` field
+>   alongside `approved` in each calls_log record.
+> - `bridge.py:_SubTaskCallRecord` gains a `denied: bool = False`
+>   field; `_read_skill_calls_log` parses it with back-compat
+>   (`rec.get("denied", not approved)` for old JSONL files
+>   written before this field existed).
+> - `bridge.py:_q_update`'s `by_skill` loop skips records with
+>   `c.denied=True` (debug-log only).
+> - `bridge.py:_extract_skill_calls_from_session` keeps
+>   `denied=False` (agentic-mode fallback — every Skill call
+>   the agent successfully executed is implicitly approved).
+>
+> Tests: 8 new in `tests/test_bridge_denied_skip.py`:
+> - 3 unit tests on `_SubTaskCallRecord` / `_read_skill_calls_log`
+>   parsing + back-compat for the new `denied` field.
+> - 5 end-to-end tests on `bridge.attach_paper_registers` exercising:
+>   - all-denied → Q stays at seed (the user's chess-image-to-move case)
+>   - mixed approved/denied → only approved Q-updates
+>   - all-approved → regression guard (Eq.5 fires normally)
+>   - failed trial + denied → no Q punishment for irrelevant skill
+>
+> 240/240 tests pass (was 232 before this change).
+>
+> Smoke verification (chess-best-move, 1-task): hook returned
+> `top_k=[]`, `approved=false`, `denied=true`. chess-image-to-move
+> Q stayed at **0.5** (seed) — n_retrievals=0, n_uses=0,
+> n_success=0. Agent still solved the task (reward=1.0).
+
+>> **2026-06-25 — Strict Hard Gate: `sim_gate_floor` default 1 → 0**
 >
 > The Hard Gate (`sim_gate_min_score=0.7`) drops candidates whose
 > raw cosine similarity to the sub-task intent is below threshold.
@@ -48,9 +99,11 @@ four-layer method on top of Harbor) are documented here.
 >   on `np.ndarray`).
 >
 > Smoke verification (chess-best-move, 1-task): with strict
-> mode, the hook returned `top_k=[]` and `chess-image-to-move`
-> Q went 0.5 → 0.6174 (positive update; agent got reward=1
-> without being distracted by an irrelevant top-k). 232/232
+> mode, the hook returned `top_k=[]` and `approved=false`,
+> causing the agent to solve the task directly (reward=1).
+> At the time this entry was written, the bridge still Q-updated
+> denied calls — that bug was fixed in the entry above
+> ("Bridge skips Q-update for hook-denied calls"). 232/232
 > tests pass (10 new in `tests/test_hard_gate_strict.py`).
 >> **2026-06-25 — `MethodConfig.reuse_q_table` + `reuse_embedding_cache`
 > + opt-in state co-location**

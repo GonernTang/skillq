@@ -507,6 +507,11 @@ class _SubTaskCallRecord:
     approved: bool
     ts: float
     intent_text: str
+    # 2026-06-25: explicit `denied` flag from the hook (True if hook
+    # returned permissionDecision: "deny"). The Q-update path skips
+    # denied records to honor the strict-gate invariant: irrelevant
+    # skills must not pollute Q-table evolution.
+    denied: bool = False
 
 
 def _read_skill_calls_log(log_path: Path) -> list[_SubTaskCallRecord]:
@@ -529,12 +534,17 @@ def _read_skill_calls_log(log_path: Path) -> list[_SubTaskCallRecord]:
                 rec = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            approved = bool(rec.get("approved", False))
+            # Old hook versions didn't write the `denied` flag. Derive
+            # it from `approved` for back-compat.
+            denied = bool(rec.get("denied", not approved))
             out.append(
                 _SubTaskCallRecord(
                     skill_id=str(rec.get("requested", "")),
                     requested=str(rec.get("requested", "")),
                     top_k=list(rec.get("top_k", [])),
-                    approved=bool(rec.get("approved", False)),
+                    approved=approved,
+                    denied=denied,
                     ts=float(rec.get("ts", 0.0)),
                     intent_text=str(rec.get("intent_text", "")),
                 )
@@ -924,6 +934,24 @@ def attach_paper_registers(
         by_skill: dict[str, list[_SubTaskCallRecord]] = defaultdict(list)
         for c in calls_log:
             if not c.skill_id:
+                continue
+            # 2026-06-25: strict-gate invariant — denied calls (hook
+            # returned permissionDecision: "deny" because no skill
+            # was above the sim gate) must NOT trigger Q-update. The
+            # agent saw the deny reason and solved the sub-task
+            # directly; the trial's outcome is the trial's outcome,
+            # not the (never-executed) skill's. This prevents an
+            # irrelevant skill from being rewarded when the agent
+            # succeeded by some other means (e.g. reasoning from
+            # raw inputs), or punished when it failed for unrelated
+            # reasons. Records are still kept in calls_log for
+            # debugging; we just skip the Q-update branch.
+            if c.denied:
+                logger.debug(
+                    "Q-update skipped (hook denied): skill=%s trial=%s",
+                    c.skill_id,
+                    trial_id,
+                )
                 continue
             by_skill[c.skill_id].append(c)
 
