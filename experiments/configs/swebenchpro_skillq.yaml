@@ -54,12 +54,9 @@ agents:
         # this prompt_path. Leaving prompt_path unset makes lqrl fall
         # back to its own DEFAULT_PROMPT_PATH
         # (skills_vote.recommend.prompt:build).
-      paper_retrieval:
-        enabled: true
-        k1: 10
-        k2: 3
-        c_ucb: 0.5
-        lambda_: 0.5
+      # 2026-06-25: removed paper_retrieval block (dead code — container
+      # hook never read these values; bridge now writes SKILLQ_HOOK_*
+      # env vars from method-config).
 
 datasets:
   - name: swebenchpro

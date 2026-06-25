@@ -204,7 +204,8 @@ agents:
     model_name: anthropic/claude-sonnet-4-5
     kwargs:
       recommend: {skills_dir: ${abspath:.skillq_library/seed}, prompt_path: ...}
-      paper_retrieval: {enabled: true, k1: 10, k2: 3}
+      # 2026-06-25: paper_retrieval removed (dead code; container hook
+      # reads SKILLQ_HOOK_* env vars from method-config).
 datasets:
   - name: terminal-bench        # or terminal-bench-pro / swebenchpro
     version: "2.0"              # or "1.0"

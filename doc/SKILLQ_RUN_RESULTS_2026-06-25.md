@@ -114,15 +114,18 @@ editor_model: anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-flash}
 
 - `output/tb2_skillq_full__2026-06-25/` — full run output (89 trial dirs, q_table, manifest, trajectory per trial)
 - `output/tb2_skillq_full__2026-06-24/` — old baseline preserved for comparison
-- `output/tb2_skillq_miniflight_10__2026-06-25/` — pre-fix mini-flight (skill-call=0)
-- `output/tb2_skillq_seedverify_1__2026-06-25/` — post-fix 1-task smoke (skill-call=1, q_table populated)
 - `experiments/configs/tb2_skillq_full.yaml` — updated job_name to 2026-06-25
 - `experiments/configs/method_tb2_skillq_full.yaml` — NEW, adds seed_skills_dir
 - `experiments/configs/tb2_skillq_miniflight_10.yaml` — 10-task pre-flight config
 - `experiments/configs/tb2_skillq_seedverify_1task.yaml` — 1-task seed-verify smoke
 - `experiments/configs/method_tb2_skillq_miniflight.yaml` — miniflight method-config
 - `experiments/configs/method_tb2_skillq_seedverify.yaml` — seed-verify method-config
-- `output/miniflight_logs/analyze_full_89.py` — post-run analyzer
+
+> **2026-06-25 cleanup**: pre-rename smoke output
+> (`tb2_skillq_miniflight_10__2026-06-25/`,
+> `tb2_skillq_seedverify_1__2026-06-25/`,
+> `miniflight_logs/`) was deleted; the configs and method-configs
+> above remain as templates for the next 10-task / 1-task smoke.
 
 ## 9. Recommended next-run config (after editor_model fix)
 

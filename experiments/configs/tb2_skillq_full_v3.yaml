@@ -32,9 +32,16 @@
 
 jobs_dir: output
 # Stable name; the runner `rm -rf`s this before each run.
-# 2026-06-25: bump from __2026-06-24 (the broken baseline run)
-# to __2026-06-25 — Harbor refuses to resume with a different config.
-job_name: tb2_skillq_full__2026-06-25
+# 2026-06-25: 2nd full run (v2). This is the 3rd full run (v3):
+#   v1 = tb2_skillq_full__2026-06-24/ — baseline (circuit-fibsqrt hit
+#        the multiplier×override bug, q_table sparse)
+#   v2 = tb2_skillq_full__2026-06-25/ — post-multiplex-fix smoke is
+#        fine but real-data check still pending
+#   v3 = tb2_skillq_full__2026-06-26/ — this run; reuse state from v2
+#        (Q-table has accumulated 89 trials of evidence).
+# Bump the suffix whenever harbor config changes — Harbor refuses
+# to resume with a different job_name.
+job_name: tb2_skillq_full__2026-06-26
 n_attempts: 1
 n_concurrent_trials: 16
 quiet: false
@@ -72,10 +79,12 @@ agents:
       # recommend: null — skip SkillsVote's LLM-based step_recommend.
       # Paper method replaces it with embedding+Q retrieval (TwoStageRanker).
       recommend: null
-      # 2026-06-25: removed the `paper_retrieval:` block (dead code —
-      # the container-side hook never received these values; see
-      # tb2_skillq_full_v3.yaml for the full explanation). Container
-      # hook now reads SKILLQ_HOOK_* env vars set by the bridge.
+      # 2026-06-25: removed the `paper_retrieval:` block. It was dead
+      # code — agent.py read k2/lambda_/c_ucb into a private dict
+      # that was never propagated to the container env, so the
+      # container-side hook ignored it. Container hook now reads
+      # SKILLQ_HOOK_* env vars set by the bridge from method-config
+      # (see skillq/skillq_runtime/agent.py: _populate_hook_env).
 datasets:
   # Use the local vendored copy under input/terminal-bench/. input/ is in
   # .gitignore so the bundled task defs never get committed. Override
