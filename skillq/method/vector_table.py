@@ -159,6 +159,15 @@ class VectorTable:
             del self.embeddings[skill_id]
             self._dirty = True
 
+    def clear(self) -> None:
+        """Drop every cached embedding; mark the cache dirty so the
+        next ``save()`` writes the empty state to disk. Used by the
+        bridge when ``MethodConfig.reuse_embedding_cache=False``.
+        """
+        if self.embeddings:
+            self.embeddings.clear()
+        self._dirty = True
+
     # ------------------------------------------------------------------
     # Convenience
     # ------------------------------------------------------------------

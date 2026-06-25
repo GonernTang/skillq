@@ -418,3 +418,39 @@ for sid, skill in data['library']['skills'].items():
         print(sid, 'still in library')
 "
 ```
+
+## 9. 强制 fresh start + state 与 curated skills co-locate(2026-06-25)
+
+默认每次 `skillq paper run` 会从 `method_state.json` 加载 Q-table + lib,
+从 `emb_cache.json` 加载 description embeddings(续跑)。两个 flag 可以分别
+关掉这两个持久化:
+
+```yaml
+# experiments/configs/method_tb2_skillq_fresh_start.yaml
+state_path: /home/gonern/workspace/skillq/skills/.skillq_state/method_state.json
+seed_skills_dir: /home/gonern/workspace/skillq/skills
+reuse_q_table: false            # 不续 Q-table;Plan D 用 seed_initial_q 重新 seed
+reuse_embedding_cache: false    # 不续 emb_cache;Plan D 重新 embed 每个 skill
+```
+
+跑这条 config 的方式:
+
+```bash
+uv run skillq paper run -c experiments/configs/tb2_skillq_full.yaml \
+    --method-config experiments/configs/method_tb2_skillq_fresh_start.yaml
+```
+
+典型场景:
+
+- **切 embedder**:从 `text-embedding-3-small` 换成 `text-embedding-v4`,dim
+  变了,老 emb_cache 装不下 → 必设 `reuse_embedding_cache: false`
+- **Ablation 重跑**:同 task 列表重跑但要拉平 Q-table → `reuse_q_table: false`
+- **冷启动复现论文图**:两个 flag 都设
+
+**State co-location**: `state_path` 显式指向 `<seed_skills_dir>/.skillq_state/`,
+Q-table 和 emb_cache 就跟 vendor 技能一起放在 `skills/` 目录下。`.gitignore`
+已加 `skills/.skillq_state/`,commit 时不会污染仓库。
+
+**Migration 注意**:`resolved_state_path()` 默认仍然是 `<library_root>/.state/`,
+**不会**因为 `seed_skills_dir` 设了就自动改路径。已有的 `<output>/<job>/.skillq_library/.state/method_state.json`
+需要 yaml 显式 `state_path:` 指过去才会被复用。

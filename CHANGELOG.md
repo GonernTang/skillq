@@ -4,6 +4,43 @@ All notable changes to `skillq` (the branch-style entrypoint that re-uses
 the upstream `skills_vote` lifecycle AND runs the SkillQ paper's
 four-layer method on top of Harbor) are documented here.
 
+> **2026-06-25 — `MethodConfig.reuse_q_table` + `reuse_embedding_cache`
+> + opt-in state co-location**
+>
+> Two independent bool flags (both default `True`) let users force
+> fresh-start semantics for the Q-table and emb_cache separately:
+>
+> ```yaml
+> reuse_q_table: false            # drop Q values; re-seed with seed_initial_q
+> reuse_embedding_cache: false    # drop emb_cache; re-embed every skill
+> ```
+>
+> Typical use cases:
+> - Switch `embedder_model` (dim mismatch) → set `reuse_embedding_cache: false`
+> - Ablation requires Q-table-free start → set `reuse_q_table: false`
+> - Reproduce a paper figure from scratch → set both
+>
+> **State co-location is opt-in.** `resolved_state_path()` keeps the
+> legacy `<library_root>/.state/` default. To co-locate method state
+> with `seed_skills_dir` (so version control covers both curated
+> skills and learned Q-table), set:
+>
+> ```yaml
+> state_path: <seed_skills_dir>/.skillq_state/method_state.json
+> ```
+>
+> `.gitignore` adds `skills/.skillq_state/` so the state files don't
+> pollute commit history. New YAML example:
+> `experiments/configs/method_tb2_skillq_fresh_start.yaml`.
+>
+> Implementation:
+> - `MethodConfig.resolved_emb_cache_path()` mirrors `resolved_state_path()`.
+> - `QlibState.load_into(overwrite_q=...)` lets the bridge load
+>   library + probation bookkeeping without touching the Q-table.
+> - `VectorTable.clear()` empties the cache and marks `_dirty=True`.
+>
+> Tests: 11 new (5 unit + 6 integration), 214/214 total pass.
+
 > **2026-06-25 — Rename `paper_mode/` → `skillq_runtime/`**: The
 > sub-package that bridges the four-layer `skillq.method/` algorithm
 > onto the Harbor harness was renamed for clarity. `paper_mode` was

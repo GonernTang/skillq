@@ -328,7 +328,7 @@ def wire_one_trial(handle: ContainerWiringHandle, event: Any) -> None:
         q_clip_ceiling=method.q_clip_ceiling,
     )
     QlibState(handle.state_path).load_into(lib, mgr, lib_root=method.library_root)
-    emb_cache = VectorTable(handle.state_path.parent / "emb_cache.json")
+    emb_cache = VectorTable(method.resolved_emb_cache_path())
     emb_cache.load()
 
     # 2. Resolve the retrieval mode based on the lib size at this
@@ -580,7 +580,7 @@ def _wire_hook_trial(
     # 1. Reload the emb_cache (we already reloaded in wire_one_trial,
     #    but this function is the only one that uses it for the hook
     #    JSON write; redo it here for clarity).
-    emb_cache = VectorTable(handle.state_path.parent / "emb_cache.json")
+    emb_cache = VectorTable(method.resolved_emb_cache_path())
     emb_cache.load()
 
     # 2. Write the state files for this trial.

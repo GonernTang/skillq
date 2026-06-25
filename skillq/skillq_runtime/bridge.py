@@ -660,7 +660,23 @@ def attach_paper_registers(
     )
     # State + emb_cache load
     state = QlibState(method.resolved_state_path())
-    state.load_into(lib, mgr, lib_root=method.library_root)
+    # ``overwrite_q=method.reuse_q_table`` lets the bridge load the
+    # library + probation bookkeeping regardless, but drops the
+    # Q-table when the user has opted into fresh-start semantics.
+    # Plan D's ``ensure_seeded`` then re-populates Q for every
+    # freshly-loaded skill with ``seed_initial_q``.
+    state.load_into(
+        lib, mgr, lib_root=method.library_root, overwrite_q=method.reuse_q_table
+    )
+    if not method.reuse_q_table:
+        # Defensive: also clear any pre-existing in-memory Q entries
+        # (e.g. left over from a prior code path or test).
+        mgr.q_table.clear()
+        logger.info(
+            "reuse_q_table=False: cleared in-memory Q-table; Plan D "
+            "will re-seed with seed_initial_q at %s",
+            method.resolved_state_path(),
+        )
     # Plan D: if the in-memory library is still empty (no prior
     # method_state.json, or one with empty library.skills), seed it
     # from the on-disk seed library. This is the auto-load path so
@@ -681,8 +697,18 @@ def attach_paper_registers(
                 method.seed_skills_dir,
                 method.resolved_state_path(),
             )
-    emb_cache = VectorTable(method.resolved_state_path().parent / "emb_cache.json")
+    emb_cache = VectorTable(method.resolved_emb_cache_path())
     emb_cache.load()
+    if not method.reuse_embedding_cache:
+        # Force fresh-start for emb_cache: drop every cached embedding
+        # so Plan D's pre-embed pass re-derives them with the current
+        # ``embedder_model``.
+        emb_cache.clear()
+        logger.info(
+            "reuse_embedding_cache=False: cleared emb_cache; "
+            "Plan D will re-embed every skill → %s",
+            emb_cache.cache_path,
+        )
 
     # Plan D (cont.): pre-compute emb_cache for the seeded skills.
     # The hook ranks Skill() calls by cosine(subtask_emb, skill_emb)

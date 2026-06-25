@@ -240,6 +240,43 @@ class MethodConfig(BaseModel):
         ),
     )
 
+    # === Fresh-start toggles (2026-06-25) ===
+    # By default, every on_trial_started reloads ``method_state.json``
+    # (Q-table + library) and ``emb_cache.json`` from disk so the
+    # method resumes across runs. Set either flag to ``False`` to
+    # force fresh-start semantics for that artifact on this run.
+    #
+    # - ``reuse_q_table=False`` → ``mgr.q_table`` starts empty (any
+    #   skills loaded from state or ``seed_skills_dir`` get Q
+    #   ``seed_initial_q``); the on-disk Q-table is overwritten
+    #   with the cleared state at end-of-trial.
+    # - ``reuse_embedding_cache=False`` → ``emb_cache`` starts empty
+    #   (Plan D pre-embed re-derives every skill's description
+    #   embedding); the on-disk cache is overwritten.
+    #
+    # The two flags are independent: keep learned Q values while
+    # regenerating embeddings (e.g. after switching ``embedder_model``),
+    # or vice versa.
+    reuse_q_table: bool = Field(
+        default=True,
+        description=(
+            "If True (default), load ``method_state.json`` from disk "
+            "and resume the Q-table + library. If False, start with "
+            "an empty Q-table (skills get ``seed_initial_q``) and "
+            "overwrite the state file at end-of-trial."
+        ),
+    )
+    reuse_embedding_cache: bool = Field(
+        default=True,
+        description=(
+            "If True (default), load ``emb_cache.json`` from disk and "
+            "reuse the cached description embeddings. If False, "
+            "start with an empty emb_cache (Plan D pre-embed "
+            "re-derives every skill) and overwrite the cache at "
+            "end-of-trial."
+        ),
+    )
+
     # === Verifier uv cache (2026-06-24) ===
     # Path to a host-side uv cache directory that is bind-mounted
     # into the agent container at /root/.cache/uv (read-only).
@@ -403,9 +440,25 @@ class MethodConfig(BaseModel):
     )
 
     def resolved_state_path(self) -> Path:
+        """Resolve the ``method_state.json`` path.
+
+        Order:
+        1. ``state_path`` field (if explicitly set)
+        2. ``<library_root>/.state/method_state.json`` (legacy default)
+
+        For Plan D co-location with the curated skills, set
+        ``state_path`` explicitly in YAML::
+
+            state_path: <seed_skills_dir>/.skillq_state/method_state.json
+        """
         if self.state_path is not None:
             return self.state_path
         return self.library_root / ".state" / "method_state.json"
+
+    def resolved_emb_cache_path(self) -> Path:
+        """Resolve the ``emb_cache.json`` path. Always sibling of
+        :meth:`resolved_state_path` (same parent dir)."""
+        return self.resolved_state_path().parent / "emb_cache.json"
 
     def resolved_benchmark_input_path(self) -> Path:
         """Resolve the benchmark task-definition root.

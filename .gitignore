@@ -36,3 +36,7 @@ htmlcov/
 output/
 input/
 .skillq_library/
+
+# SkillQ method state when co-located with seed_skills_dir
+# (opt-in via state_path in MethodConfig; 2026-06-25)
+skills/.skillq_state/

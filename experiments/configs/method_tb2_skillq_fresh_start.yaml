@@ -1,0 +1,51 @@
+# MethodConfig override for TB 2.0 full run, **fresh-start** variant.
+#
+# Variant of method_tb2_skillq_full.yaml that:
+#   1. Co-locates method state with the curated skills (Plan D state
+#      co-location). Set `state_path` to <seed_skills_dir>/.skillq_state/.
+#      The .skillq_state/ subdir is gitignored.
+#   2. Forces fresh-start semantics: Q-table cleared, emb_cache
+#      cleared. Plan D re-seeds Q with seed_initial_q (0.5) and
+#      re-embeds every skill on the first boot.
+#
+# Use when:
+#   - Switching embedder_model (old emb_cache's dim doesn't match)
+#   - Running an ablation that requires a Q-table-free start
+#   - Re-running a job whose state file is corrupt
+#
+# Run with:
+#   uv run skillq paper run -c experiments/configs/tb2_skillq_full.yaml \
+#       --method-config experiments/configs/method_tb2_skillq_fresh_start.yaml
+
+# Plan D co-location: state files live alongside skills/.
+state_path: /home/gonern/workspace/skillq/skills/.skillq_state/method_state.json
+
+# Plan D: walk this dir for SKILL.md files and pre-populate the
+# library on first boot.
+seed_skills_dir: /home/gonern/workspace/skillq/skills
+
+# Fresh-start toggles (the whole point of this file).
+# Both default to True; setting either to False forces that artifact
+# to be re-loaded from scratch on every boot.
+reuse_q_table: false
+reuse_embedding_cache: false
+
+# Hook-mode retrieval. PreToolUse hook on Skill() fires the
+# embedding-based rerank and writes to skill_calls log.
+retrieval_mode: hook
+hook_top_k: 3
+hook_lambda: 0.5
+hook_c_ucb: 0.5
+
+# CLAUDE.md synthesis (bridge writes .claude/CLAUDE.md with the
+# skillq snippet pointing at the staged skills).
+user_claude_md_path: /home/gonern/workspace/skillq/experiments/smoke/_user_claude_md_stub.md
+
+# LLM-bound pipeline. Attribution + edit use the host's ANTHROPIC_MODEL
+# (deepseek-v4-flash via anthropic-compatible endpoint, set via env).
+attribution_model: anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-flash}
+editor_model: anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-flash}
+
+# Embedding service config (Plan D pre-embeds seeded skills).
+embedder_model: openai/${oc.env:EMBEDDING_MODEL,text-embedding-v4}
+embedder_dim: 1024

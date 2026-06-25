@@ -94,6 +94,8 @@ class QlibState:
         lib: Qlib,
         mgr: LibManager,
         lib_root: Path | None = None,
+        *,
+        overwrite_q: bool = True,
     ) -> bool:
         """Load the state file (if it exists) into ``lib`` and ``mgr``.
 
@@ -105,6 +107,13 @@ class QlibState:
         silently coerced to the new global-Q 2-element form by keeping
         the q value (per-skill; later rows with the same skill_id
         overwrite).
+
+        ``overwrite_q=False`` (2026-06-25): load the library +
+        probation bookkeeping but leave ``mgr.q_table`` untouched.
+        The bridge uses this together with ``reuse_q_table=False``
+        to drop the persisted Q values while still keeping the
+        library (so Plan D's ``ensure_seeded`` can re-populate Q
+        with ``seed_initial_q``).
         """
         if not self.state_path.exists():
             return False
@@ -112,16 +121,17 @@ class QlibState:
         self.step = int(data.get("step", 0))
 
         # Q-table — accept both new 2-tuple and legacy 3-tuple format.
-        mgr.q_table.clear()
-        for row in data.get("q_table", []):
-            if len(row) == 2:
-                skill_id, q = str(row[0]), float(row[1])
-            elif len(row) == 3:
-                # Legacy: [intent, skill_id, q] — drop the intent dim
-                _intent, skill_id, q = row[0], str(row[1]), float(row[2])
-            else:
-                continue
-            mgr.q_table[skill_id] = q
+        if overwrite_q:
+            mgr.q_table.clear()
+            for row in data.get("q_table", []):
+                if len(row) == 2:
+                    skill_id, q = str(row[0]), float(row[1])
+                elif len(row) == 3:
+                    # Legacy: [intent, skill_id, q] — drop the intent dim
+                    _intent, skill_id, q = row[0], str(row[1]), float(row[2])
+                else:
+                    continue
+                mgr.q_table[skill_id] = q
 
         # Probation bookkeeping (telemetry only; no decision consumer).
         # probation_count may be {sid: int} (new) or {sid: {intent: int}}
@@ -151,11 +161,12 @@ class QlibState:
         # the MethodConfig.seed_initial_q field (default 0.5). This is
         # the "optimistic prior" pattern; resume from an existing state
         # file is idempotent (we only fill missing entries).
-        seed_initial_q = float(data.get("seed_initial_q", 0.5))
-        if seed_initial_q != 0.0:
-            for sid in lib.skills:
-                if sid not in mgr.q_table:
-                    mgr.q_table[sid] = seed_initial_q
+        if overwrite_q:
+            seed_initial_q = float(data.get("seed_initial_q", 0.5))
+            if seed_initial_q != 0.0:
+                for sid in lib.skills:
+                    if sid not in mgr.q_table:
+                        mgr.q_table[sid] = seed_initial_q
 
         self._written = True
         return True
