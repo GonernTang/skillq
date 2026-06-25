@@ -1415,6 +1415,91 @@ def attach_paper_registers(
 # ---------------------------------------------------------------------------
 # Public: high-level entry
 # ---------------------------------------------------------------------------
+def _seed_agent_hook_env(
+    job_cfg: "JobConfig",
+    method: "MethodConfig",
+    wiring: "ContainerWiringHandle | None",
+) -> None:
+    """Pre-seed ``cfg.agents[0].env`` with the 7 SKILLQ_HOOK_*
+    tunables derived from ``method`` (2026-06-25).
+
+    Why this helper exists: Harbor's
+    :class:`harbor.agents.factory.AgentFactory.create_agent_from_config`
+    snapshots ``config.env`` into ``agent._extra_env`` at agent-
+    construction time (which happens inside
+    :meth:`harbor.trial.trial.Trial.__init__`, well before
+    ``on_trial_started`` fires). Any later mutation of
+    ``config.env`` (the one inside
+    :func:`skillq.skillq_runtime.container_wiring.wire_one_trial`)
+    is invisible to the agent's bash process. Therefore the only
+    safe injection point is BEFORE :func:`Job.create`.
+
+    Only the 7 *configuration* env vars are seeded here. The 5
+    *path* env vars (``SKILLQ_LIB`` / ``SKILLQ_Q_TABLE`` /
+    ``SKILLQ_EMB_CACHE`` / ``SKILLQ_CALLS_LOG`` /
+    ``SKILLQ_USER_TASK``) are trial-scoped (each trial has its own
+    state dir) and must be set inside ``wire_one_trial``; we
+    intentionally don't touch them here.
+
+    The ``SKILLQ_EMBED_HOST`` / ``SKILLQ_EMBED_PORT`` are
+    shared across all trials in this job, so we seed them here
+    too. ``SkillQClaudeCodeAgent.__init__`` also seeds these as a
+    defense-in-depth default (``host.docker.internal:8765``); our
+    values from ``method`` + ``wiring`` win because ``cfg.env``
+    is read AFTER the agent's class-default ``_extra_env`` merge.
+
+    No-op if the job has zero agents (defensive — Harbor's
+    JobConfig requires at least one today but a future variant
+    might not).
+    """
+    if not job_cfg.agents:
+        return
+    agent_cfg = job_cfg.agents[0]
+    if agent_cfg.env is None:
+        agent_cfg.env = {}
+
+    # Embed host/port: prefer the wiring handle's port (the actual
+    # ephemeral port the daemon bound to); fall back to method's
+    # declared port when wiring is None (no API key set).
+    embed_host = method.hook_embedding_service_host or "host.docker.internal"
+    embed_port = (
+        wiring.embedding["port"]
+        if wiring is not None
+        else method.hook_embedding_service_port
+    )
+
+    # 7 SKILLQ_HOOK_* tunables — names + defaults match the
+    # container-side fallback in hook.py:123-142 so the two
+    # never silently disagree.
+    agent_cfg.env.update(
+        {
+            "SKILLQ_EMBED_HOST": embed_host,
+            "SKILLQ_EMBED_PORT": str(embed_port),
+            "SKILLQ_HOOK_TOP_K": str(method.hook_top_k),
+            "SKILLQ_HOOK_LAMBDA": f"{method.hook_lambda:.6f}",
+            "SKILLQ_HOOK_C_UCB": f"{method.hook_c_ucb:.6f}",
+            "SKILLQ_HOOK_SCORE_MODE": method.hook_score_mode,
+            "SKILLQ_HOOK_MULT_BETA": f"{method.hook_multiplicative_beta:.6f}",
+            "SKILLQ_HOOK_MULT_GAMMA": f"{method.hook_multiplicative_gamma:.6f}",
+            "SKILLQ_HOOK_Q_CLIP_MIN": f"{method.hook_q_clip_min:.6f}",
+            "SKILLQ_HOOK_Q_CLIP_MAX": f"{method.hook_q_clip_max:.6f}",
+        }
+    )
+    # Pull-mode Top-K for SessionStart hook (only if method asks
+    # for a separate value).
+    if method.retrieval_mode == "pull":
+        agent_cfg.env["SKILLQ_PULL_TOP_K"] = str(method.hook_pull_top_k)
+
+    logger.info(
+        "Pre-seeded cfg.agents[0].env with %d SKILLQ_HOOK_* vars "
+        "(score_mode=%s, beta=%.3f, gamma=%.3f)",
+        sum(1 for k in agent_cfg.env if k.startswith("SKILLQ_HOOK_")),
+        method.hook_score_mode,
+        method.hook_multiplicative_beta,
+        method.hook_multiplicative_gamma,
+    )
+
+
 async def run_paper_job(job_config_path: Path, method: MethodConfig) -> int:
     """Create a Harbor Job, start the embed daemon, attach the
     per-subtask hook, run, and tear down.
@@ -1455,6 +1540,26 @@ async def run_paper_job(job_config_path: Path, method: MethodConfig) -> int:
     # EMBEDDING_API_KEY isn't set — the trial still runs, but the
     # per-subtask hook is not installed.
     wiring = start_container_wiring(method)
+
+    # 2026-06-25: pre-seed cfg.agents[0].env with the 7 method-config
+    # hook tunables. The container-side hook reads these via
+    # ``os.environ.get`` (see hook.py:123-142) and applies the
+    # scoring formula (additive vs multiplicative) + Hard Gate
+    # params. Critical timing detail: Harbor's Trial.__init__
+    # calls ``AgentFactory.create_agent_from_config`` which calls
+    # ``resolve_env_vars(config.env)`` ONCE and copies the result
+    # into ``agent._extra_env`` (see harbor/agents/factory.py:46
+    # + harbor/agents/installed/base.py:147). Any later mutation
+    # of ``config.env`` is invisible to the agent. Therefore the
+    # only safe place to inject the 7 SKILLQ_HOOK_* env vars is
+    # HERE — before ``Job.create`` snapshots the job config.
+    #
+    # If ``wiring`` is None (no API key), we fall back to the
+    # method-config-declared embed port; the bridge's later
+    # on_trial_started will also re-apply these but that's a
+    # defensive duplicate, not a substitute.
+    _seed_agent_hook_env(job_cfg, method, wiring)
+
     job = await Job.create(job_cfg)
     try:
         attach_paper_registers(job, method, wiring)

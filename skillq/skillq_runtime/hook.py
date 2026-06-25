@@ -129,11 +129,16 @@ EMBED_TIMEOUT_SEC = float(os.environ.get("SKILLQ_HOOK_EMBED_TIMEOUT_SEC", "5.0")
 PULL_TOP_K = int(os.environ.get("SKILLQ_PULL_TOP_K", os.environ.get("SKILLQ_HOOK_TOP_K", "3")))
 
 # 2026-06-24: Scoring mode + multiplicative params + Hard Gate.
-# These map 1:1 to MethodConfig fields set by container_wiring.py.
-# Defaults match the MethodConfig defaults; the env vars exist so the
-# container-side hook (which has no Python access to MethodConfig)
-# can read them.
-SCORE_MODE = os.environ.get("SKILLQ_HOOK_SCORE_MODE", "additive")
+# These map 1:1 to MethodConfig fields. Defaults MUST match
+# MethodConfig defaults exactly (the latter is set in
+# config.py:124) — if they ever disagree, the container-side
+# hook silently runs a different formula than the host-side
+# bridge (e.g. hook scoring with additive while bridge Q-updates
+# assume multiplicative ranks). 2026-06-25 changed the fallback
+# from "additive" to "multiplicative" to align with
+# MethodConfig's default; an in-container default of "additive"
+# is a footgun.
+SCORE_MODE = os.environ.get("SKILLQ_HOOK_SCORE_MODE", "multiplicative")
 MULT_BETA = float(os.environ.get("SKILLQ_HOOK_MULT_BETA", "0.5"))
 MULT_GAMMA = float(os.environ.get("SKILLQ_HOOK_MULT_GAMMA", "0.2"))
 Q_CLIP_MIN = float(os.environ.get("SKILLQ_HOOK_Q_CLIP_MIN", "0.0"))

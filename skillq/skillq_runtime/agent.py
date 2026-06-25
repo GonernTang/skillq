@@ -98,6 +98,25 @@ class SkillQClaudeCodeAgent(ClaudeCode):
         # Merge SKILLQ_* into ``self._extra_env`` (created by
         # BaseInstalledAgent.__init__). Don't clobber anything
         # already in there (e.g. from the bridge's late updates).
+        #
+        # 2026-06-25: the 5 ``SKILLQ_HOOK_SCORE_MODE`` /
+        # ``SKILLQ_HOOK_MULT_*`` / ``SKILLQ_HOOK_Q_CLIP_*`` keys
+        # were previously only written by ``hook_env()`` from
+        # ``container_wiring.on_trial_started`` — but that runs
+        # AFTER the agent is already constructed (Trial.create
+        # snapshots config.env into extra_env at construction
+        # time, see harbor/agents/factory.py:46). Result: the
+        # container-side hook silently fell back to its hardcoded
+        # default of ``"additive"`` even when MethodConfig set
+        # ``hook_score_mode: "multiplicative"``. We now seed the
+        # 5 new keys here at __init__ time so the agent's
+        # ``_extra_env`` carries them into the container. The
+        # bridge in ``run_paper_job`` will OVERWRITE these with
+        # method-config-derived values BEFORE Trial.create, so
+        # the values seen at runtime are the method-config ones;
+        # the defaults below are a defense-in-depth safety net
+        # for direct-import call sites that don't go through
+        # the paper CLI.
         skillq_hook_env = {
             "SKILLQ_LIB": str(CONTAINER_LIB_PATH),
             "SKILLQ_Q_TABLE": str(CONTAINER_Q_TABLE_PATH),
@@ -109,17 +128,24 @@ class SkillQClaudeCodeAgent(ClaudeCode):
             "SKILLQ_HOOK_TOP_K": "3",
             "SKILLQ_HOOK_LAMBDA": "0.500000",
             "SKILLQ_HOOK_C_UCB": "0.500000",
+            # 2026-06-25: 5 new keys, defaults mirror hook.py fallback
+            # AND MethodConfig defaults (so the two never disagree
+            # silently).
+            "SKILLQ_HOOK_SCORE_MODE": "multiplicative",
+            "SKILLQ_HOOK_MULT_BETA": "0.500000",
+            "SKILLQ_HOOK_MULT_GAMMA": "0.200000",
+            "SKILLQ_HOOK_Q_CLIP_MIN": "0.000000",
+            "SKILLQ_HOOK_Q_CLIP_MAX": "1.000000",
         }
-        # Read paper_retrieval kwargs if present so the dynamic
-        # values (lambda, c_ucb, top_k) match the trial.
-        paper = self._flag_kwargs.get("paper_retrieval") or {}
-        if isinstance(paper, dict):
-            if "k2" in paper:
-                skillq_hook_env["SKILLQ_HOOK_TOP_K"] = str(paper["k2"])
-            if "lambda_" in paper:
-                skillq_hook_env["SKILLQ_HOOK_LAMBDA"] = f"{float(paper['lambda_']):.6f}"
-            if "c_ucb" in paper:
-                skillq_hook_env["SKILLQ_HOOK_C_UCB"] = f"{float(paper['c_ucb']):.6f}"
+        # 2026-06-25: removed the ``paper_retrieval`` block. It was
+        # dead code — the agent kwarg was read into a private dict
+        # that was never propagated to the container env, so the
+        # container-side hook ignored it. The bridge now writes
+        # SKILLQ_HOOK_* env vars from method-config (see
+        # ``run_paper_job`` in bridge.py). All three yaml configs
+        # (``tb2_skillq_full.yaml``, ``tb2_skillq_full_v3.yaml``,
+        # ``swebenchpro_skillq.yaml``) have dropped the
+        # ``paper_retrieval:`` block.
 
         # Pull-mode (2026-06-23): if the caller passes pull_top_k kwarg,
         # set SKILLQ_PULL_TOP_K so the hook's SessionStart branch uses

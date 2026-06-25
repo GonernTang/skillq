@@ -621,6 +621,16 @@ def _wire_hook_trial(
         env["SKILLQ_PULL_TOP_K"] = str(method.hook_pull_top_k)
 
     # 3. Inject env into the trial's agent config.
+    #
+    # 2026-06-25: this ``cfg.agent.env.update`` is now mostly a
+    # defensive duplicate of the pre-seed done by
+    # ``bridge._seed_agent_hook_env`` in ``run_paper_job``. The
+    # 5 path-related env vars (``SKILLQ_LIB`` / ``SKILLQ_Q_TABLE`` /
+    # ``SKILLQ_EMB_CACHE`` / ``SKILLQ_CALLS_LOG`` /
+    # ``SKILLQ_USER_TASK``) are still trial-scoped (each trial
+    # gets its own state dir) and DO need updating here for any
+    # future Harbor release that re-resolves env at trial start.
+    # The 7 SKILLQ_HOOK_* tunables are also re-applied harmlessly.
     cfg = event.config
     cfg.agent.env.update(env)
 
