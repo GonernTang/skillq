@@ -69,9 +69,10 @@ agents:
       # from the parent shell, which on this host is "max" (invalid; Harbor
       # only accepts low/medium/high). Explicit kwarg wins over env_fallback.
       reasoning_effort: high
-      # recommend: null — skip SkillsVote's LLM-based step_recommend.
-      # Paper method replaces it with embedding+Q retrieval (TwoStageRanker).
-      recommend: null
+      # 2026-06-25: removed the `recommend: null` line (dead config —
+      # SkillQClaudeCodeAgent no longer inherits from
+      # SkillsVoteClaudeCode, so the `recommend` kwarg is a no-op
+      # historical leftover).
       # 2026-06-25: removed the `paper_retrieval:` block (dead code —
       # the container-side hook never received these values; see
       # tb2_skillq_full_v3.yaml for the full explanation). Container

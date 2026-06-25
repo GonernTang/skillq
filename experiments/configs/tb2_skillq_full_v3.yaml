@@ -43,7 +43,7 @@ jobs_dir: output
 # to resume with a different job_name.
 job_name: tb2_skillq_full__2026-06-26
 n_attempts: 1
-n_concurrent_trials: 16
+n_concurrent_trials: 8
 quiet: false
 retry:
   max_retries: 0
@@ -76,9 +76,11 @@ agents:
       # from the parent shell, which on this host is "max" (invalid; Harbor
       # only accepts low/medium/high). Explicit kwarg wins over env_fallback.
       reasoning_effort: high
-      # recommend: null — skip SkillsVote's LLM-based step_recommend.
-      # Paper method replaces it with embedding+Q retrieval (TwoStageRanker).
-      recommend: null
+      # 2026-06-25: removed the `recommend: null` line. SkillQClaudeCodeAgent
+      # is a direct subclass of Harbor ClaudeCode (no longer inherits
+      # SkillsVoteClaudeCode), so the `recommend` kwarg is a no-op
+      # historical leftover. Paper method uses hook-based retrieval
+      # (TwoStageRanker) instead of LLM-based step_recommend.
       # 2026-06-25: removed the `paper_retrieval:` block. It was dead
       # code — agent.py read k2/lambda_/c_ucb into a private dict
       # that was never propagated to the container env, so the
