@@ -173,17 +173,29 @@ def start_embedding_service_background(
     port: int | None = None,
     host: str | None = None,
     embedder=None,
+    ready_timeout_sec: float = 5.0,
 ) -> "EmbeddingServiceHandle":
     """Start the embedding daemon in a daemon thread.
 
     Returns a handle dict: ``{"thread", "server", "port", "stop_event"}``.
     Use :func:`stop_embedding_service` to shut it down.
 
-    This is what :class:`skillq.skillq_runtime.agent.PaperClaudeCodeAgent`
-    calls at trial start. It does NOT block — the agent continues
-    to start the Claude Code CLI immediately. The hook fires after
-    the agent has started, by which time the server is bound.
+    2026-06-26 (race fix): the original implementation returned
+    immediately after spawning the thread. uvicorn takes ~50-150ms
+    to actually bind to the port, so hook calls fired in that
+    window hit ``ConnectionRefusedError`` and silently degraded
+    the entire L1 layer (``sim=null`` for every skill → all
+    Skill calls denied by the Hard Gate). We now poll
+    ``GET /healthz`` on the loopback interface after starting
+    the thread; we return once the server answers 200 or the
+    ``ready_timeout_sec`` elapses (whichever comes first). On
+    timeout we log a warning and return anyway — the trial can
+    still proceed, but the hook will fall back to Q+UCB-only
+    ranking for this session.
     """
+    import time
+
+    import requests
     import uvicorn
 
     port = port or int(os.environ.get("EMBEDDING_SERVICE_PORT", "8765"))
@@ -210,6 +222,43 @@ def start_embedding_service_background(
     thread.start()
 
     logger.info("Started embedding service on %s:%d", host, port)
+
+    # Poll loopback /healthz until the server is actually accepting
+    # connections. The hook reads via host.docker.internal but the
+    # server binds to 0.0.0.0 which also listens on 127.0.0.1, so
+    # the local probe is a safe proxy for "ready to serve". We
+    # use a short poll interval (50ms) so the happy path costs
+    # only ~50-150ms (the same window that was previously
+    # silently broken). On a stuck bind (e.g., port already in
+    # use) we time out gracefully after ready_timeout_sec.
+    deadline = time.monotonic() + ready_timeout_sec
+    ready = False
+    last_err: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            r = requests.get(
+                f"http://127.0.0.1:{port}/healthz", timeout=0.5
+            )
+            if r.status_code == 200:
+                ready = True
+                break
+        except Exception as exc:  # noqa: BLE001
+            last_err = exc
+        time.sleep(0.05)
+    if ready:
+        logger.info(
+            "Embedding service ready on %s:%d (after ready-wait)", host, port
+        )
+    else:
+        logger.warning(
+            "Embedding service NOT ready on %s:%d after %.1fs "
+            "(last_err=%r); hook will fall back to Q+UCB-only ranking",
+            host,
+            port,
+            ready_timeout_sec,
+            last_err,
+        )
+
     return {"thread": thread, "server": server, "port": port, "stop_event": stop_event}
 
 
