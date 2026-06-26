@@ -356,13 +356,18 @@ class MethodConfig(BaseModel):
     extract_every_n_trials: int = Field(
         default=4, ge=1,
         description=(
-            "Batched-evolve flush cadence. Every N qualifying successful "
-            "trials (those whose attribution ∈ {SUCCESS_NO_SKILL_SEEN, "
-            "SUCCESS_VIEWED_SKILL_BUT_NOT_USED}), spawn ONE claude "
-            "--print subprocess that aggregates the N (task, knowledge) "
-            "records into a single new SKILL.md. Default 4 mirrors "
-            "SkillsVote's evolve_every_n_trials=1 default offset by the "
-            "extra LLM call cost in the paper's per-trial attribution step."
+            "Batched-evolve flush cadence. Every N qualifying trials "
+            "(those whose attribution ∈ {SUCCESS_NO_SKILL_SEEN, "
+            "FAILURE_SKILL_NOT_USED}), spawn ONE claude --print "
+            "subprocess that aggregates the N (task, knowledge) records "
+            "into a single new SKILL.md. Default 4 mirrors SkillsVote's "
+            "evolve_every_n_trials=1 default offset by the extra LLM "
+            "call cost in the paper's per-trial attribution step. "
+            "(2026-06-26: SUCCESS_VIEWED_SKILL_BUT_NOT_USED removed — "
+            "structurally unreachable under L1 force-use. "
+            "FAILURE_SKILL_USED is no longer in the extract trigger set; "
+            "the failure-path create trigger is now FAILURE_SKILL_NOT_USED "
+            "only.)"
         ),
     )
     extract_max_new_per_trial: int = Field(default=1, ge=0, le=10)

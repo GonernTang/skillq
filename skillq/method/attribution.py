@@ -47,19 +47,34 @@ from skillq.method.prompts import ATTRIBUTION_PROMPT
 
 
 class Attribution(str, Enum):
-    """Six-class trial-level attribution enum.
+    """Five-class trial-level attribution enum (renamed 2026-06-26).
 
-    Mirror of lqrl's main six classes; we drop the rarer
-    ``uncertain_*`` / ``fail_*_env`` variants that lqrl has because
-    the paper method only branches on the success/fail split and
-    the viewed/no-skill split.
+    The naming now mirrors the action the bridge should take:
+
+      - ``SUCCESS_SKILL_USED`` — agent used a relevant skill and the
+        trial succeeded; nothing to do.
+      - ``SUCCESS_NO_SKILL_SEEN`` — trial succeeded but no relevant
+        skill was available/used; create a new skill from the
+        success trajectory.
+      - ``FAILURE_SKILL_USED`` — agent used a skill and the trial
+        still failed; the skill is at fault, edit it in place.
+      - ``FAILURE_SKILL_NOT_USED`` — trial failed and no relevant
+        skill was used; the library is missing a relevant skill,
+        create a guard-rail one from the failure attribution.
+      - ``FAIL_ENV_ISSUE`` — failure is environmental (network,
+        dependency), nothing to do.
+
+    The previous ``SUCCESS_VIEWED_SKILL_BUT_NOT_USED`` enum is
+    removed because the L1 force-use hook (2026-06-26) makes that
+    state structurally unreachable: the agent is told it MUST
+    call ``Skill()`` with one of the top-k skills, so it cannot
+    "see but not use" a relevant skill.
     """
 
     SUCCESS_SKILL_USED = "success_skill_used"
-    SUCCESS_VIEWED_SKILL_BUT_NOT_USED = "success_viewed_skill_but_not_used"
     SUCCESS_NO_SKILL_SEEN = "success_no_skill_seen"
-    FAIL_SKILL_ISSUE = "fail_skill_issue"
-    FAIL_AGENT_ISSUE = "fail_agent_issue"
+    FAILURE_SKILL_USED = "failure_skill_used"
+    FAILURE_SKILL_NOT_USED = "failure_skill_not_used"
     FAIL_ENV_ISSUE = "fail_env_issue"
 
 
@@ -84,14 +99,17 @@ class TrialAttribution(BaseModel):
     the agent used to succeed. It is *only* meaningful when
     ``overall_attribution`` is one of the success cases.
 
-    ``library_gap_skill_description`` (2026-06-25) is the
-    actionable "what skill SHOULD have been in the library"
+    ``library_gap_skill_description`` (2026-06-25, refined 2026-06-26)
+    is the actionable "what skill SHOULD have been in the library"
     statement. Populated when the attribution enum signals a
     missing-skill scenario (see ATTRIBUTION_PROMPT). The
     failure-path extract prompt uses this field as the
     *primary seed* for synthesized SKILL.md files; the
     ``knowledge_to_extract`` field is the agent's diagnosis
-    of what went wrong. Empty by default.
+    of what went wrong. Empty by default. As of 2026-06-26
+    only the two gap-signaling enums
+    (``SUCCESS_NO_SKILL_SEEN`` and ``FAILURE_SKILL_NOT_USED``)
+    populate this field.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -278,9 +296,15 @@ class AttributionAnalyzer:
                 pass
 
         if not candidates:
+            # 2026-06-26: fallback to FAILURE_SKILL_NOT_USED (the
+            # renamed equivalent of the old FAIL_AGENT_ISSUE). This
+            # is also the failure-path "create a new skill" trigger
+            # in bridge.py:1213, so a parse failure routes into the
+            # batched extract path — the LLM error becomes visible
+            # in the audit log instead of being silently swallowed.
             return TrialAttribution(
-                overall_attribution=Attribution.FAIL_AGENT_ISSUE,
-                overall_rationale="attribution parse failed; defaulting to FAIL_AGENT_ISSUE",
+                overall_attribution=Attribution.FAILURE_SKILL_NOT_USED,
+                overall_rationale="attribution parse failed; defaulting to FAILURE_SKILL_NOT_USED",
             )
 
         obj = candidates[0]
@@ -288,8 +312,8 @@ class AttributionAnalyzer:
             return TrialAttribution.model_validate(obj)
         except Exception:
             return TrialAttribution(
-                overall_attribution=Attribution.FAIL_AGENT_ISSUE,
-                overall_rationale="attribution validation failed; defaulting to FAIL_AGENT_ISSUE",
+                overall_attribution=Attribution.FAILURE_SKILL_NOT_USED,
+                overall_rationale="attribution validation failed; defaulting to FAILURE_SKILL_NOT_USED",
             )
 
     @staticmethod
@@ -299,24 +323,33 @@ class AttributionAnalyzer:
         """Safety net for the prompt's hard constraints.
 
         If the LLM returned an ``overall_attribution`` inconsistent
-        with ``r_task`` (e.g. ``FAIL_AGENT_ISSUE`` despite a successful
-        trial), coerce the enum to a consistent value rather than
-        crash the bridge. The ``[consistency-clamp]`` marker in the
-        rationale makes coercion events greppable in logs.
+        with ``r_task`` (e.g. ``FAILURE_SKILL_NOT_USED`` despite a
+        successful trial), coerce the enum to a consistent value
+        rather than crash the bridge. The ``[consistency-clamp]``
+        marker in the rationale makes coercion events greppable in
+        logs.
 
         ``knowledge_to_extract`` is passed through unchanged — we
         never fabricate knowledge (fake knowledge would let the
         extractor synthesize low-quality SKILL.md files, which is
         worse than skipping extraction).
+
+        2026-06-26 rename: clamp sets updated to the new 5-enum
+        surface (``SUCCESS_VIEWED_SKILL_BUT_NOT_USED`` removed);
+        the r_task=0 clamp target is now ``FAILURE_SKILL_USED``
+        (the renamed equivalent of the old ``FAIL_SKILL_ISSUE``)
+        — chosen because it is the most conservative failure
+        enum: "a skill was used and the trial failed", which is
+        the natural interpretation when an LLM returned a
+        ``SUCCESS_SKILL_USED`` value alongside ``r_task=0``.
         """
         success_enums = {
             Attribution.SUCCESS_SKILL_USED,
-            Attribution.SUCCESS_VIEWED_SKILL_BUT_NOT_USED,
             Attribution.SUCCESS_NO_SKILL_SEEN,
         }
         fail_enums = {
-            Attribution.FAIL_SKILL_ISSUE,
-            Attribution.FAIL_AGENT_ISSUE,
+            Attribution.FAILURE_SKILL_USED,
+            Attribution.FAILURE_SKILL_NOT_USED,
             Attribution.FAIL_ENV_ISSUE,
         }
         if r_task == 1 and att.overall_attribution in fail_enums:
@@ -330,11 +363,11 @@ class AttributionAnalyzer:
             })
         if r_task == 0 and att.overall_attribution in success_enums:
             return att.model_copy(update={
-                "overall_attribution": Attribution.FAIL_SKILL_ISSUE,
+                "overall_attribution": Attribution.FAILURE_SKILL_USED,
                 "overall_rationale": (
                     f"[consistency-clamp] r_task=0 but LLM returned "
                     f"{att.overall_attribution.value}; coerced to "
-                    f"fail_skill_issue. {att.overall_rationale}"
+                    f"failure_skill_used. {att.overall_rationale}"
                 ),
             })
         return att

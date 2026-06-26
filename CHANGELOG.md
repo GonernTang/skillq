@@ -4,6 +4,61 @@ All notable changes to `skillq` (the branch-style entrypoint that re-uses
 the upstream `skills_vote` lifecycle AND runs the SkillQ paper's
 four-layer method on top of Harbor) are documented here.
 
+> **2026-06-26 — Attribution enum rename + L3/L4 create-vs-edit split + L1 force-use text**
+>
+> Three coordinated changes that make the L1→L3→L4 contract explicit.
+>
+> 1. **`Attribution` enum renamed.** Two members renamed to match the
+>    bridge action they trigger; one member deleted as structurally
+>    unreachable under the new force-use hook.
+>    - `FAIL_SKILL_ISSUE` → `FAILURE_SKILL_USED`
+>    - `FAIL_AGENT_ISSUE` → `FAILURE_SKILL_NOT_USED`
+>    - `SUCCESS_VIEWED_SKILL_BUT_NOT_USED` → removed
+>
+> 2. **Create/Edit split driven by attribution.** Previously
+>    `_incremental_edit_on_failure` fired on every failed trial with a
+>    non-empty lib (independent of attribution), and
+>    `_attribution_and_extract_dispatch` routed both `FAIL_AGENT_ISSUE`
+>    and `FAIL_SKILL_ISSUE` into the L4 Create path. New routing:
+>
+>    | r_task | Attribution             | Action                       |
+>    |--------|-------------------------|------------------------------|
+>    | 1      | `SUCCESS_NO_SKILL_SEEN` | L4 Create (success prompt)   |
+>    | 0      | `FAILURE_SKILL_NOT_USED`| L4 Create (failure prompt)   |
+>    | 0      | `FAILURE_SKILL_USED`    | L3 Edit (top-Q skill in place)|
+>    | 1      | `SUCCESS_SKILL_USED`    | no-op                        |
+>    | 0      | `FAIL_ENV_ISSUE`        | no-op                        |
+>
+>    The Q-update formula is unchanged. The new gate uses a
+>    closure-cached `_last_attribution` to avoid a second LLM call per
+>    trial.
+>
+> 3. **Hook force-use text.** `hook._format_top_k` and
+>    `hook._format_pull_context` closing lines changed from "or skip if
+>    none fit" (advisory) to "You MUST call Skill() with one of these"
+>    (required). The hook itself remains fail-open at the protocol
+>    level, but the text sharpens the contract: agents are now told to
+>    call Skill() with one of the listed candidates before continuing
+>    with other tools. The empty top-k path ("no relevant skills, solve
+>    directly") is unchanged — MUST-call language would be a lie if
+>    there is nothing to call.
+>
+> Files touched:
+> - `skillq/method/attribution.py` — enum rename + parse/clamp defaults
+> - `skillq/method/prompts.py` — enum string literals refreshed
+> - `skillq/skillq_runtime/bridge.py` — Rule 2/5 tuples reduced;
+>   `_incremental_edit_on_failure` gated on `FAILURE_SKILL_USED`;
+>   closure-cached `_last_attribution` threaded from step 2 to step 6
+> - `skillq/skillq_runtime/hook.py` — MUST-call text in
+>   `_format_top_k` / `_format_pull_context`
+> - `skillq/skillq_runtime/config.py` — `extract_every_n_trials`
+>   docstring updated to the new enum set
+> - 4 test files renamed; 1 structurally-dead test deleted; 3 new test
+>   files added (`test_attribution_rename.py`,
+>   `test_bridge_create_vs_edit_split.py`,
+>   `test_hook_force_use_text.py`)
+> - `doc/bug_to_fix.md`, `experiments/RUNNING.md` — references updated
+
 > **2026-06-25 — L4 quality gates: structural validation + semantic dedup**
 >
 > Two new gates at the L4 extract boundary:

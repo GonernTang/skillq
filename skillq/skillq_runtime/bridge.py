@@ -451,14 +451,16 @@ class _ExtractBuffer:
         """Add a record. Returns ``True`` when the buffer has hit its
         threshold (caller should then call :meth:`flush`).
 
-        ``gap_description`` (2026-06-25) is the explicit "what skill
-        the library should have contained" string from the
-        attribution step. Empty for success paths; populated
-        when ``Attribution.FAIL_AGENT_ISSUE`` /
-        ``Attribution.SUCCESS_NO_SKILL_SEEN`` /
-        ``Attribution.SUCCESS_VIEWED_SKILL_BUT_NOT_USED`` was
-        the verdict. The failure-path extract prompt uses this
-        as the primary seed.
+        ``gap_description`` (2026-06-25, refined 2026-06-26) is the
+        explicit "what skill the library should have contained"
+        string from the attribution step. Empty for the
+        no-action paths; populated when the verdict is one of
+        the two gap-signaling enums:
+        ``Attribution.FAILURE_SKILL_NOT_USED`` (failure path,
+        library gap) or ``Attribution.SUCCESS_NO_SKILL_SEEN``
+        (success path, no relevant skill available). The
+        failure-path extract prompt uses this as the primary
+        seed.
         """
         if not knowledge.strip():
             return False
@@ -930,6 +932,12 @@ def attach_paper_registers(
     # on a closure over attach_paper_registers. The Q-table and lib
     # are passed in (and mutated in place).
     # ------------------------------------------------------------------
+    # 2026-06-26: closure-cached attribution result. Step 2's
+    # _attribution_and_extract_dispatch writes this; step 6's
+    # _incremental_edit_on_failure reads it to gate on
+    # FAILURE_SKILL_USED. Avoids a second LLM call per trial.
+    _last_attribution: TrialAttribution | None = None
+
     def _q_update(
         *,
         trial_id: str,
@@ -1154,19 +1162,28 @@ def attach_paper_registers(
         """Run the attribution step and feed (task, knowledge) into
         the extract buffer.
 
-        Two paper rules trigger a new-skill creation here:
+        Two paper rules trigger a new-skill creation here (2026-06-26
+        enum rename):
 
         - **Rule 2** (success path): r_task == 1 AND
-          attribution ∈ {SUCCESS_NO_SKILL_SEEN,
-          SUCCESS_VIEWED_SKILL_BUT_NOT_USED} AND
+          attribution == ``SUCCESS_NO_SKILL_SEEN`` AND
           ``knowledge_to_extract`` is non-empty. The knowledge is a
           reusable procedure; we add to the buffer with
-          ``mode="success"`` so the right prompt is used.
+          ``mode="success"`` so the right prompt is used. The old
+          ``SUCCESS_VIEWED_SKILL_BUT_NOT_USED`` trigger is removed
+          — under the new L1 force-use hook, the agent can no longer
+          "see but not use" a relevant skill, so the state is
+          structurally unreachable.
         - **Rule 5** (failure path): r_task == 0 AND
-          attribution ∈ {FAIL_AGENT_ISSUE, FAIL_SKILL_ISSUE} AND
+          attribution == ``FAILURE_SKILL_NOT_USED`` AND
           ``knowledge_to_extract`` is non-empty. The knowledge is a
           failure attribution; we add to the buffer with
-          ``mode="failure"`` so the guard-rail prompt is used.
+          ``mode="failure"`` so the guard-rail prompt is used. The
+          old ``FAIL_SKILL_ISSUE`` / now-renamed ``FAILURE_SKILL_USED``
+          trigger is removed from Create and routed into the L3 Edit
+          path instead — "skill was used and the trial failed" means
+          the skill is at fault and should be edited in place, not
+          replaced by a new skill.
 
         Note: a previous version of this gate checked "no existing
         skill has high Q" before allowing extraction. That gate is
@@ -1184,23 +1201,37 @@ def attach_paper_registers(
             skills_root=_find_skills_dir(event),
             r_task=r_task,
         )
+        # 2026-06-26: cache the attribution result on the closure
+        # so step 6's _incremental_edit_on_failure can read it and
+        # gate on FAILURE_SKILL_USED without re-running the
+        # analyzer (which would be a second LLM call per trial).
+        # Set unconditionally — even when we don't trigger a create,
+        # the edit gate still needs the verdict.
+        nonlocal _last_attribution
+        _last_attribution = attribution
         knowledge = attribution.knowledge_to_extract.strip()
         # 2026-06-25: thread the new library_gap_skill_description
         # field through to the buffer. The failure-path extract
         # prompt uses this as the primary seed for the synthesized
         # skill (see BATCHED_EXTRACT_SKILL_FROM_FAILURE_PROMPT,
-        # "Preferred seed" section). Empty string on success paths
-        # (no gap signal needed) and on FAIL_ENV_ISSUE / FAIL_SKILL_ISSUE
-        # where the attribution step didn't populate it.
+        # "Preferred seed" section). Empty on
+        # SUCCESS_SKILL_USED / FAIL_ENV_ISSUE / FAILURE_SKILL_USED
+        # (no gap signal: either nothing to learn, or the failure
+        # is attributed to an existing skill which will be edited
+        # in place by the L3 path).
         gap_description = attribution.library_gap_skill_description.strip()
         triggered = False
         if knowledge:
-            if r_task and attribution.overall_attribution in (
-                Attribution.SUCCESS_VIEWED_SKILL_BUT_NOT_USED,
-                Attribution.SUCCESS_NO_SKILL_SEEN,
+            if (
+                r_task
+                and attribution.overall_attribution
+                == Attribution.SUCCESS_NO_SKILL_SEEN
             ):
                 # Rule 2: success trajectory with no relevant skill
                 # in lib → new skill from the success trajectory.
+                # (2026-06-26: SUCCESS_VIEWED_SKILL_BUT_NOT_USED removed
+                # from this tuple — structurally unreachable under
+                # force-use hook.)
                 buffer_full = extract_buffer.add(
                     task=intent_text,
                     knowledge=knowledge,
@@ -1210,15 +1241,21 @@ def attach_paper_registers(
                 if buffer_full:
                     await _flush_buffer()
                 triggered = True
-            elif not r_task and attribution.overall_attribution in (
-                Attribution.FAIL_AGENT_ISSUE,
-                Attribution.FAIL_SKILL_ISSUE,
+            elif (
+                not r_task
+                and attribution.overall_attribution
+                == Attribution.FAILURE_SKILL_NOT_USED
             ):
-                # Rule 5: failure attributed to agent or to an
-                # unused skill → new skill (guard-rail) from the
+                # Rule 5: failure attributed to "no relevant skill
+                # was used" → new skill (guard-rail) from the
                 # failure attribution. Note: FAIL_ENV_ISSUE is
                 # excluded because the failure was external, not a
-                # missing-skill problem.
+                # missing-skill problem. 2026-06-26:
+                # FAILURE_SKILL_USED (renamed from FAIL_SKILL_ISSUE)
+                # is removed from this tuple — when a skill was
+                # used and the trial still failed, the bridge
+                # routes to L3 EditRefiner (step 6) instead of
+                # creating a new skill.
                 buffer_full = extract_buffer.add(
                     task=intent_text,
                     knowledge=knowledge,
@@ -1282,16 +1319,40 @@ def attach_paper_registers(
         intent_text: str,
         trial_dir: Path,
         trial_id: str,
+        attribution: TrialAttribution | None = None,
     ) -> None:
-        """Layer 4 (Sec. 3.4 incremental editing): if the trial failed
-        (r_task == 0), ask the editor backend to propose a minimal
-        edit on the highest-Q skill and re-embed the description if
-        it changed.
+        """Layer 3 (Sec. 3.4 incremental editing): if the trial failed
+        AND the attribution says a skill was used and is at fault,
+        ask the editor backend to propose a minimal edit on the
+        highest-Q skill and re-embed the description if it changed.
 
-        The previous near-miss gate (``Q >= theta_near_miss``) was
+        2026-06-26 enum rename + create/edit split: the gate is now
+        attribution-driven, not "every failure triggers edit". The
+        clean split with L4 Create is:
+
+          - ``FAILURE_SKILL_USED`` → this path (edit the failing
+            skill in place; the skill is at fault)
+          - ``FAILURE_SKILL_NOT_USED`` → L4 Create (guard-rail skill
+            from the failure attribution; the library is missing a
+            relevant skill, not failing because of an existing one)
+          - ``SUCCESS_*`` / ``FAIL_ENV_ISSUE`` → no-op
+
+        The previous "near-miss gate" (``Q >= theta_near_miss``) was
         removed 2026-06-22; see the comment in the function body.
         """
-        if not r_task or not lib.skills:
+        if r_task or not lib.skills:
+            return
+        # 2026-06-26: gate on attribution enum. Only edit when a
+        # skill was actually used and the trial still failed — the
+        # skill is at fault and editing it in place is the right
+        # action. Other failure paths (FAILURE_SKILL_NOT_USED →
+        # library gap, FAIL_ENV_ISSUE → environment) belong to L4
+        # Create or are no-ops.
+        if (
+            attribution is None
+            or attribution.overall_attribution
+            != Attribution.FAILURE_SKILL_USED
+        ):
             return
         top = max(
             lib.skills.values(),
@@ -1435,13 +1496,22 @@ def attach_paper_registers(
                     event.trial_id,
                 )
 
-            # 6. Incremental edit on failure (Sec. 3.4 / Layer 4).
+            # 6. Incremental edit on failure (Sec. 3.4 / Layer 3).
+            # 2026-06-26: thread the closure-cached attribution
+            # result into the edit gate so it can distinguish
+            # "skill at fault" (FAILURE_SKILL_USED → edit this
+            # skill) from "library gap" (FAILURE_SKILL_NOT_USED →
+            # handled by L4 Create above, edit gate should skip).
+            nonlocal _last_attribution
+            edit_attribution = _last_attribution
             _incremental_edit_on_failure(
                 r_task=r_task,
                 intent_text=intent_text,
                 trial_dir=trial_dir,
                 trial_id=event.trial_id,
+                attribution=edit_attribution,
             )
+            _last_attribution = None  # defensive: next trial starts clean
         except Exception as exc:
             # Never let a method bug abort the trial. But do write a
             # per-trial record so users can diagnose what broke —

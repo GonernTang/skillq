@@ -274,62 +274,8 @@ def test_bridge_skips_extract_when_disabled(tmp_path: Path, monkeypatch):
     asyncio.run(job.on_ended(event))
 
 
-def test_viewed_but_not_used_bumps_q(tmp_path: Path, monkeypatch):
-    """Attribution = SUCCESS_VIEWED_SKILL_BUT_NOT_USED + the viewed skill is
-    in the library → its Q is bumped slightly (0.05) per subtask entry.
-    """
-    _patch_litellm_backends(monkeypatch)
-    _patch_extractor_to_return(monkeypatch, None)
-
-    from skillq.skillq_runtime import bridge as bridge_mod
-
-    def returning_viewed(self, **kwargs):
-        # Use a plain dict for the subtask; TrialAttribution is
-        # Pydantic-validated and accepts dicts as well as model
-        # instances.
-        return TrialAttribution(
-            overall_attribution=Attribution.SUCCESS_VIEWED_SKILL_BUT_NOT_USED,
-            overall_rationale="test",
-            knowledge_to_extract="",
-            subtasks=[
-                {
-                    "goal": "viewed",
-                    "summary": "looked at skill but used own approach",
-                    "attribution": "success_viewed_skill_but_not_used",
-                    "skill_linked": "seed",
-                    "skill_refs": [],
-                }
-            ],
-        )
-
-    monkeypatch.setattr(
-        bridge_mod.AttributionAnalyzer, "analyze", returning_viewed
-    )
-
-    method = MethodConfig(
-        library_root=tmp_path / "lib", b_max=4, enable_auto_extract=False
-    )
-    _seed_lib(method)
-    job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
-
-    result = _fake_trial_result(reward=1.0, trial_uri=str(tmp_path / "trial-x"))
-    event = _fake_hook_event("trial-x", result=result)
-    asyncio.run(job.on_ended(event))
-
-    state = json.loads(method.resolved_state_path().read_text(encoding="utf-8"))
-    seed_qs = [row[1] for row in state["q_table"] if row[0] == "seed"]
-    assert seed_qs, "seed skill should have a Q-table entry"
-    # The Q-bump is +0.05; the regular β-Q update also runs.
-    # We just check that the bump is positive.
-    assert all(q > 0 for q in seed_qs)
-
-
-# ---------------------------------------------------------------------------
-# Rule 5: failure + no good skill → new skill from failure attribution
-# ---------------------------------------------------------------------------
 def test_bridge_extracts_on_failure_no_skill(tmp_path: Path, monkeypatch):
-    """r_task=0 + FAIL_AGENT_ISSUE + non-empty knowledge_to_extract
+    """r_task=0 + FAILURE_SKILL_NOT_USED + non-empty knowledge_to_extract
     → extractor called with mode='failure'.
 
     The historical "skip extract if any existing skill has high Q"
@@ -356,7 +302,7 @@ def test_bridge_extracts_on_failure_no_skill(tmp_path: Path, monkeypatch):
 
     def returning_failure(self, **kwargs):
         return TrialAttribution(
-            overall_attribution=Attribution.FAIL_AGENT_ISSUE,
+            overall_attribution=Attribution.FAILURE_SKILL_NOT_USED,
             overall_rationale="test",
             knowledge_to_extract="avoid doing X without first checking Y",
         )
@@ -392,7 +338,7 @@ def test_bridge_extracts_on_failure_no_skill(tmp_path: Path, monkeypatch):
 
 
 def test_bridge_extracts_on_failure_even_when_skill_exists(tmp_path: Path, monkeypatch):
-    """r_task=0 + FAIL_AGENT_ISSUE + a high-Q seed skill is already
+    """r_task=0 + FAILURE_SKILL_NOT_USED + a high-Q seed skill is already
     in lib + non-empty knowledge_to_extract → extractor IS called
     with mode='failure' and the new skill lands in lib.
 
@@ -422,7 +368,7 @@ def test_bridge_extracts_on_failure_even_when_skill_exists(tmp_path: Path, monke
         bridge_mod.AttributionAnalyzer,
         "analyze",
         lambda self, **kwargs: TrialAttribution(
-            overall_attribution=Attribution.FAIL_AGENT_ISSUE,
+            overall_attribution=Attribution.FAILURE_SKILL_NOT_USED,
             overall_rationale="regression test for the removed gate",
             knowledge_to_extract=(
                 "the existing seed skill was high-Q, but the agent still "
@@ -452,7 +398,7 @@ def test_bridge_extracts_on_failure_even_when_skill_exists(tmp_path: Path, monke
     # The gate is gone — the extractor must fire and the new skill
     # must land in lib.
     assert called["n"] == 1, (
-        "Rule 5 should fire on FAIL_AGENT_ISSUE + non-empty knowledge "
+        "Rule 5 should fire on FAILURE_SKILL_NOT_USED + non-empty knowledge "
         "regardless of existing-skill Q"
     )
     state = json.loads(method.resolved_state_path().read_text(encoding="utf-8"))
@@ -543,12 +489,12 @@ def test_bridge_extracts_on_nonzero_agent_exit_with_trajectory(
 
     from skillq.skillq_runtime import bridge as bridge_mod
 
-    # Return FAIL_AGENT_ISSUE so Rule 5 fires (failure-mode extract).
+    # Return FAILURE_SKILL_NOT_USED so Rule 5 fires (failure-mode extract).
     monkeypatch.setattr(
         bridge_mod.AttributionAnalyzer,
         "analyze",
         lambda self, **kwargs: TrialAttribution(
-            overall_attribution=Attribution.FAIL_AGENT_ISSUE,
+            overall_attribution=Attribution.FAILURE_SKILL_NOT_USED,
             overall_rationale="test",
             knowledge_to_extract="reflection on the failed run",
         ),
@@ -608,7 +554,7 @@ def test_bridge_skips_extract_on_oom_even_with_trajectory(
         bridge_mod.AttributionAnalyzer,
         "analyze",
         lambda self, **kwargs: TrialAttribution(
-            overall_attribution=Attribution.FAIL_AGENT_ISSUE,
+            overall_attribution=Attribution.FAILURE_SKILL_NOT_USED,
             overall_rationale="won't run",
             knowledge_to_extract="x",
         ),
@@ -654,7 +600,7 @@ def test_bridge_skips_extract_on_failed_run_without_trajectory(
         bridge_mod.AttributionAnalyzer,
         "analyze",
         lambda self, **kwargs: TrialAttribution(
-            overall_attribution=Attribution.FAIL_AGENT_ISSUE,
+            overall_attribution=Attribution.FAILURE_SKILL_NOT_USED,
             overall_rationale="won't run",
             knowledge_to_extract="x",
         ),
@@ -730,7 +676,7 @@ def test_extract_buffer_carries_gap_description_to_extractor(
         bridge_mod.AttributionAnalyzer,
         "analyze",
         lambda self, **kwargs: TrialAttribution(
-            overall_attribution=Attribution.FAIL_AGENT_ISSUE,
+            overall_attribution=Attribution.FAILURE_SKILL_NOT_USED,
             overall_rationale="agent debug-spiraled",
             knowledge_to_extract="wrote 7 versions of gen.py",
             library_gap_skill_description=GAP_TEXT,
@@ -797,7 +743,7 @@ def test_extract_buffer_gap_description_empty_by_default(
         bridge_mod.AttributionAnalyzer,
         "analyze",
         lambda self, **kwargs: TrialAttribution(
-            overall_attribution=Attribution.FAIL_AGENT_ISSUE,
+            overall_attribution=Attribution.FAILURE_SKILL_NOT_USED,
             overall_rationale="agent failed",
             knowledge_to_extract="some reflection",
             # library_gap_skill_description omitted → defaults to ''

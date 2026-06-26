@@ -84,20 +84,31 @@ r_task = {r_task}
 
 ## HARD CONSTRAINTS — violations make the verdict unusable
 
-- If r_task = 1: ``overall_attribution`` MUST be one of the three
-  ``success_*`` enum values. NEVER return a ``fail_*`` value.
-  Choose between:
+- If r_task = 1: ``overall_attribution`` MUST be one of the two
+  ``success_*`` enum values. NEVER return a ``failure_*`` or
+  ``fail_*`` value. Choose between:
     - ``success_skill_used``: a skill materially shaped the solution
-    - ``success_viewed_skill_but_not_used``: agent viewed skills but
-      solved via own exploration
     - ``success_no_skill_seen``: agent solved via own exploration
-      without even viewing any relevant skill
+      without using a relevant skill (either no relevant skill
+      existed, or the L1 force-use hook gave the agent nothing
+      above the similarity gate)
+  Note: the previous "viewed-but-not-used" enum was removed
+  2026-06-26. Under the new force-use hook, the agent is told
+  to MUST-call one of the listed skills, so it can no longer
+  "see but not use" a relevant skill. If you observe that state
+  in a trace, classify it as ``success_skill_used`` (the agent
+  was effectively forced to use a relevant skill).
 - If r_task = 0: ``overall_attribution`` MUST be one of the three
-  ``fail_*`` enum values. NEVER return a ``success_*`` value.
-  Choose between:
-    - ``fail_skill_issue``: a skill the agent relied on was wrong
-    - ``fail_agent_issue``: agent reasoning / action error
-    - ``fail_env_issue``: environment / external / network error
+  ``failure_*`` / ``fail_*`` enum values. NEVER return a
+  ``success_*`` value. Choose between:
+    - ``failure_skill_used``: a skill was used and the trial
+      still failed — the skill is at fault (wrong, incomplete,
+      or stale); bridge will edit it in place
+    - ``failure_skill_not_used``: no relevant skill was used —
+      the library is missing a relevant skill; bridge will
+      create a guard-rail skill from this failure attribution
+    - ``fail_env_issue``: environment / external / network /
+      package error — nothing actionable for the skill library
 - ``knowledge_to_extract`` MUST be non-empty when r_task = 1 (a
   reusable procedure is the whole point of this attribution step).
   When r_task = 0, also provide a non-empty knowledge string
@@ -127,26 +138,28 @@ followed the skill's workflow, not its own exploration).
 ## Attribution enum
 
 - `success_skill_used`: the trial succeeded AND a skill materially
-  shaped the successful path.
-- `success_viewed_skill_but_not_used`: the trial succeeded AND the
-  agent viewed one or more skills, but those skills did not
-  materially shape the successful path. The agent reached the
-  solution through its own exploration.
+  shaped the successful path. No library action needed.
 - `success_no_skill_seen`: the trial succeeded AND the agent did not
-  view any of the available skills (or no relevant skill was
-  available at all).
-- `fail_skill_issue`: the trial failed because a skill that the
-  agent relied on was wrong, incomplete, or missing.
-- `fail_agent_issue`: the trial failed because of an agent
-  reasoning / action error.
+  use a relevant skill (either no relevant skill was available,
+  or the L1 force-use hook gave it nothing above the similarity
+  gate). Bridge will create a new skill from the success
+  trajectory.
+- `failure_skill_used`: the trial failed AND a skill was used and
+  materially shaped the (failed) execution. The skill is at
+  fault — wrong, incomplete, stale. Bridge will edit it in place
+  via L3 EditRefiner.
+- `failure_skill_not_used`: the trial failed AND no relevant
+  skill was used (or no skill was available). The library is
+  missing a relevant skill — bridge will create a guard-rail
+  skill from this failure attribution.
 - `fail_env_issue`: the trial failed because of an environment /
-  external / network / package error.
+  external / network / package error. No library action.
 
 ## Output schema (JSON)
 
 Return a JSON object with these fields:
 
-- `overall_attribution`: one of the six enum values above.
+- `overall_attribution`: one of the five enum values above.
 - `overall_rationale`: one or two sentences explaining the
   classification.
 - `subtasks`: list of subtasks, each with
@@ -164,9 +177,8 @@ Return a JSON object with these fields:
   env-only. DO NOT include task-specific facts, paths, or one-off
   values; only the reusable *procedure*.
 - `library_gap_skill_description`: ONLY set this when
-  ``overall_attribution`` is one of the three gap-signaling
-  enums (``success_no_skill_seen``,
-  ``success_viewed_skill_but_not_used``, ``fail_agent_issue``).
+  ``overall_attribution`` is one of the two gap-signaling
+  enums (``success_no_skill_seen``, ``failure_skill_not_used``).
   Describe in ONE concrete sentence what skill the library
   SHOULD have contained for this trial — include the domain
   keyword(s) that should appear in the skill description

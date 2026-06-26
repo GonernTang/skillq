@@ -36,7 +36,7 @@ def test_parse_handles_prose_wrapped_json():
         "```json\n"
         + json.dumps(
             {
-                "overall_attribution": "fail_agent_issue",
+                "overall_attribution": "failure_skill_not_used",
                 "overall_rationale": "agent ignored the verifier hint",
                 "subtasks": [],
                 "knowledge_to_extract": "",
@@ -46,13 +46,13 @@ def test_parse_handles_prose_wrapped_json():
     )
     backend = StubAttributionBackend()  # won't be called
     attribution = AttributionAnalyzer(backend=backend, model="m")._parse(raw)
-    assert attribution.overall_attribution == Attribution.FAIL_AGENT_ISSUE
+    assert attribution.overall_attribution == Attribution.FAILURE_SKILL_NOT_USED
 
 
 def test_parse_returns_conservative_default_on_garbage():
     backend = StubAttributionBackend()
     attribution = AttributionAnalyzer(backend=backend, model="m")._parse("lol nope")
-    assert attribution.overall_attribution == Attribution.FAIL_AGENT_ISSUE
+    assert attribution.overall_attribution == Attribution.FAILURE_SKILL_NOT_USED
     assert "parse failed" in attribution.overall_rationale
 
 
@@ -91,14 +91,18 @@ def test_analyze_reads_session_jsonl(tmp_path: Path):
         + "\n",
         encoding="utf-8",
     )
+    # 2026-06-26: SUCCESS_VIEWED_SKILL_BUT_NOT_USED removed. Sub
+    # SUCCESS_SKILL_USED here (a surviving enum) — the test's
+    # purpose is to verify the analyzer round-trips the stub's
+    # attribution choice verbatim.
     backend = StubAttributionBackend(
-        overall_attribution=Attribution.SUCCESS_VIEWED_SKILL_BUT_NOT_USED
+        overall_attribution=Attribution.SUCCESS_SKILL_USED
     )
     analyzer = AttributionAnalyzer(backend=backend, model="m")
     attribution = analyzer.analyze(
         task="the thing", trial_dir=trial_dir, skills_root=None, r_task=1
     )
-    assert attribution.overall_attribution == Attribution.SUCCESS_VIEWED_SKILL_BUT_NOT_USED
+    assert attribution.overall_attribution == Attribution.SUCCESS_SKILL_USED
 
 
 def test_list_available_skills_returns_relative_paths(tmp_path: Path):
@@ -160,9 +164,12 @@ def test_consistency_clamp_r_task_1_with_fail_enum(tmp_path: Path):
     """r_task=1 with a fail_* enum from the LLM should be clamped to
     SUCCESS_NO_SKILL_SEEN (most conservative success enum). This is
     the exact bug shape that surfaced in the auto-extract smoke.
+
+    2026-06-26: input enum renamed FAIL_AGENT_ISSUE →
+    FAILURE_SKILL_NOT_USED; clamp target unchanged.
     """
     backend = StubAttributionBackend(
-        overall_attribution=Attribution.FAIL_AGENT_ISSUE,
+        overall_attribution=Attribution.FAILURE_SKILL_NOT_USED,
         knowledge_to_extract="",  # empty — the original bug signature
     )
     analyzer = AttributionAnalyzer(backend=backend, model="m")
@@ -179,8 +186,9 @@ def test_consistency_clamp_r_task_1_with_fail_enum(tmp_path: Path):
 
 def test_consistency_clamp_r_task_0_with_success_enum(tmp_path: Path):
     """r_task=0 with a success_* enum from the LLM should be clamped
-    to FAIL_SKILL_ISSUE (most conservative fail enum). Previously
-    silently ignored; now routes into Rule 5.
+    to FAILURE_SKILL_USED (most conservative fail enum under the
+    2026-06-26 enum rename; renamed from the old FAIL_SKILL_ISSUE).
+    Previously silently ignored; now routes into the L3 Edit path.
     """
     backend = StubAttributionBackend(
         overall_attribution=Attribution.SUCCESS_SKILL_USED,
@@ -190,7 +198,7 @@ def test_consistency_clamp_r_task_0_with_success_enum(tmp_path: Path):
     attribution = analyzer.analyze(
         task="the thing", trial_dir=tmp_path, skills_root=None, r_task=0
     )
-    assert attribution.overall_attribution == Attribution.FAIL_SKILL_ISSUE
+    assert attribution.overall_attribution == Attribution.FAILURE_SKILL_USED
     assert "[consistency-clamp]" in attribution.overall_rationale
     # knowledge passes through (no fabrication)
     assert attribution.knowledge_to_extract == "some failure-mode knowledge"

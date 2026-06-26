@@ -214,7 +214,8 @@ real SKILL.md body with frontmatter).
 - Note: the auto-extract trigger in
   `_attribution_and_extract_dispatch` did **not** fire on the
   single smoke trial even after the fix, because the attribution
-  LLM labelled the trial `FAIL_AGENT_ISSUE` while `r_task=1.0` —
+  LLM labelled the trial `FAILURE_SKILL_NOT_USED` (renamed 2026-06-26
+  from the old `FAIL_AGENT_ISSUE`) while `r_task=1.0` —
   Rule 2 (success) and Rule 5 (failure) are both gated on a
   matching attribution verdict. This is an attribution-prompt
   quality issue, not a wiring bug; the subprocess now works

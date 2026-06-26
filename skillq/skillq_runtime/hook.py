@@ -27,7 +27,11 @@ the container; the hook only depends on stdlib + the
 5. Computes Eq. 4 score per skill:
        score = (1-λ) * sim_z + λ * q_z + c_ucb * sqrt(log N / (n+1))
 6. Returns top-k. If the requested skill is in the top-k, allow.
-   Otherwise, block with a list of top-k skills + "or skip" hint.
+   Otherwise, block with a list of top-k skills. As of 2026-06-26
+   the deny reason ends with a "MUST call Skill() with one of
+   these" reminder (force-use contract); the hook itself remains
+   fail-open at the protocol level — the agent can technically
+   ignore the deny — but the text sharpens the expectation.
 7. Logs the call (timestamp, requested, top-k, approved) to
    ``$SKILLQ_CALLS_LOG`` (one JSON line per call).
 8. Failure-open: if the embedding call times out (>5s) or errors,
@@ -65,8 +69,12 @@ stdin (Claude Code hook protocol), writes JSON to stdout, and exits
     }
 
 For "deny" with a reason, the agent sees the reason text in its
-context and is expected to re-call Skill with one of the suggested
-skill names, or skip the call.
+context. As of 2026-06-26 the text tells the agent it MUST
+re-call Skill() with one of the listed names — the hook is
+fail-open at the protocol level (the agent can technically ignore
+the deny), but the wording sharpens the contract: agents are
+required to invoke Skill() with one of the top-k candidates
+before continuing.
 
 **Pull-mode** (added 2026-06-23, retrieval_mode='pull'): in addition
 to the PreToolUse handler above, ``main()`` also dispatches the
@@ -434,9 +442,12 @@ def _format_top_k(top_k: list[tuple[str, float]]) -> str:
     """Format the deny-reason text the agent sees after a blocked Skill() call.
 
     Two cases:
-      1. ``top_k`` non-empty — list the gated+scored candidates so the
-         agent can re-call with one of them. The agent still chooses
-         to call or skip; we don't force either.
+      1. ``top_k`` non-empty — list the gated+scored candidates and
+         tell the agent it MUST re-issue Skill() with one of them.
+         The hook is fail-open at the protocol level (the agent can
+         technically ignore the deny), but the text now sharpens the
+         contract: the agent is required to call Skill() before
+         continuing with other tools.
       2. ``top_k`` empty (sim_gate_floor=0 + all sim<threshold) —
          emit an explicit "no relevant skills" message. This is the
          strict-gate design (2026-06-25): if every candidate is below
@@ -457,7 +468,10 @@ def _format_top_k(top_k: list[tuple[str, float]]) -> str:
     for i, (sid, score) in enumerate(top_k, 1):
         lines.append(f"  {i}. {sid}   score={score:+.3f}")
     lines.append("")
-    lines.append("Re-call Skill with one of these, or skip if none fit.")
+    lines.append(
+        "You MUST call Skill() with one of these — re-issue the "
+        "Skill() call before continuing."
+    )
     return "\n".join(lines)
 
 
@@ -494,6 +508,16 @@ def _format_pull_context(top_k: list[tuple[str, float]],
         lines.append(f"  {i}. {sid}   score={score:+.3f}")
         if desc:
             lines.append(f"     {desc}")
+    # 2026-06-26 (force-use): sharpen the contract. When the gate
+    # produced candidates, the agent is required to call Skill()
+    # with one of them before using other tools. The hook itself
+    # remains fail-open at the protocol level (UserPromptSubmit
+    # additionalContext is advisory), but the closing reminder
+    # makes the contract explicit.
+    lines.append("")
+    lines.append(
+        "You MUST call Skill() with one of these before using other tools."
+    )
     return "\n".join(lines)
 
 

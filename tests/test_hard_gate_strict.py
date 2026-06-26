@@ -48,15 +48,23 @@ def test_format_top_k_empty_explicit_message():
     assert "Re-call Skill with one of these" not in msg
 
 
-def test_format_top_k_non_empty_unchanged():
-    """Non-empty top-k still gets the ranked-list message."""
+def test_format_top_k_non_empty_uses_must_call():
+    """Non-empty top-k gets the ranked list + MUST-call closing line.
+
+    2026-06-26 (force-use): the previous advisory closing "Re-call
+    Skill with one of these, or skip if none fit." was sharpened to
+    "You MUST call Skill() with one of these — re-issue the Skill()
+    call before continuing." This test now asserts the new text.
+    """
     from skillq.skillq_runtime.hook import _format_top_k
 
     msg = _format_top_k([("skill-A", 0.42), ("skill-B", 0.18)])
     assert "Top-2" in msg
     assert "skill-A" in msg
     assert "skill-B" in msg
-    assert "Re-call Skill with one of these" in msg
+    assert "You MUST call Skill() with one of these" in msg
+    # Old advisory wording is gone.
+    assert "or skip if none fit" not in msg
 
 
 def test_score_skills_strict_floor_zero_no_survivors():

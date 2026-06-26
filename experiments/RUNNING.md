@@ -322,13 +322,17 @@ subprocess 写新 skill:
 | Attribution | 含义 | Q 副作用 |
 |-------------|------|---------|
 | `SUCCESS_NO_SKILL_SEEN` | 没看到相关 skill,基于自己的探索成功 | 单纯 extract |
-| `SUCCESS_VIEWED_SKILL_BUT_NOT_USED` | 看了但没用,基于自己的探索成功 | 看过的那批 skill Q += 0.05(防漂) |
+| `FAILURE_SKILL_NOT_USED` | 失败但没用相关 skill,lib 缺一个匹配 skill | extract 失败路径 guard-rail |
 
 提取条件:**只看 attribution enum + knowledge 非空**。即使 lib 里已有高 Q skill,
 只要该 trial 的 attribution 落在上表两类,attribution LLM 给出的
 `knowledge_to_extract` 非空,就会进 extract 缓冲区。设计依据:agent 走一条全新
 路径成功时,可能揭示了 lib 缺失的 procedure;保留"新建"这一选择比"跳过"更安全
 (lib 增长由 `b_max` 硬驱逐 cap,见 `LibManager.maintain`)。
+
+注意:`SUCCESS_VIEWED_SKILL_BUT_NOT_USED` 在 2026-06-26 删除(L1 hook
+force-use 下结构性不可达),`FAILURE_SKILL_USED`(旧 `FAIL_SKILL_ISSUE`)
+走 L3 EditRefiner 而不是 Create。详见 `plan/pure-crunching-summit.md`。
 
 ### 流程(单 trial)
 

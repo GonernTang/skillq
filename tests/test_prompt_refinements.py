@@ -72,12 +72,14 @@ def test_attribution_prompt_has_gap_field():
 
 
 def test_attribution_prompt_lists_gap_enums():
-    """The three gap-signaling enums must be named alongside the
+    """The two gap-signaling enums must be named alongside the
     new field — otherwise the LLM has no signal when to populate
-    it."""
+    it. 2026-06-26: SUCCESS_VIEWED_SKILL_BUT_NOT_USED removed
+    (structurally unreachable under force-use); FAIL_AGENT_ISSUE
+    renamed to FAILURE_SKILL_NOT_USED.
+    """
     assert "success_no_skill_seen" in ATTRIBUTION_PROMPT
-    assert "success_viewed_skill_but_not_used" in ATTRIBUTION_PROMPT
-    assert "fail_agent_issue" in ATTRIBUTION_PROMPT
+    assert "failure_skill_not_used" in ATTRIBUTION_PROMPT
 
 
 def test_attribution_prompt_empty_default_is_clear():
@@ -133,7 +135,7 @@ def test_success_extract_prompt_unchanged():
 def test_trial_attribution_accepts_gap_field():
     """The Pydantic model must accept the new field with default ''."""
     a = TrialAttribution(
-        overall_attribution="fail_agent_issue",
+        overall_attribution="failure_skill_not_used",
         overall_rationale="agent chose wrong architecture",
         knowledge_to_extract="synchronous state machine debug spiral",
         library_gap_skill_description=(

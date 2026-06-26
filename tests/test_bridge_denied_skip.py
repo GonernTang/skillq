@@ -469,9 +469,11 @@ def test_bridge_skips_denied_even_when_trial_failed(
         "analyze",
         lambda self, **kwargs: TrialAttribution(
             # Trial failed, but the skill was denied by the hook (never
-            # used). Use FAIL_AGENT_ISSUE — the failure is the agent's,
-            # not the skill's, since the skill never executed.
-            overall_attribution=Attribution.FAIL_AGENT_ISSUE,
+            # used). Use FAILURE_SKILL_NOT_USED — the failure is
+            # "no relevant skill was used", not "skill is at fault",
+            # since the skill never executed. (Renamed 2026-06-26
+            # from the old FAIL_AGENT_ISSUE.)
+            overall_attribution=Attribution.FAILURE_SKILL_NOT_USED,
             overall_rationale="test",
             knowledge_to_extract="",
         ),
