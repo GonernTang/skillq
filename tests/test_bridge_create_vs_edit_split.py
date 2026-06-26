@@ -434,3 +434,66 @@ def test_l3_propose_edit_exception_does_not_abort_trial(tmp_path, monkeypatch):
         "method_errors.jsonl should NOT exist — the inner try/except "
         "caught the exception, not the outer on_ended handler"
     )
+
+
+# ---------------------------------------------------------------------------
+# L3-H2: L3 fires even when L4 (auto_extract) is disabled
+# ---------------------------------------------------------------------------
+def test_l3_fires_when_extractor_disabled(tmp_path, monkeypatch):
+    """H2: enable_auto_extract=False must NOT disable L3. The
+    attribution analyzer must still run (for step 5★ to gate on
+    FAILURE_SKILL_USED), only the L4 buffer.add is gated on
+    extractor. With FAILURE_SKILL_USED + extractor disabled, edit
+    fires, no extract.
+    """
+    _patch_litellm_backends(monkeypatch)
+    _patch_attribution_to(monkeypatch, Attribution.FAILURE_SKILL_USED)
+    extract_calls, edit_calls = _patch_paths(monkeypatch)
+
+    method = MethodConfig(
+        library_root=tmp_path / "lib",
+        b_max=4,
+        enable_auto_extract=False,  # L4 disabled
+        seed_initial_q=0.0,
+        extract_every_n_trials=1,
+    )
+    _seed_lib(method)
+    _run_trial(tmp_path, method, r_task=0)
+
+    # L3 must fire (FAILURE_SKILL_USED + lib non-empty).
+    assert edit_calls["n"] >= 1, (
+        "L3 edit should fire even when enable_auto_extract=False — "
+        "H2 fix decoupled attribution analyzer from L4 extractor"
+    )
+    # L4 must NOT fire (extractor is None).
+    assert extract_calls["n"] == 0
+
+
+def test_no_l3_when_attribution_not_skill_used_with_extractor_disabled(
+    tmp_path, monkeypatch,
+):
+    """H2 negative: with enable_auto_extract=False AND
+    attribution == FAILURE_SKILL_NOT_USED (a gap signal, not a
+    skill-at-fault signal), neither path should fire.
+    """
+    _patch_litellm_backends(monkeypatch)
+    _patch_attribution_to(monkeypatch, Attribution.FAILURE_SKILL_NOT_USED)
+    extract_calls, edit_calls = _patch_paths(monkeypatch)
+
+    method = MethodConfig(
+        library_root=tmp_path / "lib",
+        b_max=4,
+        enable_auto_extract=False,
+        seed_initial_q=0.0,
+        extract_every_n_trials=1,
+    )
+    _seed_lib(method)
+    _run_trial(tmp_path, method, r_task=0)
+
+    assert edit_calls["n"] == 0, (
+        "L3 must not fire for FAILURE_SKILL_NOT_USED — the gate is "
+        "FAILURE_SKILL_USED only"
+    )
+    assert extract_calls["n"] == 0, (
+        "L4 must not fire when extractor is None"
+    )

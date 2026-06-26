@@ -933,7 +933,7 @@ def attach_paper_registers(
     # are passed in (and mutated in place).
     # ------------------------------------------------------------------
     # 2026-06-26: closure-cached attribution result. Step 2's
-    # _attribution_and_extract_dispatch writes this; step 6's
+    # _attribution_and_extract_dispatch writes this; step 5★'s
     # _incremental_edit_on_failure reads it to gate on
     # FAILURE_SKILL_USED. Avoids a second LLM call per trial.
     _last_attribution: TrialAttribution | None = None
@@ -1192,9 +1192,19 @@ def attach_paper_registers(
         of how good the existing lib looks. Lib growth is bounded
         independently by the Q-driven ``b_max`` cap in
         ``LibManager.maintain``.
+
+        2026-06-26 (L3-H2): the attribution analyzer is now invoked
+        **unconditionally** (when this dispatch runs) — even when
+        ``extractor is None`` — because step 5★'s L3 edit gate
+        reads the verdict from the closure-cached
+        ``_last_attribution``. Previously the
+        ``if extractor is None: return`` early-return sat BEFORE
+        the analyzer call, so ``enable_auto_extract=False`` users
+        got a fully-dead L3 path. Only the L4 buffer.add path is
+        now gated on ``extractor is not None``. Cost: +1 LLM call
+        per trial when ``enable_auto_extract=False``; acceptable
+        because L3 cannot fire without the verdict.
         """
-        if extractor is None:
-            return
         attribution = attribution_analyzer.analyze(
             task=intent_text,
             trial_dir=trial_dir,
@@ -1202,13 +1212,18 @@ def attach_paper_registers(
             r_task=r_task,
         )
         # 2026-06-26: cache the attribution result on the closure
-        # so step 6's _incremental_edit_on_failure can read it and
+        # so step 5★'s _incremental_edit_on_failure can read it and
         # gate on FAILURE_SKILL_USED without re-running the
         # analyzer (which would be a second LLM call per trial).
         # Set unconditionally — even when we don't trigger a create,
         # the edit gate still needs the verdict.
         nonlocal _last_attribution
         _last_attribution = attribution
+
+        # L4 Create is gated separately on extractor. Bail early
+        # before any buffer.add work.
+        if extractor is None:
+            return
         knowledge = attribution.knowledge_to_extract.strip()
         # 2026-06-25: thread the new library_gap_skill_description
         # field through to the buffer. The failure-path extract

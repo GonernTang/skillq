@@ -598,7 +598,7 @@ mark `[done]` when landed.
       re-order so step 6★ runs before step 6; new test
       `test_edit_path_persists_edited_body_to_method_state` passes).
 
-- [ ] **L3-H2 (B)** `bridge.py:1196-1197` — L3 silently disabled when
+- [x] **L3-H2 (B)** `bridge.py:1196-1197` — L3 silently disabled when
       `enable_auto_extract=False`. The early-return
       `if extractor is None: return` runs **before** the
       `_last_attribution = attribution` assignment (line 1210), so the
@@ -609,6 +609,10 @@ mark `[done]` when landed.
       write out of `if extractor is None` guard. The analyzer should
       run unconditionally on RUN_NORMAL / RUN_TASK_FAILURE; only the
       `_ExtractBuffer.add` path stays gated on `extractor is not None`.
+      *Status*: fixed 2026-06-26 (commit on this branch; new tests
+      `test_l3_fires_when_extractor_disabled` and
+      `test_no_l3_when_attribution_not_skill_used_with_extractor_disabled`
+      pass). Cost: +1 LLM call per trial when `enable_auto_extract=False`.
 
 - [ ] **L3-H3 (B)** `bridge.py:1375` — `failure_trace=str(trial_dir)`.
       EDIT_PROMPT expects a real trace (assistant tail, verifier stderr,
