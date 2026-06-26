@@ -1,6 +1,6 @@
 # SkillQ — Open bugs and known gaps
 
-Last updated: 2026-06-18 (post the Bug 8 async-conversion).
+Last updated: 2026-06-26 (post 4-layer audit by subagents; pre-fix).
 
 This document is a faithful audit of the current state of the
 `skillq` paper method. "Tested" means there's a unit test covering
@@ -571,3 +571,272 @@ Kept:
 New tests: `tests/test_q_update_task_only.py` (6 tests covering
 formula, n_retrievals increment, session-log fallback, no-calls
 no-op, n_success increment).
+
+---
+
+## L1–L4 audit issues (2026-06-26)
+
+Comprehensive audit by 4 subagents (one per layer) on 2026-06-26. Each
+issue lists: location, problem, suggested fix, and whether end-to-end
+behavior breaks (B) vs. is a smell/dead code (S). Pick one and fix;
+mark `[done]` when landed.
+
+### L3 — HIGH (block L3 from actually working)
+
+- [x] **L3-H1 (B)** `bridge.py:1469-1513` — step ordering bug. `state.save`
+      (step 5, line 1469) runs **before** `_incremental_edit_on_failure`
+      (step 6, line 1507). The in-memory `lib.replace(new_skill)` mutates
+      `lib.skills`, but `method_state.json` is already on disk with the
+      OLD body. Next trial's `state.load_into` reads the OLD body back,
+      so **L3 edits are lost across trials** — `method_state.json` is
+      the only persisted lib, and it never sees the edit.
+      *Fix*: move step 6 before step 5, OR add a second `state.save`
+      at the end of step 6. Tests: extend
+      `tests/test_bridge_create_vs_edit_split.py::test_edit_path_failure_skill_used`
+      to assert the body in `method_state.json` after on_ended.
+      *Status*: fixed 2026-06-26 by commit on this branch (option A:
+      re-order so step 6★ runs before step 6; new test
+      `test_edit_path_persists_edited_body_to_method_state` passes).
+
+- [ ] **L3-H2 (B)** `bridge.py:1196-1197` — L3 silently disabled when
+      `enable_auto_extract=False`. The early-return
+      `if extractor is None: return` runs **before** the
+      `_last_attribution = attribution` assignment (line 1210), so the
+      attribution analyzer is never invoked and step 6's gate
+      `if attribution is None: return` always fires. The two flags
+      (`enable_auto_extract` and "do edits") are wrongly coupled.
+      *Fix*: pull the attribution-analyzer call + `_last_attribution`
+      write out of `if extractor is None` guard. The analyzer should
+      run unconditionally on RUN_NORMAL / RUN_TASK_FAILURE; only the
+      `_ExtractBuffer.add` path stays gated on `extractor is not None`.
+
+- [ ] **L3-H3 (B)** `bridge.py:1375` — `failure_trace=str(trial_dir)`.
+      EDIT_PROMPT expects a real trace (assistant tail, verifier stderr,
+      failure reason) but receives a directory path. The editor LLM has
+      no failure-mode context, so proposed edits are likely low-quality
+      (just rewrites the body without grounding in what went wrong).
+      *Fix*: thread `attribution.knowledge_to_extract` (free-form
+      diagnosis from the analyzer) plus a tail of the session jsonl
+      (`_read_recent_assistant_messages`-style reader over
+      `trial_dir/agent/sessions/projects/*/*.jsonl`) as the trace.
+
+### L3 — MEDIUM
+
+- [ ] **L3-M1 (B)** `bridge.py:1381` + `vector_table.py:35` — emb_cache
+      only refreshes when `_description_of` (frontmatter `description:`)
+      changes. Inner-body rewrites that don't touch frontmatter leave
+      a **stale embedding** in emb_cache. Retrieval will then rank the
+      skill by its old semantic meaning. *Fix*: refresh emb_cache on
+      any body change (not only frontmatter), OR have EDIT_PROMPT
+      require the LLM to also update the frontmatter description.
+
+- [ ] **L3-M2 (S)** `bridge.py:1514` — `_last_attribution = None` reset
+      sits inside the `try:` block (line 1437). Any exception in steps
+      1-5 bypasses the reset, leaking the stale attribution to the
+      next trial (where step 2 will overwrite it before step 6 reads,
+      but only if step 2 doesn't itself raise). *Fix*: move the reset
+      into a `finally:` block.
+
+- [x] **L3-M3 (S)** `bridge.py:1316-1399` — `_incremental_edit_on_failure`
+      has no inner `try/except` around `refiner.propose_edit`. A
+      transient `litellm.completion` failure (timeout, rate limit)
+      trips the outer `on_ended` except and writes `method_errors.jsonl`,
+      but the trial appears to complete normally. *Fix*: wrap the
+      propose_edit call in its own `try/except: logger.exception(...)`
+      so an L3 failure doesn't poison the rest of on_ended.
+      *Status*: fixed 2026-06-26 (folded into Commit 1 alongside L3-H1;
+      new test `test_l3_propose_edit_exception_does_not_abort_trial` passes).
+
+### L2 — MEDIUM
+
+- [ ] **L2-M1 (B)** `bridge.py:1035-1036` — `phi_q` source is
+      `calls_log[0].intent_text`, not filtered to approved calls.
+      The first record may be a denied call whose `intent_text` was
+      the agent's probe intent. The cosine-weighting anchor for the
+      whole trial is then a probe, not the real task. *Fix*: use
+      `next((c.intent_text for c in calls_log if not c.denied and c.intent_text.strip()), trial_id)`.
+
+- [ ] **L2-M2 (S)** `bridge.py:1082-1092` — `if phi_s is None: continue`
+      silently skips the skill (no Q-update, no counter bump, no trace
+      entry, DEBUG log only). A new auto-extracted skill whose emb_cache
+      entry failed to write becomes invisible to L2 for that trial.
+      *Fix*: fall back to unweighted Eq.5 (`delta = α·(r_task - q_old)`)
+      with a WARNING log, so the skill still accumulates Q signal.
+
+- [ ] **L2-M3 (B)** `bridge.py:683-686` + `state.py:164-169` —
+      `reuse_q_table=False` + no `seed_skills_dir` leaves lib with
+      skills but empty Q-table. Eviction `min(key=q_for)` returns
+      the first skill by insertion order (effectively random). The
+      Plan D comment at line 686 says "ensure_seeded will re-seed" —
+      it doesn't when the lib is already non-empty. *Fix*: when
+      `reuse_q_table=False`, re-apply `seed_initial_q` to existing
+      lib entries regardless of `overwrite_q`.
+
+- [ ] **L2-M4 (B)** `state.py:166` — `if seed_initial_q != 0.0:` gate.
+      With `seed_initial_q=0.0`, skills loaded with no Q entry stay
+      at Q=0.0 forever; **failed trials can never penalize a Q=0
+      skill** (delta = α·(0-0) = 0). The "optimistic prior" comment
+      is contradicted. *Fix*: either document "0.0 = pessimistic
+      prior, failures don't move Q from 0" or change the gate to
+      always seed (use 0.5 if 0.0 was passed).
+
+- [ ] **L2-M5 (S)** `state.py:70-84` — `update_count` / `probation_count`
+      are NOT serialized in `save()`. Comment at `library.py:33-41`
+      calls them "telemetry" but they don't survive a Job resume.
+      *Fix*: either persist them (add to payload + load_into) or
+      delete the fields + their increment paths.
+
+- [ ] **L2-M6 (S)** `state.py:85-89` — `state.save` writes via
+      `write_text` (truncating), no atomic rename. A crash mid-write
+      leaves a partial `method_state.json`; Harbor's `--resume` then
+      fails to parse. *Fix*: write to `<state_path>.tmp` then
+      `os.replace(tmp, state_path)`.
+
+### L1 — MEDIUM
+
+- [ ] **L1-M1 (S)** `hook.py:659-672` — unconditional 4-line
+      `sys.stderr.write` debug block at the top of every
+      `_handle_pretooluse_skill` call. No env flag, no `# DEBUG`
+      comment block (unlike the other two debug writes). Fires 5-20
+      times per trial per Skill() call. *Fix*: delete, or gate
+      behind `SKILLQ_HOOK_DEBUG=1` like the other two.
+
+- [ ] **L1-M2 (B)** `hook.py:711-715` — logic drift in deny-text.
+      When `subtask_emb is None` (embed failure) AND strict gate is
+      active, the deny text reads:
+      `No skills ... below sim=0.7 gate ... solve directly.\n\n
+      (embedding unavailable; ranking used Q + UCB only.)`
+      But strict mode produced empty top-k — Q+UCB never ran. The
+      suffix is misleading. *Fix*: rephrase to
+      `"embedding unavailable; gate produced no survivors"` or
+      omit the suffix in strict mode.
+
+- [ ] **L1-M3 (S)** `hook.py:227-235` — `_cosine` uses
+      `n = min(len(a), len(b))` and iterates the prefix. A dim
+      mismatch (cached from one embedder model, query from another)
+      silently degrades cosine quality without raising. *Fix*:
+      assert `len(a) == len(b)` at the top, or pad/truncate explicitly
+      with a WARNING log.
+
+- [ ] **L1-M4 (S)** `hook.py:519-554` — `_read_skill_calls_log` uses
+      `open(path, "a")` in `_append_jsonl` without file locking.
+      Two concurrent Skill() calls in the same container can
+      interleave writes at the JSON boundary, producing malformed
+      JSONL lines. The reader skips them via `JSONDecodeError` so
+      it's a debuggability loss, not a correctness bug. *Fix*:
+      wrap in `fcntl.flock(LOCK_EX)` (Linux) or accept the rare
+      malformed line.
+
+### L4 — MEDIUM
+
+- [ ] **L4-M1 (B)** `bridge.py:1401-1466` — `lib_changes_this_trial`
+      is `nonlocal` but **never reset** inside `on_ended`. Each
+      trial's `_maintain_lib` packs the full accumulator (every add
+      + remove since job start) and `_refresh_emb_cache` re-embed's
+      them all. **O(N²) wasted embedding calls over a long Job.**
+      *Fix*: reset at the top of `on_ended`:
+      `lib_changes_this_trial.clear()` (or change `_maintain_lib` to
+      start with `changes = []`).
+
+- [ ] **L4-M2 (S)** `bridge.py:812` — `extract_buffer` shared across
+      all `on_ended` callbacks (one per Job) without a lock. Under
+      `n_concurrent_trials >= 2`, two callbacks can read the same
+      pending batch and both call `_flush_buffer`. Name-dedup catches
+      the worst case but LLM is invoked twice with overlapping records.
+      *Fix*: wrap `add`/`flush` in `asyncio.Lock` (or accept the
+      duplicate as the cost of simplicity).
+
+- [ ] **L4-M3 (S)** `bridge.py:832-835` — `extract_batch` is called
+      with `aggregated_intent_hash=0` (default); bridge never passes
+      the real value. All extracted skills have
+      `metadata["intent_hash"] = "0000000000000000"` — the field is
+      effectively dead. *Fix*: thread `state.step + 1` (or
+      `qhash(representative_task)`) through.
+
+### L4 — LOW (dead code / cosmetic)
+
+- [ ] **L4-L1 💀** `bridge.py:909` — `new_skill.admission_exempt = True`
+      on a `Skill` dataclass that has no such field. Single write site,
+      zero read sites in the entire repo. Dead code. *Fix*: delete.
+
+- [ ] **L4-L2 💀** `bridge.py:494-498` — `_ExtractBuffer.__len__`
+      defined **twice** with identical bodies. *Fix*: delete one.
+
+- [ ] **L4-L3 (S)** `bridge.py:1272` — final-trial force-flush uses
+      `(state.step + 1) >= expected_terminal_trials`. Correct in the
+      current code (step 2 runs before step 5 increments), but fragile
+      to re-ordering. *Fix*: add a comment explaining the +1 trick.
+
+### L1 — LOW (cosmetic / contract)
+
+- [ ] **L1-L1 (S)** `hook.py:154-155, 306` — `SIM_GATE_MIN_SCORE`
+      doubles as gate-on/off (`if sim_gate_threshold > 0.0`) and as
+      the actual threshold. There is no way to set "gate on, threshold
+      0". *Fix*: separate into `sim_gate_enabled` (bool) and
+      `sim_gate_min_score` (float).
+
+- [ ] **L1-L2 (S)** `vector_table.py:35` (`_description_of`) and
+      `container_wiring.py:167` (`_extract_description`) are two
+      different frontmatter parsers. The emb_cache one falls back to
+      first-non-empty-line / first-200-chars; the lib.json one returns
+      `""`. Same frontmatter, two behaviors — drift hazard. *Fix*:
+      consolidate into one helper in `vector_table.py` (or a shared
+      `skillq.method.frontmatter` module) and import from both sites.
+
+- [ ] **L1-L3 (S)** `hook.py:728-735` — `calls_log._debug_first_5_sims`
+      truncates to first 5 skills only. A relevant skill ranked 6+
+      has no cosine in the log. *Fix*: dump all skills, or top-N
+      matching top_k for debuggability.
+
+- [ ] **L1-L4 (S)** `hook.py:524-538` — `_handle_session_start` /
+      `_make_session_start_context` dispatches on `UserPromptSubmit`
+      but the names reference `SessionStart`. Docstring acknowledges
+      the historical holdover; cosmetic. *Fix*: rename to
+      `_handle_user_prompt_submit` for clarity.
+
+### L2 — LOW
+
+- [ ] **L2-L1 (S)** `bridge.py:1485-1491` — `q_table.json` mirror
+      uses `write_text` (truncating). A write failure mid-way leaves
+      a partial JSON file that mirrors the `state.save` smell. *Fix*:
+      same atomic-rename pattern as L2-M6.
+
+- [ ] **L2-L2 (S)** `bridge.py:1357-1363` — `max(lib.skills.values(),
+      key=q_for)` is stable; on Q=0 tie, returns first skill by
+      insertion order. Deterministic but counter-intuitive. *Fix*:
+      add a secondary key (`key=lambda s: (-q_for, lib.skill_ids.index(s.skill_id))`)
+      or document the behavior.
+
+- [ ] **L2-L3 (S)** `bridge.py:778-780` — `method.editor_model`
+      empty-string default would silently fail (litellm.model="" raises).
+      No validation. *Fix*: validate at bridge construction time.
+
+### L3 — LOW
+
+- [ ] **L3-L1 (S)** `edit.py:34-46` — `_default_editor_model` reads
+      `ANTHROPIC_MODEL` env var with default `deepseek-v4-flash`. If
+      `method.editor_model=""`, litellm will raise. No defensive
+      fallback. *Fix*: validate `method.editor_model` in
+      `attach_paper_registers`.
+
+---
+
+## Priority order (recommended fix sequence)
+
+1. **L3-H1** (state.save before edit) — single biggest correctness
+   fix; L3 currently does nothing useful across trials.
+2. **L3-H2** (extractor-is-None gates L3) — unblocks users who
+   turned off auto-extract but still want edits.
+3. **L3-H3** (failure_trace is a path) — editor quality depends
+   on real trace context.
+4. **L1-M2** (deny-text logic drift) — quick fix, improves debuggability.
+5. **L2-M3** + **L2-M4** (seed/q=0 semantics) — small fix,
+   big behavior improvement.
+6. **L4-M1** (lib_changes accumulation) — easy fix, O(N²) saved.
+7. **L4-L1 / L4-L2 / L4-L3** (dead code) — trivial.
+8. **L2-M5 / L2-M6** (telemetry persistence + atomic rename) — robustness.
+9. Rest of MEDIUM, then LOW.
+
+Each fix: write a failing test in `tests/` first, then fix, then
+commit on the existing branch. Update this doc with `[done YYYY-MM-DD]`
+and a one-line summary of what landed.

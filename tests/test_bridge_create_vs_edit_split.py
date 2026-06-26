@@ -355,3 +355,82 @@ def test_create_persists_new_skill_to_state(tmp_path, monkeypatch):
     state = json.loads(method.resolved_state_path().read_text(encoding="utf-8"))
     assert "auto-extracted" in state["library"]["skills"]
     assert "seed" in state["library"]["skills"]
+
+
+# ---------------------------------------------------------------------------
+# L3-H1: edited body must persist to method_state.json
+# ---------------------------------------------------------------------------
+def test_edit_path_persists_edited_body_to_method_state(tmp_path, monkeypatch):
+    """H1: state.save must run AFTER the L3 edit so the post-edit
+    body lands on disk. The seed skill's body on disk should
+    contain the marker after on_ended completes.
+    """
+    from skillq.skillq_runtime import bridge as bridge_mod
+
+    _patch_litellm_backends(monkeypatch)
+    _patch_attribution_to(monkeypatch, Attribution.FAILURE_SKILL_USED)
+    _patch_paths(monkeypatch)
+
+    # Override the default no-op propose_edit with one that returns
+    # a Skill whose body has a recognizable marker.
+    marker = "-- EDITED BODY MARKER --"
+    def marker_edit(self, skill, task, failure_trace):
+        from skillq.method.types import Skill as _Skill
+        return _Skill(
+            skill_id=skill.skill_id,
+            body=f"# Edited\n\ndescription: edited by L3.\n\n{marker}",
+            n_retrievals=skill.n_retrievals,
+            n_uses=skill.n_uses,
+            n_success=skill.n_success,
+            metadata=skill.metadata,
+        )
+    monkeypatch.setattr(bridge_mod.EditRefiner, "propose_edit", marker_edit)
+
+    method = _build_method(tmp_path)
+    _seed_lib(method)
+    _run_trial(tmp_path, method, r_task=0)
+
+    state = json.loads(method.resolved_state_path().read_text(encoding="utf-8"))
+    assert marker in state["library"]["skills"]["seed"]["body"], (
+        "method_state.json should contain the edited body — H1 fix "
+        "re-orders step 5 (state.save) to run AFTER step 6 (L3 edit)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# L3-M3: propose_edit exception must not abort the trial
+# ---------------------------------------------------------------------------
+def test_l3_propose_edit_exception_does_not_abort_trial(tmp_path, monkeypatch):
+    """M3: a transient LLM error in propose_edit must be caught
+    by an inner try/except. state.save must still run, and
+    method_errors.jsonl must NOT exist (inner catch, not outer).
+    """
+    from skillq.skillq_runtime import bridge as bridge_mod
+
+    _patch_litellm_backends(monkeypatch)
+    _patch_attribution_to(monkeypatch, Attribution.FAILURE_SKILL_USED)
+    _patch_paths(monkeypatch)
+
+    def boom(self, skill, task, failure_trace):
+        raise RuntimeError("simulated transient LLM error")
+
+    monkeypatch.setattr(bridge_mod.EditRefiner, "propose_edit", boom)
+
+    method = _build_method(tmp_path)
+    _seed_lib(method)
+    _run_trial(tmp_path, method, r_task=0)
+
+    # state.save ran: q_table.json mirror exists at the trial staging dir.
+    q_path = tmp_path / "trial-x" / "skillq_state" / "q_table.json"
+    assert q_path.exists(), (
+        "q_table.json should exist — state.save ran after the L3 "
+        "exception was caught by the inner try/except"
+    )
+
+    # Inner catch swallowed the error — the outer on_ended except did
+    # NOT fire, so method_errors.jsonl should not exist.
+    err_path = tmp_path / "trial-x" / "skillq_state" / "method_errors.jsonl"
+    assert not err_path.exists(), (
+        "method_errors.jsonl should NOT exist — the inner try/except "
+        "caught the exception, not the outer on_ended handler"
+    )

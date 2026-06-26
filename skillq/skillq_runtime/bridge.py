@@ -1369,11 +1369,23 @@ def attach_paper_registers(
         # with a non-empty lib now invokes the editor LLM.
         # 2026-06-23: with the sub-task judge path removed, this gate's
         # only blocker (the unreachable blend) is gone.
-        new_skill = refiner.propose_edit(
-            skill=top,
-            task=intent_text,
-            failure_trace=str(trial_dir),
-        )
+        # 2026-06-26 (L3-M3): wrap propose_edit in an inner try/except
+        # so a transient editor-LLM error (rate limit, timeout, bad
+        # JSON from the backend) does not propagate to the outer
+        # ``on_ended`` except — which would skip ``state.save`` and
+        # lose the entire L3 step for this trial.
+        try:
+            new_skill = refiner.propose_edit(
+                skill=top,
+                task=intent_text,
+                failure_trace=str(trial_dir),
+            )
+        except Exception:
+            logger.exception(
+                "L3 propose_edit failed for trial %s; L3 skipped.",
+                trial_id,
+            )
+            return
         if new_skill is top:
             return
         lib.replace(new_skill)
@@ -1465,7 +1477,29 @@ def attach_paper_registers(
             # 4. Refresh emb_cache from the lib changes.
             _refresh_emb_cache(changes)
 
-            # 5. Persist state.
+            # 5★. Incremental edit on failure (Sec. 3.4 / Layer 3).
+            # 2026-06-26 (L3-H1): moved to run BEFORE state.save so
+            # the in-memory lib.replace(new_skill) is reflected on
+            # disk. Previously the edit mutated lib.skills in memory
+            # only and was clobbered by the next trial's load_into.
+            # 2026-06-26: thread the closure-cached attribution
+            # result into the edit gate so it can distinguish
+            # "skill at fault" (FAILURE_SKILL_USED → edit this
+            # skill) from "library gap" (FAILURE_SKILL_NOT_USED →
+            # handled by L4 Create above, edit gate should skip).
+            nonlocal _last_attribution
+            edit_attribution = _last_attribution
+            _incremental_edit_on_failure(
+                r_task=r_task,
+                intent_text=intent_text,
+                trial_dir=trial_dir,
+                trial_id=event.trial_id,
+                attribution=edit_attribution,
+            )
+            _last_attribution = None  # defensive: next trial starts clean
+
+            # 6★. Persist state (post-edit). step + lib + q_table
+            # are all written atomically by QlibState.save.
             state.step += 1
             state.save(
                 lib,
@@ -1474,7 +1508,7 @@ def attach_paper_registers(
                 seed_initial_q=method.seed_initial_q,
             )
 
-            # 5b. Bug 3: re-dump q_table.json to the per-trial staging
+            # 6b★. Bug 3: re-dump q_table.json to the per-trial staging
             # dir so users inspecting the trial artifacts see the
             # post-trial Q-values (matching method_state.json), not
             # the trial-START snapshot written by
@@ -1495,23 +1529,6 @@ def attach_paper_registers(
                     "for trial %s",
                     event.trial_id,
                 )
-
-            # 6. Incremental edit on failure (Sec. 3.4 / Layer 3).
-            # 2026-06-26: thread the closure-cached attribution
-            # result into the edit gate so it can distinguish
-            # "skill at fault" (FAILURE_SKILL_USED → edit this
-            # skill) from "library gap" (FAILURE_SKILL_NOT_USED →
-            # handled by L4 Create above, edit gate should skip).
-            nonlocal _last_attribution
-            edit_attribution = _last_attribution
-            _incremental_edit_on_failure(
-                r_task=r_task,
-                intent_text=intent_text,
-                trial_dir=trial_dir,
-                trial_id=event.trial_id,
-                attribution=edit_attribution,
-            )
-            _last_attribution = None  # defensive: next trial starts clean
         except Exception as exc:
             # Never let a method bug abort the trial. But do write a
             # per-trial record so users can diagnose what broke —
