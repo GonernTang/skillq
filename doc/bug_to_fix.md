@@ -710,6 +710,32 @@ mark `[done]` when landed.
       fails to parse. *Fix*: write to `<state_path>.tmp` then
       `os.replace(tmp, state_path)`.
 
+### L1 — HIGH
+
+- [ ] **L1-H1 (B)** `hook.py:176-211` — `_post_embed` has no retry.
+      Discovered via 2× e2e runs on 2026-06-26 (commits `b6e7f9a`
+      + `378c2a7` both shipped to this branch). chess-best-move's
+      PreToolUse hook call records `embed_ms=0` and `sim=null` for
+      every skill, but at the same time `curl /embed` from inside
+      the chess container to `host.docker.internal:8765/embed`
+      returns 200 in ~200ms. Same pattern observed across both
+      runs. Daemon listener (`ss -tlnp`) is on `0.0.0.0:8765` for
+      the entire run; embed thread never crashed (verified by
+      inspecting `calls_log` + `ps`). ready-wait at daemon start
+      (commit `378c2a7`) **does not** fix this — ready-wait
+      confirms `/healthz` answers 200 on loopback, but the
+      container-side `/embed` call still races against Docker's
+      network-namespace finalisation on first use. Net effect:
+      L1 is silently dead on the FIRST Skill() call of any trial;
+      subsequent calls (if the agent retries) usually work because
+      the namespace is warm. *Fix*: add `tenacity`-style retry in
+      `_post_embed` (1 retry + 200ms backoff is sufficient given the
+      observed ~hundreds-of-ms recovery window). Or, more
+      defensively, retry on the calls_log layer too. Until this is
+      fixed, treat any single-trial chess/circuit reward result as
+      **structurally uninformative about SkillQ's value** — the
+      agent is solving without the skill library, not with it.
+
 ### L1 — MEDIUM
 
 - [ ] **L1-M1 (S)** `hook.py:659-672` — unconditional 4-line
