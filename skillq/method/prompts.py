@@ -35,7 +35,6 @@ prevented the failure.
 
 Hard constraints (any violation makes the edit invalid):
 
-  - Touch at most 20% of the original token count.
   - Keep the skill's name unchanged.
   - Do not introduce new dependencies, new tools, or new files.
   - Preserve all currently-correct content; only patch the gap.
@@ -48,14 +47,21 @@ Soft guidance:
   - If the failure is environment-specific (network flake, missing \
     package), prefer recording the failure mode as a guard than as a \
     rewrite.
+  - Update the frontmatter ``description:`` line if the skill's \
+    scope meaningfully changed (so the L1 retrieval can re-rank \
+    it). If the scope is unchanged, leave the description alone.
 
 TASK
 ----
 {task}
 
-FAILURE TRACE (excerpt)
------------------------
-{trace}
+FAILURE DIAGNOSIS (from attribution analyzer)
+---------------------------------------------
+{diagnosis}
+
+RECENT AGENT TRACE (last {tail_k} assistant messages, markdown)
+----------------------------------------------------------------
+{tail}
 
 ORIGINAL SKILL
 --------------

@@ -79,15 +79,38 @@ class EditRefiner:
 
     backend: EditProposalBackend
     model: str = field(default_factory=_default_editor_model)
-    trace_truncate_chars: int = 2000
+    # 2026-06-26 (L3-H3): bumped 2000 → 6000 so the new two-slot
+    # trace (diagnosis + session_tail, each capped at half) actually
+    # fits a meaningful 3-message × 2000-char session tail. The old
+    # 2000-char budget was tuned for a single-string trace and would
+    # have silently truncated the tail to ~500 chars under the new
+    # design.
+    trace_truncate_chars: int = 6000
 
     def propose_edit(
         self,
         skill: Skill,
         task: str,
-        failure_trace: str,
+        failure_diagnosis: str = "",
+        session_tail: str = "",
     ) -> Skill:
         """Propose an edit and return the new (post-edit) skill.
+
+        2026-06-26 (L3-H3): the previous ``failure_trace: str``
+        argument (which the bridge was filling with
+        ``str(trial_dir)`` — a directory path, not a trace) has
+        been split into two:
+
+          - ``failure_diagnosis``: the analyzer's
+            ``knowledge_to_extract`` + ``library_gap_skill_description``
+            (free-form diagnosis of what went wrong).
+          - ``session_tail``: the last few assistant messages from
+            the trial's session jsonl (rendered markdown).
+
+        Each is capped at ``trace_truncate_chars // 2`` so the
+        budget is balanced. ``failure_trace`` is kept for
+        backward-compat in callers that already pass it
+        positionally; it now lands in the diagnosis slot.
 
         The previous 20%-of-original-token cap has been removed: the
         LLM is allowed to rewrite as much or as little as it judges
@@ -104,7 +127,9 @@ class EditRefiner:
         """
         prompt = EDIT_PROMPT.format(
             task=task,
-            trace=failure_trace[: self.trace_truncate_chars],
+            diagnosis=failure_diagnosis[: self.trace_truncate_chars // 2],
+            tail=session_tail[: self.trace_truncate_chars // 2],
+            tail_k=3,
             old_skill=skill.body,
         )
         new_body = self.backend(prompt, self.model).strip()

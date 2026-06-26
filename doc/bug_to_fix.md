@@ -614,7 +614,7 @@ mark `[done]` when landed.
       `test_no_l3_when_attribution_not_skill_used_with_extractor_disabled`
       pass). Cost: +1 LLM call per trial when `enable_auto_extract=False`.
 
-- [ ] **L3-H3 (B)** `bridge.py:1375` — `failure_trace=str(trial_dir)`.
+- [x] **L3-H3 (B)** `bridge.py:1375` — `failure_trace=str(trial_dir)`.
       EDIT_PROMPT expects a real trace (assistant tail, verifier stderr,
       failure reason) but receives a directory path. The editor LLM has
       no failure-mode context, so proposed edits are likely low-quality
@@ -623,6 +623,20 @@ mark `[done]` when landed.
       diagnosis from the analyzer) plus a tail of the session jsonl
       (`_read_recent_assistant_messages`-style reader over
       `trial_dir/agent/sessions/projects/*/*.jsonl`) as the trace.
+      *Status*: fixed 2026-06-26 (commit on this branch). Breaking API
+      change: `EditRefiner.propose_edit(self, skill, task,
+      failure_diagnosis="", session_tail="")`. EDIT_PROMPT now exposes
+      `{diagnosis}` / `{tail}` / `{tail_k}` placeholders; the stale 20%
+      token cap was removed (was already dropped from the
+      implementation 2026-06-25). `trace_truncate_chars` bumped 2000 →
+      6000. `_read_session_assistant_tail` helper added (k=3,
+      per_message_chars=2000, same glob + mtime-sort pattern as
+      `_extract_skill_calls_from_session`). New tests:
+      diagnosis threading (with field-pruning check for
+      overall_attribution/overall_rationale), session-tail k=3 boundary
+      (8 messages written, only last 3 captured), graceful no-log
+      degradation, prompt-contains-diagnosis-label,
+      prompt-drops-20pct-cap.
 
 ### L3 — MEDIUM
 

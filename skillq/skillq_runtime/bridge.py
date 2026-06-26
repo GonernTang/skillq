@@ -635,6 +635,62 @@ def _extract_skill_calls_from_session(trial_dir: Path) -> list[_SubTaskCallRecor
 
 
 # ---------------------------------------------------------------------------
+# Session-tail reader for L3 edit context (2026-06-26, L3-H3)
+# ---------------------------------------------------------------------------
+def _read_session_assistant_tail(
+    trial_dir: Path, k: int = 3, per_message_chars: int = 2000,
+) -> str:
+    """Return the last ``k`` assistant messages from the most recent
+    session jsonl under ``<trial_dir>/agent/sessions/projects/*/*.jsonl``.
+
+    Returns ``""`` on any structural failure (missing dir, missing
+    files, malformed lines). Never raises. Mirrors the glob +
+    mtime-sort pattern of :func:`_extract_skill_calls_from_session`
+    (same per-second mtime precision so a subagent and main agent
+    jsonl created in the same second resolve in deterministic
+    order). If the jsonl schema changes, update all three readers
+    (``_extract_skill_calls_from_session``,
+    ``AttributionAnalyzer._load_session_trace``, this).
+    """
+    sessions_root = trial_dir / "agent" / "sessions" / "projects"
+    if not sessions_root.exists():
+        return ""
+    try:
+        jsonls = sorted(
+            sessions_root.glob("*/*.jsonl"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError:
+        return ""
+    if not jsonls:
+        return ""
+    blocks: list[str] = []
+    try:
+        with jsonls[0].open(encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(rec, dict) or rec.get("type") != "assistant":
+                    continue
+                content = (rec.get("message") or {}).get("content", "")
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            content = block.get("text", "")
+                            break
+                    else:
+                        continue
+                if isinstance(content, str) and content.strip():
+                    blocks.append(content.strip()[:per_message_chars])
+    except OSError:
+        pass
+    return "\n\n".join(blocks[-k:])
+
+
+# ---------------------------------------------------------------------------
 # Public: hook registration
 # ---------------------------------------------------------------------------
 def attach_paper_registers(
@@ -1389,11 +1445,28 @@ def attach_paper_registers(
         # JSON from the backend) does not propagate to the outer
         # ``on_ended`` except — which would skip ``state.save`` and
         # lose the entire L3 step for this trial.
+        # 2026-06-26 (L3-H3): build a real failure trace from the
+        # analyzer's diagnosis + a tail of the session log. The
+        # previous code passed ``str(trial_dir)`` which the LLM
+        # could not use.
+        diagnosis_parts: list[str] = []
+        if attribution is not None:
+            kx = attribution.knowledge_to_extract.strip()
+            if kx:
+                diagnosis_parts.append(f"knowledge_to_extract: {kx}")
+            gx = attribution.library_gap_skill_description.strip()
+            if gx:
+                diagnosis_parts.append(f"library_gap_skill_description: {gx}")
+        diagnosis = "\n".join(diagnosis_parts)
+
+        tail = _read_session_assistant_tail(trial_dir, k=3, per_message_chars=2000)
+
         try:
             new_skill = refiner.propose_edit(
                 skill=top,
                 task=intent_text,
-                failure_trace=str(trial_dir),
+                failure_diagnosis=diagnosis,
+                session_tail=tail,
             )
         except Exception:
             logger.exception(

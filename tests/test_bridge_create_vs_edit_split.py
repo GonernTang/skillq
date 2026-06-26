@@ -99,20 +99,36 @@ def _patch_paths(monkeypatch) -> tuple[dict, dict]:
     extractor instance is created by ``_extractor_for_mode(mode)``
     inside ``_flush_buffer``; we therefore capture the mode by
     inspecting ``self.prompt_mode`` on the call.
+
+    2026-06-26 (L3-H3): propose_edit signature changed from
+    (self, skill, task, failure_trace) to
+    (self, skill, task, failure_diagnosis="", session_tail="").
+    The default mock returns ``skill`` (no-op edit) and captures
+    the new kwargs in ``edit_calls["diagnoses"]`` and
+    ``edit_calls["tails"]`` for tests that want to inspect them.
     """
     from skillq.skillq_runtime import bridge as bridge_mod
 
     extract_calls: dict = {"n": 0, "modes": []}
-    edit_calls: dict = {"n": 0, "skill_ids": []}
+    edit_calls: dict = {
+        "n": 0,
+        "skill_ids": [],
+        "diagnoses": [],
+        "tails": [],
+    }
 
     async def fake_extract_batch(self, **kwargs):
         extract_calls["n"] += 1
         extract_calls["modes"].append(getattr(self, "prompt_mode", None))
         return Skill(skill_id="auto-extracted", body="x" * 200)
 
-    def fake_propose_edit(self, skill, task, failure_trace):
+    def fake_propose_edit(
+        self, skill, task, failure_diagnosis="", session_tail="",
+    ):
         edit_calls["n"] += 1
         edit_calls["skill_ids"].append(skill.skill_id)
+        edit_calls["diagnoses"].append(failure_diagnosis)
+        edit_calls["tails"].append(session_tail)
         return skill  # no-op edit
 
     monkeypatch.setattr(bridge_mod.SkillExtractor, "extract_batch", fake_extract_batch)
@@ -136,7 +152,9 @@ def _run_trial(tmp_path: Path, method: MethodConfig, r_task: int) -> None:
     from skillq.skillq_runtime import bridge as bridge_mod
 
     trial_dir = tmp_path / "trial-x"
-    trial_dir.mkdir()
+    # exist_ok=True so H3 tests that pre-create trial_dir to seed
+    # session jsonls don't get FileExistsError.
+    trial_dir.mkdir(exist_ok=True)
     result = MagicMock()
     result.trial_uri = str(trial_dir)
     result.trial_name = "trial-x"
@@ -374,7 +392,7 @@ def test_edit_path_persists_edited_body_to_method_state(tmp_path, monkeypatch):
     # Override the default no-op propose_edit with one that returns
     # a Skill whose body has a recognizable marker.
     marker = "-- EDITED BODY MARKER --"
-    def marker_edit(self, skill, task, failure_trace):
+    def marker_edit(self, skill, task, failure_diagnosis="", session_tail=""):
         from skillq.method.types import Skill as _Skill
         return _Skill(
             skill_id=skill.skill_id,
@@ -411,7 +429,7 @@ def test_l3_propose_edit_exception_does_not_abort_trial(tmp_path, monkeypatch):
     _patch_attribution_to(monkeypatch, Attribution.FAILURE_SKILL_USED)
     _patch_paths(monkeypatch)
 
-    def boom(self, skill, task, failure_trace):
+    def boom(self, skill, task, failure_diagnosis="", session_tail=""):
         raise RuntimeError("simulated transient LLM error")
 
     monkeypatch.setattr(bridge_mod.EditRefiner, "propose_edit", boom)
@@ -497,3 +515,194 @@ def test_no_l3_when_attribution_not_skill_used_with_extractor_disabled(
     assert extract_calls["n"] == 0, (
         "L4 must not fire when extractor is None"
     )
+
+
+# ---------------------------------------------------------------------------
+# L3-H3: failure trace threading (diagnosis + session_tail)
+# ---------------------------------------------------------------------------
+def test_edit_path_threads_diagnosis_to_propose_edit(tmp_path, monkeypatch):
+    """H3 (1/5): the diagnosis kwarg passed to propose_edit must
+    contain the analyzer's knowledge_to_extract and the
+    library_gap_skill_description. It must NOT contain
+    overall_attribution (a known constant at this point) or
+    overall_rationale (noise / irrelevant for the edit prompt).
+    """
+    _patch_litellm_backends(monkeypatch)
+    _patch_attribution_to(
+        monkeypatch,
+        Attribution.FAILURE_SKILL_USED,
+        knowledge="skill forgot chmod +x the binary",
+    )
+    _, edit_calls = _patch_paths(monkeypatch)
+
+    method = _build_method(tmp_path)
+    _seed_lib(method)
+    _run_trial(tmp_path, method, r_task=0)
+
+    diag = edit_calls["diagnoses"][-1]
+    assert "knowledge_to_extract" in diag
+    assert "skill forgot chmod +x the binary" in diag
+    # Field-pruning: overall_attribution and overall_rationale must
+    # NOT be in the diagnosis (they're noise at this point).
+    assert "overall_attribution" not in diag
+    assert "overall_rationale" not in diag
+
+
+def test_edit_path_threads_session_tail_to_propose_edit(tmp_path, monkeypatch):
+    """H3 (2/5): k=3 boundary. Write 8 assistant messages in the
+    session log; assert propose_edit receives only the LAST 3
+    (MSG-3 through MSG-8, NOT MSG-1/MSG-2).
+    """
+    _patch_litellm_backends(monkeypatch)
+    _patch_attribution_to(monkeypatch, Attribution.FAILURE_SKILL_USED)
+    _, edit_calls = _patch_paths(monkeypatch)
+
+    method = _build_method(tmp_path)
+    _seed_lib(method)
+    # Pre-create the trial dir so we can write the session jsonl
+    # before _run_trial fires on_ended.
+    trial_dir = tmp_path / "trial-x"
+    trial_dir.mkdir()
+    session_dir = (
+        trial_dir / "agent" / "sessions" / "projects" / "fake-proj"
+    )
+    session_dir.mkdir(parents=True)
+    jsonl_path = session_dir / "fake-session.jsonl"
+    lines = []
+    for i in range(1, 9):  # 8 messages: MSG-1 .. MSG-8
+        lines.append(json.dumps({
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "text", "text": f"MSG-{i} content"}],
+            },
+        }))
+    jsonl_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    _run_trial(tmp_path, method, r_task=0)
+
+    tail = edit_calls["tails"][-1]
+    # Last 3 included (MSG-6, MSG-7, MSG-8).
+    for i in (6, 7, 8):
+        assert f"MSG-{i} content" in tail, (
+            f"MSG-{i} should be in the k=3 tail"
+        )
+    # First 5 NOT included.
+    for i in (1, 2, 3, 4, 5):
+        assert f"MSG-{i} content" not in tail, (
+            f"MSG-{i} should be outside the k=3 tail"
+        )
+
+
+def test_edit_path_no_session_log_still_fires(tmp_path, monkeypatch):
+    """H3 (3/5): graceful degradation. No agent/sessions/ dir →
+    session_tail="" but diagnosis still populated; edit fires.
+    """
+    _patch_litellm_backends(monkeypatch)
+    _patch_attribution_to(
+        monkeypatch,
+        Attribution.FAILURE_SKILL_USED,
+        knowledge="some diagnosis",
+    )
+    _, edit_calls = _patch_paths(monkeypatch)
+
+    method = _build_method(tmp_path)
+    _seed_lib(method)
+    _run_trial(tmp_path, method, r_task=0)
+
+    assert edit_calls["n"] >= 1
+    assert edit_calls["tails"][-1] == "", (
+        "missing sessions dir should yield empty tail, not crash"
+    )
+    assert edit_calls["diagnoses"][-1] != "", (
+        "diagnosis must still be populated even when session log is missing"
+    )
+
+
+def test_edit_prompt_contains_diagnosis_label(tmp_path, monkeypatch):
+    """H3 (4/5): EDIT_PROMPT rewrite actually uses the new
+    placeholders. The formatted prompt sent to the backend must
+    contain "FAILURE DIAGNOSIS" and "knowledge_to_extract".
+    """
+    from skillq.skillq_runtime import bridge as bridge_mod
+
+    _patch_litellm_backends(monkeypatch)
+    _patch_attribution_to(
+        monkeypatch,
+        Attribution.FAILURE_SKILL_USED,
+        knowledge="skill forgot chmod +x",
+    )
+    _, _ = _patch_paths(monkeypatch)
+
+    captured: dict = {"prompt": None}
+
+    def capture_edit(self, skill, task, failure_diagnosis="", session_tail=""):
+        from skillq.method.prompts import EDIT_PROMPT
+        prompt = EDIT_PROMPT.format(
+            task=task,
+            diagnosis=failure_diagnosis[: 6000 // 2],
+            tail=session_tail[: 6000 // 2],
+            tail_k=3,
+            old_skill=skill.body,
+        )
+        captured["prompt"] = prompt
+        # Return a body that differs from original (passes no-op check).
+        return Skill(
+            skill_id=skill.skill_id,
+            body=skill.body + "\n<!-- edited -->\n",
+            n_retrievals=skill.n_retrievals,
+            n_uses=skill.n_uses,
+            n_success=skill.n_success,
+            metadata=skill.metadata,
+        )
+
+    monkeypatch.setattr(bridge_mod.EditRefiner, "propose_edit", capture_edit)
+
+    method = _build_method(tmp_path)
+    _seed_lib(method)
+    _run_trial(tmp_path, method, r_task=0)
+
+    assert captured["prompt"] is not None
+    assert "FAILURE DIAGNOSIS" in captured["prompt"]
+    assert "knowledge_to_extract" in captured["prompt"]
+
+
+def test_edit_prompt_drops_20pct_token_cap(tmp_path, monkeypatch):
+    """H3 (5/5): the stale 20% token cap (already removed from
+    edit.py:73-77 since 2026-06-25) must also be gone from
+    EDIT_PROMPT — they're now consistent.
+    """
+    from skillq.skillq_runtime import bridge as bridge_mod
+
+    _patch_litellm_backends(monkeypatch)
+    _patch_attribution_to(monkeypatch, Attribution.FAILURE_SKILL_USED)
+    _, _ = _patch_paths(monkeypatch)
+
+    captured: dict = {"prompt": None}
+
+    def capture_edit(self, skill, task, failure_diagnosis="", session_tail=""):
+        from skillq.method.prompts import EDIT_PROMPT
+        prompt = EDIT_PROMPT.format(
+            task=task,
+            diagnosis=failure_diagnosis[: 6000 // 2],
+            tail=session_tail[: 6000 // 2],
+            tail_k=3,
+            old_skill=skill.body,
+        )
+        captured["prompt"] = prompt
+        return Skill(
+            skill_id=skill.skill_id,
+            body=skill.body + "\n<!-- edited -->\n",
+            n_retrievals=skill.n_retrievals,
+            n_uses=skill.n_uses,
+            n_success=skill.n_success,
+            metadata=skill.metadata,
+        )
+
+    monkeypatch.setattr(bridge_mod.EditRefiner, "propose_edit", capture_edit)
+
+    method = _build_method(tmp_path)
+    _seed_lib(method)
+    _run_trial(tmp_path, method, r_task=0)
+
+    assert captured["prompt"] is not None
+    assert "20% of the original token count" not in captured["prompt"]
