@@ -1,18 +1,21 @@
-# TB 2.0 FULL run — paper mode, all 89 tasks, single-pass.
+# TB 2.0 FULL run (Step 8, 2026-06-27) — paper mode, all 89 tasks.
 #
-# Wall-clock estimate: 89 tasks × ~1 trial / ~10min LLM time each, with
-# n_concurrent_trials=16 running ~6 batches in parallel. End-to-end ~60-90min
-# for the agent step alone; auto-extract LLM calls add another 10-15%.
+# Replaces tb2_skillq_full_v3.yaml + method_tb2_skillq_full_v3.yaml +
+# method_tb2_skillq_full.yaml + method_tb2_skillq_fresh_start.yaml
+# (all deleted in Step 8.2). Fresh-start semantics are now opt-in via
+# the --fresh-start flag on run_benchmark.py.
+#
+# Wall-clock estimate: 89 tasks × ~10min LLM time each, with
+# n_concurrent_trials=8 running ~11 batches. ~60-90min for the
+# agent step alone; auto-extract LLM calls add another 10-15%.
 #
 # Model: ANTHROPIC_MODEL=deepseek-v4-flash (.env), wrapped as
-# `anthropic/<model>` so LiteLLM picks the provider. Override per-run by
-# editing .env or by editing the agents[0].model_name line below.
+# `anthropic/<model>` so LiteLLM picks the provider. Override
+# per-run by editing .env or by editing the agents[0].model_name line.
 #
 # Task source: local copy under skillq/input/terminal-bench/ — has all
 # 89 task definitions + 7 harbor hash subdirs, vendored so skillq is
-# self-contained (input/ is in .gitignore). NO prebuild download
-# needed — the images (skills_vote/<task>:20260604) are also already
-# built per the user's confirmation on 2026-06-22.
+# self-contained (input/ is in .gitignore).
 #
 # Time budget per trial: 3600s = 1h.
 #
@@ -26,17 +29,16 @@
 # ceiling never fired. Fix: drop the multiplier to 1.0 so the
 # override becomes the real ABSOLUTE ceiling.
 #
-# A host-side second ceiling (Task #89 carry-over) will be added
-# later in `SkillQClaudeCodeAgent.run()` to defend against future
-# Harbor-side regressions.
+# Run:
+#   uv run python experiments/run/run_benchmark.py --benchmark tb2 --variant full
+#
+# Fresh-start variant (clears Q-table + emb_cache):
+#   uv run python experiments/run/run_benchmark.py --benchmark tb2 --variant full --fresh-start
 
 jobs_dir: output
-# Stable name; the runner `rm -rf`s this before each run.
-# 2026-06-25: bump from __2026-06-24 (the broken baseline run)
-# to __2026-06-25 — Harbor refuses to resume with a different config.
-job_name: tb2_skillq_full__2026-06-25
+job_name: tb2_skillq_full__${now:%Y-%m-%d__%H-%M-%S}
 n_attempts: 1
-n_concurrent_trials: 16
+n_concurrent_trials: 8
 quiet: false
 retry:
   max_retries: 0
@@ -45,22 +47,21 @@ retry:
     - RewardFileNotFoundError
     - RewardFileEmptyError
     - VerifierOutputParseError
-agent_timeout_multiplier: 1.0   # see top-of-file note 2026-06-25: multiplier×override bug
+agent_timeout_multiplier: 1.0   # see top-of-file note: multiplier×override bug
 environment:
   type: docker
   force_build: false
   delete: false               # keep containers after the run for debugging
   mounts_json:
     # Bind-mount the host's seed-skill library into the container at
-    # /skills. SkillQClaudeCodeAgent's `rerank_with_ucb` lists these in
-    # the system prompt header; the agent can also invoke them via
-    # the Skill tool (the PreToolUse hook logs the call and updates Q).
+    # /skills. The container hook can read skill bodies (PostToolUse)
+    # and the PreToolUse hook logs every call into calls_log.jsonl.
     - type: bind
       source: /home/gonern/workspace/skillq/skills
       target: /skills
       read_only: true
 agents:
-  - import_path: skillq.skillq_runtime.agent:SkillQClaudeCodeAgent
+  - import_path: skillq.runtime.agent:SkillQClaudeCodeAgent
     model_name: ${oc.env:ANTHROPIC_MODEL,anthropic/claude-sonnet-4-5}
     override_timeout_sec: 3600.0    # 1h ABSOLUTE ceiling per trial
     kwargs:
@@ -69,14 +70,6 @@ agents:
       # from the parent shell, which on this host is "max" (invalid; Harbor
       # only accepts low/medium/high). Explicit kwarg wins over env_fallback.
       reasoning_effort: high
-      # 2026-06-25: removed the `recommend: null` line (dead config —
-      # SkillQClaudeCodeAgent no longer inherits from
-      # SkillsVoteClaudeCode, so the `recommend` kwarg is a no-op
-      # historical leftover).
-      # 2026-06-25: removed the `paper_retrieval:` block (dead code —
-      # the container-side hook never received these values; see
-      # tb2_skillq_full_v3.yaml for the full explanation). Container
-      # hook now reads SKILLQ_HOOK_* env vars set by the bridge.
 datasets:
   # Use the local vendored copy under input/terminal-bench/. input/ is in
   # .gitignore so the bundled task defs never get committed. Override
@@ -96,3 +89,38 @@ datasets:
   # which we do have prebuilt. This is the same form lqrl's
   # baseline.yaml uses.
   - path: ${oc.env:SkillQ_INPUT_ROOT,/home/gonern/workspace/skillq/input}/terminal-bench
+
+# === Paper method ===
+method:
+  library_root: ${oc.env:SkillQ_OUTPUT_ROOT,/home/gonern/workspace/skillq/output}/${job_name}/.skillq_library
+  state_path:   ${oc.env:SkillQ_OUTPUT_ROOT,/home/gonern/workspace/skillq/output}/${job_name}/.skillq_library/.state/method_state.json
+  seed_skills_dir: /home/gonern/workspace/skillq/skills
+
+  retrieval:
+    top_k: 3
+    score_mode: multiplicative
+    beta: 0.5
+    gamma: 0.2
+    sim_gate_min_score: 0.7
+    sim_gate_floor: 0
+    c_ucb: 0.5
+    lambda: 0.5
+
+  attribution_model: anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-flash}
+  editor_model:      anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-flash}
+  embedder_model:    openai/${oc.env:EMBEDDING_MODEL,text-embedding-v4}
+  embedder_dim: 1024
+
+  evolve:
+    enabled: true
+    extract_every_n_trials: 4
+    semantic_dedup_threshold: 0.85
+    enforce_failure_skill_structure: true
+
+  b_max: 1000
+  seed_initial_q: 0.5
+
+  reuse_q_table: true
+  reuse_embedding_cache: true
+
+  runtime: new

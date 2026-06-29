@@ -4,7 +4,7 @@ The skillsvote_mode is a **pass-through** to the upstream
 ``skills_vote`` package (the SkillsVote paper's lifecycle
 governance system — recommend / feedback / evolve). It is the
 **baseline** that the SkillQ paper compares against, not the SkillQ
-paper's method itself (see ``skillq.skillq_runtime`` for the SkillQ method).
+paper's method itself (see ``skillq.runtime`` for the SkillQ method).
 
 This module exists primarily to host the ``SkillsVoteModeConfig``
 marker class so that downstream code can

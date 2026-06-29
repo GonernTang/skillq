@@ -1,275 +1,361 @@
-"""``paper/experiments/run_benchmark.py`` — single-driver for TB 2.0 / TB Pro / SWE-Bench Pro.
+"""Single-driver for all skillq paper-mode experiments (Step 8, 2026-06-27).
 
-This is the recommended entrypoint for the three benchmarks you
-mentioned (Terminal-Bench 2.0, Terminal-Bench Pro, SWE-Bench Pro).
-It supersedes the stub-only ``run_terminalbench.py``.
+Replaces the 11 split-configs + 5 scripts under ``experiments/``:
+
+- Old layout (deleted in Step 8.2 / 8.4): 11 YAMLs (5 ``method_*.yaml`` +
+  6 ``tb2_skillq_*.yaml`` variants) + 5 driver scripts
+  (``run_benchmark.py`` / ``run_terminalbench.py`` / ``ablation.py`` /
+  ``beta_sweep.py`` / ``run_tb2_paper.sh``).
+- New layout: 4 merged YAMLs (job + method-subtree in one file) +
+  this single driver. Fresh-start / legacy-runtime / per-field
+  overrides are CLI flags instead of extra YAMLs.
 
 Usage:
 
-    # TB 2.0, paper mode, Claude Sonnet 4.5
-    uv run python -m paper.experiments.run_benchmark \\
-        --benchmark tb2 \\
-        --mode paper \\
-        --agent-model anthropic/claude-sonnet-4-5
+    # TB 2.0 full 89-task run (default variant)
+    uv run python experiments/run/run_benchmark.py --benchmark tb2 --variant full
 
-    # TB Pro, skillsvote mode, Codex GPT-5.5
-    uv run python -m paper.experiments.run_benchmark \\
-        --benchmark tb_pro \\
-        --mode skillsvote \\
-        --agent-import-path skills_vote.harbor.agents:SkillsVoteCodex \\
-        --agent-model openai/gpt-5.5 \\
-        --agent-version 0.125.0
+    # TB 2.0 1-task smoke
+    uv run python experiments/run/run_benchmark.py --benchmark tb2 --variant smoke
 
-    # SWE-Bench Pro, paper mode, Opus 4.1
-    uv run python -m paper.experiments.run_benchmark \\
-        --benchmark swebenchpro \\
-        --mode paper \\
-        --agent-model anthropic/claude-opus-4-1
+    # TB 2.0 3-task e2e (all 4 layers)
+    uv run python experiments/run/run_benchmark.py --benchmark tb2 --variant e2e
 
-The driver writes a Harbor JobConfig YAML to ``--output-dir/configs/`` and
-invokes the corresponding ``paper <mode> run -c <yaml>`` subcommand.
+    # SWE-Bench Pro 20-instance subset
+    uv run python experiments/run/run_benchmark.py --benchmark swebenchpro --variant full
+
+    # Override any method field via dotted-path key=value
+    uv run python experiments/run/run_benchmark.py --benchmark tb2 --variant smoke \\
+        --method-override retrieval.score_mode=additive \\
+        --method-override evolve.enabled=false
+
+    # Fresh-start: clear Q-table + emb_cache on boot
+    uv run python experiments/run/run_benchmark.py --benchmark tb2 --variant full --fresh-start
+
+    # Roll back to the legacy closure-based bridge (Step 7 raises
+    # a friendly RuntimeError — only useful for diagnosing that error).
+    uv run python experiments/run/run_benchmark.py --benchmark tb2 --variant smoke --runtime legacy
+
+    # Dry run: just write the merged YAML, don't invoke the runner
+    uv run python experiments/run/run_benchmark.py --benchmark tb2 --variant smoke --dry-run
+
+The merged YAML format is a Harbor JobConfig + a top-level
+``method:`` subtree (per plan §6.3). This driver splits the merged
+file into a job YAML and a method-config YAML and invokes
+``skillq paper run -c <job> --method-config <method>``, which
+preserves the existing CLI surface (per plan §8 contract: "CLI
+surface: skillq {skillsvote,paper,prebuild} <sub> 完全不变").
 """
 
 from __future__ import annotations
 
 import argparse
-import json
+import datetime as _dt
+import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
-# Make ``paper.*`` importable when this file is run directly.
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from omegaconf import OmegaConf
+import yaml
 
-# Per-benchmark default configuration. Each entry is a dict that gets
-# merged into the generated JobConfig YAML. Override individual fields
-# via CLI flags.
-BENCHMARKS: dict[str, dict[str, Any]] = {
-    "tb2": {
-        "dataset": {
-            "name": "terminal-bench",
-            "version": "2.0",
-            "download_dir": "input/tb2",
-        },
-        "default_n_concurrent": 8,
-        "default_n_attempts": 5,
-        "default_timeout_multiplier": 4.0,
-        "default_task_subset": None,  # full 89-task corpus
-    },
-    "tb_pro": {
-        "dataset": {
-            "name": "terminal-bench-pro",
-            "version": "1.0",
-            "download_dir": "input/tb-pro",
-        },
-        "default_n_concurrent": 4,
-        "default_n_attempts": 1,
-        "default_timeout_multiplier": 4.0,
-        "default_task_subset": [
-            "rebuild-fastproc-for-python-3-13",
-        ],
-    },
-    "swebenchpro": {
-        "dataset": {
-            "name": "swebenchpro",
-            "version": "1.0",
-            "download_dir": "input/swebenchpro",
-        },
-        "default_n_concurrent": 2,
-        "default_n_attempts": 1,
-        "default_timeout_multiplier": 4.0,
-        "default_task_subset": [
-            "instance_protonmail__webclients-0200ce0fc1d4dbd35178c10d440a284c82ecc858",
-            "instance_qutebrowser__qutebrowser-b8c93a8a3a64e2c6cdc2ddde2c6b1ade4dd3cbe9",
-        ],
-    },
+# Make ``skillq.*`` importable when this file is run directly
+# (``python experiments/run/run_benchmark.py ...``). The import
+# also registers the ``${now:...}`` and ``${abspath:...}`` OmegaConf
+# resolvers that the merged YAMLs use in their ``job_name`` and
+# ``mounts_json.source`` fields (see skillq/_resolvers.py).
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+import skillq._resolvers  # noqa: F401  (auto-registers OmegaConf resolvers)
+
+
+# Per (benchmark, variant) YAML file. The driver loads the file,
+# splits the ``method:`` subtree off, and dispatches to
+# ``skillq paper run``. New (benchmark, variant) cells require a
+# new file under ``experiments/configs/``.
+BENCHMARK_VARIANTS: dict[tuple[str, str], str] = {
+    ("tb2", "smoke"):         "experiments/configs/tb2_skillq_smoke.yaml",
+    ("tb2", "e2e"):           "experiments/configs/tb2_skillq_e2e.yaml",
+    ("tb2", "full"):          "experiments/configs/tb2_skillq_full.yaml",
+    ("swebenchpro", "full"):  "experiments/configs/swebenchpro_skillq.yaml",
 }
 
 
-def build_job_config(
-    *,
-    benchmark: str,
-    mode: str,
-    agent_import_path: str,
-    agent_model: str,
-    n_concurrent: int,
-    n_attempts: int,
-    timeout_multiplier: float,
-    task_subset: list[str] | None,
-    jobs_dir: str,
-    job_name: str,
-) -> dict[str, Any]:
-    """Construct a Harbor-compatible JobConfig dict."""
-    spec = BENCHMARKS[benchmark]
-    if mode == "paper":
-        # Paper mode uses SkillQClaudeCodeAgent directly (no upstream
-        # base class). If the user supplied a non-skills_vote import
-        # path, fall back to it and skip the paper-specific kwargs.
-        if "skills_vote" not in agent_import_path:
-            raise ValueError(
-                "paper mode requires a skills_vote-backed agent (got "
-                f"{agent_import_path!r}). Either pass a skills_vote import "
-                "path or use --mode skillsvote."
+def parse_overrides(items: list[str] | None) -> dict[str, Any]:
+    """Parse ``--method-override key=value`` items into a nested dict.
+
+    ``retrieval.score_mode=additive`` →
+    ``{"retrieval": {"score_mode": "additive"}}``.
+
+    ``b_max=2000`` → ``{"b_max": 2000}`` (numeric coercion).
+
+    ``reuse_q_table=false`` → ``{"reuse_q_table": False}`` (bool
+    coercion).
+    """
+    if not items:
+        return {}
+    out: dict[str, Any] = {}
+    for item in items:
+        if "=" not in item:
+            raise SystemExit(
+                f"[run_benchmark] --method-override expects key=value (got: {item!r})"
             )
-        agent_block: dict[str, Any] = {
-            "import_path": "skillq.skillq_runtime.agent:SkillQClaudeCodeAgent",
-            "model_name": agent_model,
-            "kwargs": {
-                "allowed_skills": [],
-                "recommend": {
-                    "skills_dir": "${abspath:.skillq_library/seed}",
-                    # Intentionally no prompt_path here. skillsvote's
-                    # step_recommend calls prompt_path(**kwargs) with
-                    # extra kwargs (notably key=...) that
-                    # paper.skillq_runtime.retrieval_step.rerank_with_ucb
-                    # does not accept, and would TypeError before
-                    # PaperClaudeCodeAgent.run gets a chance to call
-                    # rerank_with_ucb on the instruction. The mg UCB
-                    # rerank is invoked directly from
-                    # PaperClaudeCodeAgent.run, not via prompt_path;
-                    # leaving prompt_path unset lets skillsvote fall back
-                    # to its own DEFAULT_PROMPT_PATH
-                    # (skills_vote.recommend.prompt:build).
-                },
-            },
-        }
-    else:  # skillsvote mode
-        agent_block = {
-            "import_path": agent_import_path,
-            "model_name": agent_model,
-            "kwargs": {
-                "allowed_skills": [],
-                "recommend": {
-                    "skills_dir": "${abspath:.skillq_library/seed}",
-                    "prompt_path": "skills_vote.recommend.prompt:build",
-                },
-            },
-        }
+        key, raw = item.split("=", 1)
+        key = key.strip()
+        raw = raw.strip()
+        # Coerce booleans / numbers. Keep strings as-is.
+        if raw.lower() in {"true", "false"}:
+            value: Any = raw.lower() == "true"
+        else:
+            try:
+                value = int(raw)
+            except ValueError:
+                try:
+                    value = float(raw)
+                except ValueError:
+                    value = raw
+        # Walk / build the nested dict for dotted keys.
+        parts = key.split(".")
+        cursor = out
+        for part in parts[:-1]:
+            cursor = cursor.setdefault(part, {})
+        cursor[parts[-1]] = value
+    return out
 
-    cfg: dict[str, Any] = {
-        "jobs_dir": jobs_dir,
-        "job_name": job_name,
-        "n_attempts": n_attempts,
-        "n_concurrent_trials": n_concurrent,
-        "quiet": False,
-        "retry": {
-            "max_retries": 0 if benchmark != "tb2" else 3,
-            "exclude_exceptions": [
-                "VerifierTimeoutError",
-                "RewardFileNotFoundError",
-                "RewardFileEmptyError",
-                "VerifierOutputParseError",
-            ],
-        },
-        "agent_timeout_multiplier": timeout_multiplier,
-        "environment": {
-            "type": "docker",
-            "force_build": False,
-            "delete": False,
-        },
-        "agents": [agent_block],
-        "datasets": [dict(spec["dataset"])],
-    }
 
-    if task_subset:
-        cfg["datasets"][0]["task_names"] = task_subset
-    elif spec["default_task_subset"]:
-        cfg["datasets"][0]["task_names"] = list(spec["default_task_subset"])
+def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Recursive dict merge: ``override`` wins, leaves untouched."""
+    out = dict(base)
+    for k, v in override.items():
+        if k in out and isinstance(out[k], dict) and isinstance(v, dict):
+            out[k] = deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
 
-    return cfg
+
+def split_method_subtree(cfg: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Pop the ``method`` subtree out of a merged job YAML.
+
+    Returns ``(job_cfg, method_cfg)``. ``method_cfg`` is ``None`` if
+    the merged YAML had no ``method:`` key (e.g. the legacy
+    baseline ``tb_pro_skillsvote.yaml``, which this driver does NOT
+    touch — see ``main()``).
+    """
+    if "method" not in cfg:
+        return cfg, None
+    method_cfg = cfg.pop("method")
+    if not isinstance(method_cfg, dict):
+        raise SystemExit(
+            f"[run_benchmark] 'method:' subtree must be a mapping; got {type(method_cfg).__name__}"
+        )
+    return cfg, method_cfg
+
+
+def write_method_yaml(
+    method_cfg: dict[str, Any],
+    out_path: Path,
+    *,
+    fresh_start: bool,
+    runtime: str,
+    overrides: dict[str, Any],
+) -> dict[str, Any]:
+    """Apply CLI-level adjustments (``--fresh-start``, ``--runtime``,
+    ``--method-override``) and write the method-config YAML.
+
+    Returns the post-merge method dict (useful for --dry-run
+    printing).
+    """
+    merged = deep_merge(method_cfg, overrides)
+    if fresh_start:
+        merged["reuse_q_table"] = False
+        merged["reuse_embedding_cache"] = False
+    if runtime != "new":
+        merged["runtime"] = runtime
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(
+        yaml.safe_dump(merged, sort_keys=False, default_flow_style=False),
+        encoding="utf-8",
+    )
+    return merged
+
+
+def resolve_merged_yaml_path(benchmark: str, variant: str) -> Path:
+    """Return the absolute path to the merged YAML for the (benchmark, variant) cell."""
+    try:
+        rel = BENCHMARK_VARIANTS[(benchmark, variant)]
+    except KeyError:
+        valid = ", ".join(f"{b}/{v}" for b, v in BENCHMARK_VARIANTS)
+        raise SystemExit(
+            f"[run_benchmark] unknown (benchmark, variant) {benchmark!r}/{variant!r}; "
+            f"valid combinations: {valid}"
+        )
+    return (REPO_ROOT / rel).resolve()
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="run_benchmark")
+    parser = argparse.ArgumentParser(
+        prog="run_benchmark",
+        description=(
+            "Single-driver for skillq paper-mode experiments (Step 8, 2026-06-27). "
+            "Replaces the 11 split-configs + 5 driver scripts under experiments/."
+        ),
+    )
     parser.add_argument(
         "--benchmark",
-        choices=list(BENCHMARKS.keys()),
+        choices=sorted({b for b, _ in BENCHMARK_VARIANTS}),
         required=True,
     )
-    parser.add_argument("--mode", choices=["skillsvote", "paper"], default="paper")
     parser.add_argument(
-        "--agent-import-path",
-        default="skills_vote.harbor.claude_code:SkillsVoteClaudeCode",
-        help="Only used in --mode skillsvote.",
+        "--variant",
+        choices=sorted({v for _, v in BENCHMARK_VARIANTS}),
+        required=True,
     )
     parser.add_argument(
-        "--agent-model",
-        default="anthropic/claude-sonnet-4-5",
+        "--fresh-start",
+        action="store_true",
+        help=(
+            "Set reuse_q_table=false AND reuse_embedding_cache=false on "
+            "the method config (replaces the deleted "
+            "method_tb2_skillq_fresh_start.yaml)."
+        ),
     )
-    parser.add_argument("--n-concurrent", type=int, default=None)
-    parser.add_argument("--n-attempts", type=int, default=None)
-    parser.add_argument("--timeout-multiplier", type=float, default=None)
     parser.add_argument(
-        "--task-subset",
-        nargs="*",
+        "--runtime",
+        choices=["new", "legacy"],
+        default="new",
+        help=(
+            'Pipeline selector (MethodConfig.runtime). "new" (default) '
+            'dispatches to the closure-free 8-step pipeline; "legacy" '
+            "raises a friendly RuntimeError (Step 7 deleted the legacy "
+            "bridge — useful only for diagnosing the migration error)."
+        ),
+    )
+    parser.add_argument(
+        "--method-override",
+        action="append",
         default=None,
-        help="Optional list of dataset task names; overrides defaults.",
-    )
-    parser.add_argument(
-        "--jobs-dir",
-        type=Path,
-        default=Path("output"),
-    )
-    parser.add_argument(
-        "--job-name",
-        default=None,
-        help="Defaults to <benchmark>_<mode>__<timestamp>.",
+        metavar="KEY=VALUE",
+        help=(
+            "Override any method-subtree field via dotted-path key=value. "
+            "Repeatable. Example: --method-override retrieval.score_mode=additive. "
+            "Numeric values are coerced (b_max=2000 → int 2000); "
+            "booleans too (reuse_q_table=false → False)."
+        ),
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("experiments/configs"),
-        help="Where to write the generated JobConfig YAML.",
+        default=None,
+        help=(
+            "Where to write the split <job_name>.method.yaml. "
+            "Default: same dir as the merged YAML (experiments/configs/)."
+        ),
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Write the config YAML but do not invoke mg <mode> run.",
+        help=(
+            "Write the split method-config YAML and print the "
+            "would-be ``skillq paper run`` command, but do not invoke it."
+        ),
     )
     args = parser.parse_args(argv)
 
-    spec = BENCHMARKS[args.benchmark]
-    n_concurrent = args.n_concurrent or spec["default_n_concurrent"]
-    n_attempts = args.n_attempts or spec["default_n_attempts"]
-    timeout_multiplier = args.timeout_multiplier or spec["default_timeout_multiplier"]
-    task_subset = args.task_subset if args.task_subset else spec["default_task_subset"]
+    merged_path = resolve_merged_yaml_path(args.benchmark, args.variant)
+    if not merged_path.exists():
+        raise SystemExit(
+            f"[run_benchmark] merged YAML not found: {merged_path}\n"
+            f"  (Step 8.1 should have created it; check git status / file path)"
+        )
 
-    from datetime import datetime
+    # Source .env BEFORE resolving interpolations so ${oc.env:...}
+    # references pick up the .env values (e.g. ANTHROPIC_MODEL=
+    # deepseek-v4-flash) rather than stray shell values (e.g.
+    # ANTHROPIC_MODEL=MiniMax-M3 leaking from the test harness).
+    # The CLI does the same via load_env_file() inside paper run;
+    # we have to do it explicitly because OmegaConf resolves
+    # interpolations at split time, not at CLI invocation time.
+    from skillq.env import load_env_file
 
-    job_name = args.job_name or (
-        f"{args.benchmark}_{args.mode}__"
-        f"{datetime.now().strftime('%Y-%m-%d__%H-%M-%S')}"
+    env_file = Path(os.environ.get("SkillQ_ENV_FILE", ".env")).resolve()
+    try:
+        load_env_file(env_file)
+    except FileNotFoundError as exc:
+        print(f"[run_benchmark] {exc}", file=sys.stderr, flush=True)
+        return 2
+
+    # Load via OmegaConf so all interpolations resolve (incl.
+    # ${now:%Y-%m-%d__%H-%M-%S}, ${oc.env:...}, ${job_name} inside
+    # the method subtree, etc.). Then snapshot the resolved dict
+    # as a plain mapping for the rest of the driver.
+    raw_text = merged_path.read_text(encoding="utf-8")
+    conf = OmegaConf.create(raw_text)
+    resolved = OmegaConf.to_container(conf, resolve=True)
+    if not isinstance(resolved, dict):
+        raise SystemExit(
+            f"[run_benchmark] merged YAML must be a mapping; got {type(resolved).__name__}"
+        )
+    job_cfg, method_cfg = split_method_subtree(resolved)
+    if method_cfg is None:
+        raise SystemExit(
+            f"[run_benchmark] {merged_path.name} has no top-level 'method:' subtree. "
+            f"This driver only handles the merged paper-mode YAMLs (tb2_*/swebenchpro_). "
+            f"Use ``skillq skillsvote run -c ...`` for the baseline."
+        )
+
+    overrides = parse_overrides(args.method_override)
+    job_name = job_cfg.get("job_name", f"{args.benchmark}_skillq_{args.variant}")
+    output_dir = (args.output_dir or merged_path.parent).resolve()
+    method_yaml_path = output_dir / f"{job_name}.method.yaml"
+
+    written_method = write_method_yaml(
+        method_cfg,
+        method_yaml_path,
+        fresh_start=args.fresh_start,
+        runtime=args.runtime,
+        overrides=overrides,
     )
 
-    cfg = build_job_config(
-        benchmark=args.benchmark,
-        mode=args.mode,
-        agent_import_path=args.agent_import_path,
-        agent_model=args.agent_model,
-        n_concurrent=n_concurrent,
-        n_attempts=n_attempts,
-        timeout_multiplier=timeout_multiplier,
-        task_subset=task_subset,
-        jobs_dir=str(args.jobs_dir),
-        job_name=job_name,
+    # Persist the (resolved job_cfg without method-subtree) back to
+    # disk so the user can inspect what the driver actually passed
+    # to the CLI. All interpolations (incl. ${now:...}, ${oc.env:...},
+    # ${job_name}) are already resolved — the on-disk job YAML is
+    # literal, not a template, so subsequent edits to the merged
+    # YAML don't leak into the on-disk job config.
+    job_yaml_path = output_dir / f"{job_name}.job.yaml"
+    job_yaml_path.write_text(
+        yaml.safe_dump(job_cfg, sort_keys=False, default_flow_style=False),
+        encoding="utf-8",
     )
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    cfg_path = args.output_dir / f"{args.benchmark}_{args.mode}.yaml"
-    import yaml
+    cmd = [
+        sys.executable, "-m", "skillq.cli", "paper", "run",
+        "-c", str(job_yaml_path),
+        "--method-config", str(method_yaml_path),
+    ]
+    cmd_str = " ".join(shlex.quote(c) for c in cmd)
 
-    cfg_path.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
-    print(f"[run_benchmark] wrote {cfg_path}")
+    print(f"[run_benchmark] benchmark={args.benchmark} variant={args.variant}")
+    print(f"[run_benchmark] job_name={job_name}")
+    print(f"[run_benchmark] fresh_start={args.fresh_start} runtime={args.runtime}")
+    if overrides:
+        print(f"[run_benchmark] overrides: {overrides}")
+    print(f"[run_benchmark] wrote {job_yaml_path}")
+    print(f"[run_benchmark] wrote {method_yaml_path}")
+    print(f"[run_benchmark] cmd: {cmd_str}")
+    print(f"[run_benchmark]   (effective method.runtime = {written_method.get('runtime', 'new')!r})")
+    print(f"[run_benchmark]   (effective method.reuse_q_table = {written_method.get('reuse_q_table', True)})")
+    print(f"[run_benchmark]   (effective method.reuse_embedding_cache = {written_method.get('reuse_embedding_cache', True)})")
 
     if args.dry_run:
         return 0
 
-    cmd = [sys.executable, "-m", "paper.cli", args.mode, "run", "-c", str(cfg_path)]
-    print(f"[run_benchmark] {' '.join(cmd)}")
-    result = subprocess.run(cmd)
-    return result.returncode
+    # cd into the repo root so ``skillq.cli`` and the YAML relative
+    # paths resolve correctly.
+    return subprocess.run(cmd, cwd=str(REPO_ROOT)).returncode
 
 
 if __name__ == "__main__":

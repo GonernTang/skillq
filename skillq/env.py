@@ -1,6 +1,6 @@
-"""``paper.env`` — dotenv loader shared by ``paper paper run`` / ``paper prebuild run``.
+"""``skillq.env`` — dotenv loader shared by ``skillq paper run`` / ``skillq prebuild run``.
 
-Mirrors :func:`skills_vote.harbor.cli.load_env_file` so that ``paper .env``
+Mirrors :func:`skills_vote.harbor.cli.load_env_file` so that ``skillq .env``
 behaves the same as ``skillsvote .env``: same variable names, same precedence
 (``override=True``), same silent-when-missing behaviour.
 

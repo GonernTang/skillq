@@ -1,18 +1,22 @@
-# Example mg paper config for SWE-Bench Pro (1.0)
+# SWE-Bench Pro 20-instance subset (Step 8, 2026-06-27) — paper mode.
 #
-# Run with:
-#   uv run paper paper run -c paper/experiments/configs/swebenchpro_skillq.yaml
+# Replaces the bare-bones swebenchpro_skillq.yaml (no method
+# override; the user had to compose MethodConfig ad-hoc).
+# 20-instance subset matches lqrl's scripts/configs/swebenchpro
+# default. Drop ``task_names`` for the full corpus.
 #
-# SWE-Bench Pro is the largest of the three benchmarks (~700+ tasks).
-# Default: 20-task subset (matches lqrl's scripts/configs/swebenchpro).
-# The full corpus is downloadable but takes hours to build Docker images.
+# Time budget per trial: 7200s = 2h (SWE-Bench Pro is much slower
+# per-task than Terminal-Bench 2.0).  n_concurrent_trials=2 keeps
+# the host within ~4 cores / 16 GB RAM.
+#
+# Run:
+#   uv run python experiments/run/run_benchmark.py --benchmark swebenchpro --variant full
 
 jobs_dir: output
 job_name: swebenchpro_skillq__${now:%Y-%m-%d__%H-%M-%S}
 n_attempts: 1
 n_concurrent_trials: 2
 quiet: false
-
 retry:
   max_retries: 0
   exclude_exceptions:
@@ -20,44 +24,27 @@ retry:
     - RewardFileNotFoundError
     - RewardFileEmptyError
     - VerifierOutputParseError
-
-agent_timeout_multiplier: 4.0
-
+agent_timeout_multiplier: 1.0
 environment:
   type: docker
   force_build: false
   delete: false
   mounts_json:
+    # SWE-Bench Pro keeps the legacy seed mount path
+    # (${abspath:.skillq_library/seed}). The Step 8 single-driver
+    # re-points seed_skills_dir to this same path on the host
+    # (it auto-creates .skillq_library/seed/ on first run).
     - type: bind
       source: ${abspath:.skillq_library/seed}
       target: /skills
       read_only: true
-
 agents:
-  - import_path: skillq.skillq_runtime.agent:SkillQClaudeCodeAgent
-    model_name: anthropic/claude-sonnet-4-5
+  - import_path: skillq.runtime.agent:SkillQClaudeCodeAgent
+    model_name: ${oc.env:ANTHROPIC_MODEL,anthropic/claude-sonnet-4-5}
+    override_timeout_sec: 7200.0    # 2h ceiling — SWE-Bench Pro is slow
     kwargs:
       # Bypass CLAUDE_CODE_EFFORT_LEVEL=max inherited from host shell.
       reasoning_effort: high
-      allowed_skills: []
-      recommend:
-        # /skills is the in-container path; the bind mount in
-        # `environment.mounts_json` above maps the host's
-        # ${abspath:.skillq_library/seed} to /skills (read-only).
-        skills_dir: /skills
-        # Do NOT set prompt_path to
-        # skillq.skillq_runtime.retrieval_step:rerank_with_ucb. lqrl's
-        # step_recommend calls it with extra kwargs (notably key=...)
-        # that rerank_with_ucb does not accept, and the agent would
-        # TypeError before the agent ever runs. The mg UCB rerank is
-        # invoked directly from PaperClaudeCodeAgent.run, not via
-        # this prompt_path. Leaving prompt_path unset makes lqrl fall
-        # back to its own DEFAULT_PROMPT_PATH
-        # (skills_vote.recommend.prompt:build).
-      # 2026-06-25: removed paper_retrieval block (dead code — container
-      # hook never read these values; bridge now writes SKILLQ_HOOK_*
-      # env vars from method-config).
-
 datasets:
   - name: swebenchpro
     version: "1.0"
@@ -68,3 +55,40 @@ datasets:
       # corpus.
       - instance_protonmail__webclients-0200ce0fc1d4dbd35178c10d440a284c82ecc858
       - instance_qutebrowser__qutebrowser-b8c93a8a3a64e2c6cdc2ddde2c6b1ade4dd3cbe9
+
+# === Paper method ===
+method:
+  # SWE-Bench Pro state lives under the same .skillq_library/seed
+  # path the bind-mount points at (Plan D co-location).
+  library_root: ${abspath:.skillq_library/seed}
+  state_path:   ${abspath:.skillq_library/seed}/.skillq_state/method_state.json
+  seed_skills_dir: ${abspath:.skillq_library/seed}
+
+  retrieval:
+    top_k: 3
+    score_mode: multiplicative
+    beta: 0.5
+    gamma: 0.2
+    sim_gate_min_score: 0.7
+    sim_gate_floor: 0
+    c_ucb: 0.5
+    lambda: 0.5
+
+  attribution_model: anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-flash}
+  editor_model:      anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-flash}
+  embedder_model:    openai/${oc.env:EMBEDDING_MODEL,text-embedding-v4}
+  embedder_dim: 1024
+
+  evolve:
+    enabled: true
+    extract_every_n_trials: 4
+    semantic_dedup_threshold: 0.85
+    enforce_failure_skill_structure: true
+
+  b_max: 1000
+  seed_initial_q: 0.5
+
+  reuse_q_table: true
+  reuse_embedding_cache: true
+
+  runtime: new

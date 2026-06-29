@@ -199,7 +199,7 @@ environment:
   force_build: false
   delete: false
 agents:
-  - import_path: skillq.skillq_runtime.agent:SkillQClaudeCodeAgent   # paper mode
+  - import_path: skillq.runtime.agent:SkillQClaudeCodeAgent   # SkillQ method
     # - import_path: skills_vote.harbor.claude_code:SkillsVoteClaudeCode  # lqrl mode
     model_name: anthropic/claude-sonnet-4-5
     kwargs:

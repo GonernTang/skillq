@@ -40,3 +40,15 @@ input/
 # SkillQ method state when co-located with seed_skills_dir
 # (opt-in via state_path in MethodConfig; 2026-06-25)
 skills/.skillq_state/
+
+# Step 8 (2026-06-27) single-driver dry-run artifacts.
+# The single-driver in experiments/run/run_benchmark.py splits the
+# merged <benchmark>_<variant>.yaml into a sibling <job_name>.job.yaml
+# + <job_name>.method.yaml before invoking ``skillq paper run``. These
+# are ephemeral; the merged YAMLs in experiments/configs/ are the
+# committed source of truth. Don't check the split files in.
+experiments/configs/*.job.yaml
+experiments/configs/*.method.yaml
+
+# Local planning artifacts (claude-code OMO session output).
+.omo/

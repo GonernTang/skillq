@@ -1,7 +1,7 @@
-"""OmegaConf resolver registration for the paper CLI.
+"""OmegaConf resolver registration for the skillq CLI.
 
 Stock OmegaConf 2.3 ships only the ``oc.*`` resolvers (``oc.env``,
-``oc.create``, ``oc.select`` …). Several of the existing paper
+``oc.create``, ``oc.select`` …). Several of the existing skillq
 configs reference two extra resolvers that lqrl's configs also use:
 
 - ``${now:%Y-%m-%d__%H-%M-%S}`` — render the current time with
@@ -14,7 +14,7 @@ configs reference two extra resolvers that lqrl's configs also use:
 Without these, ``OmegaConf.to_container(resolve=True)`` raises
 ``UnsupportedInterpolationType`` the moment the CLI loads a config
 that uses them. We register the resolvers at import time; the
-:mod:`paper.cli` module imports :mod:`paper` (which imports this
+:mod:`skillq.cli` module imports :mod:`skillq` (which imports this
 module) before parsing any job-config YAML, so the registrations
 are guaranteed to be in place.
 
@@ -50,7 +50,7 @@ def register() -> None:
         OmegaConf.register_new_resolver("abspath", _abspath)
 
 
-# Auto-register on import so `import paper` (which `paper.cli` does
+# Auto-register on import so `import skillq` (which `skillq.cli` does
 # at the top of its build_parser) is enough to bring the resolvers
 # online. Scripts that want to control the timing can call
 # ``register()`` themselves explicitly.
