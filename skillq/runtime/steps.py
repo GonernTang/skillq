@@ -807,10 +807,30 @@ async def run_pipeline(ctx: "TrialContext", result: "StepResult") -> None:
     ``r_task=1``). The pipeline is **linear**: a single shared
     ``ctx`` + ``result`` thread through every step.
 
-    The trial-classifier (``step_classify_failure``) sets
-    ``ctx.failure``. Downstream steps that need to skip should
-    check ``ctx.failure is TrialFailureClass.SKIP_ALL`` at their
-    top — currently :func:`step_q_update` does so explicitly.
+    **SKIP_ALL early-return (Task #74, 2026-06-29)**: after
+    :func:`step_classify_failure` populates ``ctx.failure``, if
+    the verdict is :attr:`TrialFailureClass.SKIP_ALL` (infra
+    failure / OOM / retryable) we skip the remaining 7 steps
+    entirely. Concretely:
+
+    - :func:`step_q_update` — would do nothing anyway (no Q-update
+      signal on a half-flushed trial).
+    - :func:`step_attribute` — would burn an LLM call on a useless
+      trajectory. Per ``classify_trial_failure`` docstring, SKIP_ALL
+      means "no useful trajectory to learn from".
+    - :func:`step_maintain_lib` / :func:`step_refresh_emb_cache` —
+      no diff to record.
+    - :func:`step_incremental_edit` — would edit a skill from a
+      partial trajectory; semantic garbage.
+    - :func:`step_dispatch_evolve` — Rule 5 (FAILURE_SKILL_NOT_USED)
+      would *trigger* the L4 extract path on an OOM-killed trial,
+      which is exactly the bug :func:`test_bridge_skips_extract_on_oom_even_with_trajectory`
+      pins. SKIP_ALL must short-circuit before this step.
+    - :func:`step_save_state` — must NOT advance ``state.step``.
+      The test ``test_attach_layered_registers_skips_failed_trials``
+      pins ``state.step == 0`` for SKIP_ALL trials; without the
+      early-return the unconditional ``services.state.step += 1``
+      on line 758 fires.
 
     No exceptions propagate out of individual steps (each step
     is responsible for its own try/except). A step that fails
@@ -818,6 +838,19 @@ async def run_pipeline(ctx: "TrialContext", result: "StepResult") -> None:
     """
     for step in ON_TRIAL_ENDED_PIPELINE:
         await step(ctx, result)
+        # Short-circuit after classification if the verdict is
+        # SKIP_ALL — see docstring for the per-step rationale.
+        if (
+            step is step_classify_failure
+            and ctx.failure is TrialFailureClass.SKIP_ALL
+        ):
+            logger.debug(
+                "run_pipeline: SKIP_ALL for trial=%s, skipping remaining %d steps",
+                ctx.trial_id,
+                len(ON_TRIAL_ENDED_PIPELINE)
+                - ON_TRIAL_ENDED_PIPELINE.index(step) - 1,
+            )
+            return
 
 
 __all__ = [
