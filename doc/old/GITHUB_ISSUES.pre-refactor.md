@@ -1,3 +1,9 @@
+<!--
+ARCHIVED 2026-06-29: pre-4-layer-refactor 历史文档 (paper-mode per-subtask-hook refactor, c8ef0c6).
+引用代码路径 (PaperClaudeCodeAgent, attach_paper_registers, sub_task_verifier, vector_table.py:_description_of)
+已被 Step 7 删除。仅供审计/历史参考。
+-->
+
 # GitHub Issues — paper-mode per-subtask-hook refactor (commit c8ef0c6)
 
 Copy each `<-- ISSUE -->` block to GitHub → New Issue.

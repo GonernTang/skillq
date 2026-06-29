@@ -1,21 +1,18 @@
-"""skillq/experiments — Terminal-Bench 2.0 / TB Pro / SWE-Bench Pro drivers.
+"""skillq/experiments — TB 2.0 / TB Pro / SWE-Bench Pro drivers.
 
-Layout (mirrors ``lqrl/scripts/`` ):
+Layout (post 4-layer refactor, 2026-06-29):
 
     experiments/
-    ├── prebuild/    core ops: prebuild_images.py (vendored from upstream)
-    ├── run/         benchmark drivers (run_benchmark.py, run_terminalbench.py)
-    │                + ablation matrix (ablation.py)
-    ├── smoke/       end-to-end smoke test (run_smoke.sh + configs)
-    ├── configs/     per-benchmark / per-mode YAML configs
+    ├── configs/     5 merged single-source-of-truth YAMLs
+    │                (smoke/e2e/full/swebenchpro + tb_pro_skillsvote baseline)
+    ├── run/         single-driver: run_benchmark.py + run_tb2_paper.sh
     ├── __init__.py  (this file)
-    └── RUNNING.md   user-facing Chinese documentation
+    └── RUNNING.md   quick-start docs (post-refactor workflow)
 
-Each script in this directory is a thin driver that produces a single
-job-config YAML and invokes either ``skillq skillsvote run`` or
-``skillq paper run`` against it. The drivers are deliberately
-*read-only* with respect to the library: the only side effect is
-producing job output under the ``output/`` directory tree.
+The single-driver ``run_benchmark.py`` accepts ``--benchmark``,
+``--variant``, ``--fresh-start``, ``--runtime``, and
+``--method-override key=value`` flags. See RUNNING.md for the full
+quick-start and experiments/configs/*.yaml for the canonical configs.
 """
 
 from __future__ import annotations

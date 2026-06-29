@@ -1,3 +1,9 @@
+<!--
+ARCHIVED 2026-06-29: pre-4-layer-refactor 历史 run 结果 (2026-06-25, pass@1 = 0.584 baseline).
+§1 + §4 + §5 + §6 的实验数据 (pass@1, per-trial durations, top-failure table) 真实有效,保留作为 4-layer 重构前 baseline.
+引用 YAML 配置路径 (method_tb2_skillq_full.yaml, tb2_skillq_full.yaml 等) 已被 Step 8.2 删除。
+-->
+
 # SkillQ TB 2.0 全量 Run Results — 2026-06-25
 
 ## 1. Headline Numbers

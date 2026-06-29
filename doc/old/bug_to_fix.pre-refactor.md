@@ -1,3 +1,9 @@
+<!--
+ARCHIVED 2026-06-29: pre-4-layer-refactor 历史文档.
+代码路径 (skillq/method/, skillq/skillq_runtime/, skillq/paper_mode/, attach_paper_registers, PaperClaudeCodeAgent)
+已被 Step 7 删除。仅供审计/历史参考。Live bug ledger 见 CHANGELOG.md。
+-->
+
 # SkillQ — Open bugs and known gaps
 
 Last updated: 2026-06-26 (post 4-layer audit by subagents; pre-fix).

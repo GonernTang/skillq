@@ -1,4 +1,10 @@
 
+  <!--
+ARCHIVED 2026-06-29: pre-4-layer-refactor 设计讨论 Q&A (probation + intent-hash + Q 持久化方案).
+讨论中涉及的 probation_count / probation_avg_q / intent_hash Q-table / mixed-factor eviction 方案
+在 4-layer 重构中已被简化 (纯 lowest-Q eviction, 全局 Q-table)。仅供历史参考。
+-->
+
   在我开始改之前,请你拍板:
 
   ┌──────────────────────────────────────┬──────────────────────────────────────────────────────────────────┐

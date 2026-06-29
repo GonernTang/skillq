@@ -1,3 +1,9 @@
+<!--
+ARCHIVED 2026-06-29: pre-4-layer-refactor 历史文档 (2026-06-25 快照).
+引用代码路径 (skillq/method/, skillq/skillq_runtime/, skillq/paper_mode/, skillq/method/state.py, skillq/paper_mode/bridge.py)
+已被 Step 7 删除。仅供审计/历史参考。Live architecture 见 CHANGELOG.md + skillq/layers/ + skillq/runtime/ + skillq/services/。
+-->
+
 # SkillQ 论文实验上下文快照(2026-06-25)
 
 ---

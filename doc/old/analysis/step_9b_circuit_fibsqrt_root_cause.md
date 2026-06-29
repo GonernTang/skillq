@@ -1,3 +1,11 @@
+<!--
+ARCHIVED 2026-06-29: Step 9B e2e trial (circuit-fibsqrt) 30-min timeout 根因分析.
+- 当时引用 "Task #74 SKIP_ALL 早退 fix" 已经完成 (见 commit 6f403f6)
+- 当时提出的 4 种缓解方向中,根本 root cause (Fix A+: hook query 改用 instruction.md) 已经实施
+- 该 trial (tb2_skillq_e2e__2026-06-29__18-09-50) 已保留在 output/ 作为 evidence
+仅供历史参考。
+-->
+
 # Step 9B circuit-fibsqrt timeout — 根因分析 (2026-06-29)
 
 ## Summary
