@@ -35,9 +35,9 @@ def _write_disk_state(state_path: Path, q_value: float = 0.42) -> None:
 
 def test_load_into_overwrite_q_true_resumes(tmp_path):
     """Default (overwrite_q=True): Q-table resumes from disk."""
-    from skillq.method.state import QlibState
-    from skillq.method.library import LibManager
-    from skillq.method.types import Qlib
+    from skillq.shared.library import QlibState
+    from skillq.shared.q_table import LibManager
+    from skillq.shared.types import Qlib
 
     state_path = tmp_path / "method_state.json"
     _write_disk_state(state_path, q_value=0.42)
@@ -54,9 +54,9 @@ def test_load_into_overwrite_q_true_resumes(tmp_path):
 
 def test_load_into_overwrite_q_false_keeps_lib_drops_q(tmp_path):
     """overwrite_q=False: lib loaded but Q-table untouched."""
-    from skillq.method.state import QlibState
-    from skillq.method.library import LibManager
-    from skillq.method.types import Qlib
+    from skillq.shared.library import QlibState
+    from skillq.shared.q_table import LibManager
+    from skillq.shared.types import Qlib
 
     state_path = tmp_path / "method_state.json"
     _write_disk_state(state_path, q_value=0.42)
@@ -74,9 +74,9 @@ def test_load_into_overwrite_q_false_keeps_lib_drops_q(tmp_path):
 def test_load_into_overwrite_q_false_then_plan_d_seeds(tmp_path):
     """Simulates the full reuse_q_table=False flow: load_into(overwrite_q=False)
     + mgr.q_table.clear() + ensure_seeded → Q=seed_initial_q."""
-    from skillq.method.state import QlibState
-    from skillq.method.library import LibManager
-    from skillq.method.types import Qlib
+    from skillq.shared.library import QlibState
+    from skillq.shared.q_table import LibManager
+    from skillq.shared.types import Qlib
 
     state_path = tmp_path / "method_state.json"
     _write_disk_state(state_path, q_value=0.42)
@@ -99,7 +99,7 @@ def test_load_into_overwrite_q_false_then_plan_d_seeds(tmp_path):
 def test_vector_table_clear_marks_dirty(tmp_path):
     """VectorTable.clear() empties the in-memory dict and sets _dirty=True
     so the next save() persists the empty state."""
-    from skillq.method.vector_table import VectorTable
+    from skillq.shared.embeddings import VectorTable
 
     cache = VectorTable(tmp_path / "emb_cache.json")
     cache.upsert("a", np.array([0.1, 0.2], dtype=np.float32))
@@ -119,7 +119,7 @@ def test_vector_table_clear_marks_dirty(tmp_path):
 def test_vector_table_clear_empty_cache_idempotent(tmp_path):
     """clear() on an empty cache is a no-op (still marks dirty so the
     next save persists the empty state)."""
-    from skillq.method.vector_table import VectorTable
+    from skillq.shared.embeddings import VectorTable
 
     cache = VectorTable(tmp_path / "emb_cache.json")
     assert len(cache) == 0
@@ -132,7 +132,7 @@ def test_vector_table_clear_empty_cache_idempotent(tmp_path):
 
 def test_vector_table_clear_then_reload_is_empty(tmp_path):
     """After clear() + save(), a fresh VectorTable.load() yields 0 entries."""
-    from skillq.method.vector_table import VectorTable
+    from skillq.shared.embeddings import VectorTable
 
     cache = VectorTable(tmp_path / "emb_cache.json")
     cache.upsert("a", np.array([0.1, 0.2], dtype=np.float32))

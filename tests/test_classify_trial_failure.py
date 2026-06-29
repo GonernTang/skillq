@@ -1,4 +1,4 @@
-"""Unit tests for ``_classify_trial_failure`` in ``skillq.skillq_runtime.bridge``.
+"""Unit tests for ``classify_trial_failure`` in ``skillq.runtime.bridge``.
 
 The classifier decides which ``on_ended`` paths run after a Harbor
 trial. The classification is the foundation of the 2026-06-25 fix
@@ -28,9 +28,9 @@ from unittest.mock import MagicMock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from skillq.skillq_runtime.bridge import (  # noqa: E402
+from skillq.shared.classify_trial_failure import (  # noqa: E402
     TrialFailureClass,
-    _classify_trial_failure,
+    classify_trial_failure,
 )
 
 
@@ -110,7 +110,7 @@ class TestClassifyTrialFailure:
             trial_uri=str(trial_dir),
             exception_type=None,
         )
-        assert _classify_trial_failure(
+        assert classify_trial_failure(
             event, event.config.retry, trial_dir
         ) is TrialFailureClass.RUN_NORMAL
 
@@ -124,7 +124,7 @@ class TestClassifyTrialFailure:
             exception_type="NonZeroAgentExitCodeError",
             exception_message="Command failed (exit 1): claude",
         )
-        assert _classify_trial_failure(
+        assert classify_trial_failure(
             event, event.config.retry, trial_dir
         ) is TrialFailureClass.RUN_TASK_FAILURE
 
@@ -140,7 +140,7 @@ class TestClassifyTrialFailure:
             exception_type="NonZeroAgentExitCodeError",
             exception_message="Command failed (exit 137): killed",
         )
-        assert _classify_trial_failure(
+        assert classify_trial_failure(
             event, event.config.retry, trial_dir
         ) is TrialFailureClass.SKIP_ALL
 
@@ -154,7 +154,7 @@ class TestClassifyTrialFailure:
             exception_type="NonZeroAgentExitCodeError",
             exception_message="Command failed (exit 137): killed",
         )
-        assert _classify_trial_failure(
+        assert classify_trial_failure(
             event, event.config.retry, trial_dir
         ) is TrialFailureClass.SKIP_ALL
 
@@ -170,7 +170,7 @@ class TestClassifyTrialFailure:
             exception_type="AgentTimeoutError",
             exception_message="agent.run timeout",
         )
-        assert _classify_trial_failure(
+        assert classify_trial_failure(
             event, event.config.retry, trial_dir
         ) is TrialFailureClass.RUN_TASK_FAILURE
 
@@ -183,7 +183,7 @@ class TestClassifyTrialFailure:
             exception_type="AgentTimeoutError",
             exception_message="agent.run timeout",
         )
-        assert _classify_trial_failure(
+        assert classify_trial_failure(
             event, event.config.retry, trial_dir
         ) is TrialFailureClass.SKIP_ALL
 
@@ -204,7 +204,7 @@ class TestClassifyTrialFailure:
             exception_message="verifier timeout",
             retry_excludes=["VerifierTimeoutError"],
         )
-        assert _classify_trial_failure(
+        assert classify_trial_failure(
             event, event.config.retry, trial_dir
         ) is TrialFailureClass.RUN_TASK_FAILURE
 
@@ -218,7 +218,7 @@ class TestClassifyTrialFailure:
             exception_type="NonZeroAgentExitCodeError",
             exception_message="Command failed (exit 1): claude",
         )
-        assert _classify_trial_failure(
+        assert classify_trial_failure(
             event, event.config.retry, trial_dir
         ) is TrialFailureClass.SKIP_ALL
 
@@ -231,7 +231,7 @@ class TestClassifyTrialFailure:
             exception_type="EnvironmentStartTimeoutError",
             exception_message="env start timeout",
         )
-        assert _classify_trial_failure(
+        assert classify_trial_failure(
             event, event.config.retry, trial_dir
         ) is TrialFailureClass.SKIP_ALL
 
@@ -244,7 +244,7 @@ class TestClassifyTrialFailure:
             exception_type="HealthcheckError",
             exception_message="env healthcheck failed",
         )
-        assert _classify_trial_failure(
+        assert classify_trial_failure(
             event, event.config.retry, trial_dir
         ) is TrialFailureClass.SKIP_ALL
 
@@ -258,7 +258,7 @@ class TestClassifyTrialFailure:
             exception_type="RuntimeError",
             exception_message="Agent install failed: …",
         )
-        assert _classify_trial_failure(
+        assert classify_trial_failure(
             event, event.config.retry, trial_dir
         ) is TrialFailureClass.SKIP_ALL
 
@@ -274,7 +274,7 @@ class TestClassifyTrialFailure:
             exception_type="asyncio.TimeoutError",
             exception_message="top-level",
         )
-        assert _classify_trial_failure(
+        assert classify_trial_failure(
             event, event.config.retry, trial_dir
         ) is TrialFailureClass.SKIP_ALL
 
@@ -291,7 +291,7 @@ class TestClassifyTrialFailure:
             retry_includes=["NonZeroAgentExitCodeError"],
             max_retries=2,
         )
-        assert _classify_trial_failure(
+        assert classify_trial_failure(
             event, event.config.retry, trial_dir
         ) is TrialFailureClass.SKIP_ALL
 
@@ -301,7 +301,7 @@ class TestClassifyTrialFailure:
             trial_uri=None,
             exception_type=None,
         )
-        assert _classify_trial_failure(
+        assert classify_trial_failure(
             event, event.config.retry, trial_dir
         ) is TrialFailureClass.SKIP_ALL
 
@@ -310,46 +310,46 @@ class TestClassifyTrialFailure:
 # Trajectory-shape edge cases
 # ---------------------------------------------------------------------------
 class TestUsableTrajectoryHeuristic:
-    """``_has_usable_trajectory`` gates the
+    """``has_usable_trajectory`` gates the
     RUN_TASK_FAILURE promotion. These cases pin the heuristic so
     future refactors don't silently broaden/narrow it."""
 
     def test_missing_traj_dir_returns_false(self, tmp_path: Path):
-        from skillq.skillq_runtime.bridge import _has_usable_trajectory
-        assert _has_usable_trajectory(tmp_path / "nope") is False
+        from skillq.shared.classify_trial_failure import has_usable_trajectory
+        assert has_usable_trajectory(tmp_path / "nope") is False
 
     def test_empty_traj_dir_returns_false(self, tmp_path: Path):
-        from skillq.skillq_runtime.bridge import _has_usable_trajectory
+        from skillq.shared.classify_trial_failure import has_usable_trajectory
         # directory exists, file does not
         (tmp_path / "agent").mkdir()
-        assert _has_usable_trajectory(tmp_path) is False
+        assert has_usable_trajectory(tmp_path) is False
 
     def test_truncated_json_returns_false(self, tmp_path: Path):
-        from skillq.skillq_runtime.bridge import _has_usable_trajectory
+        from skillq.shared.classify_trial_failure import has_usable_trajectory
         traj = tmp_path / "agent" / "trajectory.json"
         traj.parent.mkdir(parents=True, exist_ok=True)
         traj.write_text('[{"type": "assistant", "mess', encoding="utf-8")
-        assert _has_usable_trajectory(tmp_path) is False
+        assert has_usable_trajectory(tmp_path) is False
 
     def test_non_list_json_returns_false(self, tmp_path: Path):
-        from skillq.skillq_runtime.bridge import _has_usable_trajectory
+        from skillq.shared.classify_trial_failure import has_usable_trajectory
         traj = tmp_path / "agent" / "trajectory.json"
         traj.parent.mkdir(parents=True, exist_ok=True)
         traj.write_text('{"type": "assistant"}', encoding="utf-8")
-        assert _has_usable_trajectory(tmp_path) is False
+        assert has_usable_trajectory(tmp_path) is False
 
     def test_list_with_no_assistant_returns_false(self, tmp_path: Path):
-        from skillq.skillq_runtime.bridge import _has_usable_trajectory
+        from skillq.shared.classify_trial_failure import has_usable_trajectory
         traj = tmp_path / "agent" / "trajectory.json"
         traj.parent.mkdir(parents=True, exist_ok=True)
         traj.write_text(
             json.dumps([{"type": "user"}, {"type": "system"}]),
             encoding="utf-8",
         )
-        assert _has_usable_trajectory(tmp_path) is False
+        assert has_usable_trajectory(tmp_path) is False
 
     def test_list_with_assistant_returns_true(self, tmp_path: Path):
-        from skillq.skillq_runtime.bridge import _has_usable_trajectory
+        from skillq.shared.classify_trial_failure import has_usable_trajectory
         traj = tmp_path / "agent" / "trajectory.json"
         traj.parent.mkdir(parents=True, exist_ok=True)
         traj.write_text(
@@ -358,42 +358,42 @@ class TestUsableTrajectoryHeuristic:
             ),
             encoding="utf-8",
         )
-        assert _has_usable_trajectory(tmp_path) is True
+        assert has_usable_trajectory(tmp_path) is True
 
 
 # ---------------------------------------------------------------------------
 # OOM detection
 # ---------------------------------------------------------------------------
 class TestOomKillDetection:
-    """Pin the ``_is_oom_kill`` substring heuristic so it doesn't
+    """Pin the ``is_oom_kill`` substring heuristic so it doesn't
     drift."""
 
     def test_nonzero_137_is_oom(self):
-        from skillq.skillq_runtime.bridge import _is_oom_kill
+        from skillq.shared.classify_trial_failure import is_oom_kill
         exc = MagicMock()
         exc.exception_type = "NonZeroAgentExitCodeError"
         exc.exception_message = (
             "Command failed (exit 137): killed by kernel OOM"
         )
-        assert _is_oom_kill(exc) is True
+        assert is_oom_kill(exc) is True
 
     def test_nonzero_1_is_not_oom(self):
-        from skillq.skillq_runtime.bridge import _is_oom_kill
+        from skillq.shared.classify_trial_failure import is_oom_kill
         exc = MagicMock()
         exc.exception_type = "NonZeroAgentExitCodeError"
         exc.exception_message = "Command failed (exit 1): claude"
-        assert _is_oom_kill(exc) is False
+        assert is_oom_kill(exc) is False
 
     def test_other_exception_with_137_in_msg_is_not_oom(self):
         """The OOM classifier requires NonZeroAgentExitCodeError +
         exit 137 together. A random exception that happens to
         mention "137" should NOT trigger OOM classification."""
-        from skillq.skillq_runtime.bridge import _is_oom_kill
+        from skillq.shared.classify_trial_failure import is_oom_kill
         exc = MagicMock()
         exc.exception_type = "RuntimeError"
         exc.exception_message = "something with exit 137 mentioned"
-        assert _is_oom_kill(exc) is False
+        assert is_oom_kill(exc) is False
 
     def test_none_info_is_not_oom(self):
-        from skillq.skillq_runtime.bridge import _is_oom_kill
-        assert _is_oom_kill(None) is False
+        from skillq.shared.classify_trial_failure import is_oom_kill
+        assert is_oom_kill(None) is False

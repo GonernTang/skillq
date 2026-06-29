@@ -1,6 +1,6 @@
 """End-to-end bridge tests for the new auto-extract path.
 
-These tests verify that :func:`paper.skillq_runtime.bridge.attach_paper_registers`
+These tests verify that :func:`skillq.runtime.bridge.attach_registers`
 correctly triggers the extractor on the right attribution verdicts,
 adds the new skill to the library, and resets its probation counter.
 """
@@ -18,11 +18,11 @@ from unittest.mock import MagicMock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from skillq.method.attribution import Attribution, TrialAttribution  # noqa: E402
-from skillq.method.library import LibManager  # noqa: E402
-from skillq.method.state import QlibState  # noqa: E402
-from skillq.method.types import Qlib, Skill  # noqa: E402
-from skillq.skillq_runtime.config import MethodConfig  # noqa: E402
+from skillq.layers.l3_attribution.models import Attribution, TrialAttribution  # noqa: E402
+from skillq.shared.q_table import LibManager  # noqa: E402
+from skillq.shared.library import QlibState  # noqa: E402
+from skillq.shared.types import Qlib, Skill  # noqa: E402
+from skillq.config import MethodConfig  # noqa: E402
 
 
 class _MockJob:
@@ -43,6 +43,9 @@ class _MockJob:
     def on_trial_ended(self, callback: Any) -> None:
         self.on_ended = callback
 
+    def on_trial_started(self, callback: Any) -> None:
+        self.on_started = callback  # Step 7: new pipeline needs both
+
     def __len__(self) -> int:
         # The bridge uses ``len(job)`` to compute expected_terminal_trials
         # for the buffer force-flush on the last trial. We return a
@@ -55,9 +58,9 @@ def _patch_litellm_backends(monkeypatch) -> None:
     """Replace LiteLLM + subprocess with stub shims that accept the
     kwargs the bridge passes and return predictable outputs.
     """
-    from skillq.skillq_runtime import bridge as bridge_mod
-    from skillq.method.attribution import StubAttributionBackend
-    from skillq.method.retrieval import StubEmbedder
+    from skillq.runtime import bridge as bridge_mod
+    from skillq.layers.l3_attribution.models import StubAttributionBackend
+    from skillq.shared.backends.litellm import StubEmbedder
 
     class _StubEmbedderShim(StubEmbedder):
         def __init__(self, *args, **kwargs) -> None:
@@ -80,7 +83,7 @@ def _patch_extractor_to_return(monkeypatch, skill: Skill | None) -> None:
     """Replace :class:`SkillExtractor.extract_batch` with a coroutine
     that immediately returns ``skill`` (no subprocess).
     """
-    from skillq.skillq_runtime import bridge as bridge_mod
+    from skillq.runtime import bridge as bridge_mod
 
     async def fake_extract_batch(self, **kwargs) -> Skill | None:
         return skill
@@ -136,8 +139,8 @@ def test_bridge_extracts_on_success_no_skill_seen(tmp_path: Path, monkeypatch):
     _patch_extractor_to_return(monkeypatch, new_skill)
 
     # Make the attribution analyzer return SUCCESS_NO_SKILL_SEEN
-    from skillq.skillq_runtime import bridge as bridge_mod
-    from skillq.method.attribution import Attribution, StubAttributionBackend
+    from skillq.runtime import bridge as bridge_mod
+    from skillq.layers.l3_attribution.models import Attribution, StubAttributionBackend
 
     def returning_no_skill_seen(self, **kwargs):
         return TrialAttribution(
@@ -159,7 +162,7 @@ def test_bridge_extracts_on_success_no_skill_seen(tmp_path: Path, monkeypatch):
     )
     _seed_lib(method)
     job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     result = _fake_trial_result(reward=1.0, trial_uri=str(tmp_path / "trial-x"))
     event = _fake_hook_event("trial-x", result=result)
@@ -183,7 +186,7 @@ def test_bridge_skips_extract_on_failure(tmp_path: Path, monkeypatch):
         called["n"] += 1
         return new_skill
 
-    from skillq.skillq_runtime import bridge as bridge_mod
+    from skillq.runtime import bridge as bridge_mod
     monkeypatch.setattr(bridge_mod.SkillExtractor, "extract_batch", fake_extract_batch)
     monkeypatch.setattr(
         bridge_mod.AttributionAnalyzer,
@@ -202,7 +205,7 @@ def test_bridge_skips_extract_on_failure(tmp_path: Path, monkeypatch):
     )
     _seed_lib(method)
     job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     result = _fake_trial_result(reward=0.0, trial_uri=str(tmp_path / "trial-x"))
     event = _fake_hook_event("trial-x", result=result)
@@ -221,7 +224,7 @@ def test_bridge_skips_extract_on_skill_used(tmp_path: Path, monkeypatch):
         called["n"] += 1
         return new_skill
 
-    from skillq.skillq_runtime import bridge as bridge_mod
+    from skillq.runtime import bridge as bridge_mod
     monkeypatch.setattr(bridge_mod.SkillExtractor, "extract_batch", fake_extract_batch)
     monkeypatch.setattr(
         bridge_mod.AttributionAnalyzer,
@@ -240,7 +243,7 @@ def test_bridge_skips_extract_on_skill_used(tmp_path: Path, monkeypatch):
     )
     _seed_lib(method)
     job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     result = _fake_trial_result(reward=1.0, trial_uri=str(tmp_path / "trial-x"))
     event = _fake_hook_event("trial-x", result=result)
@@ -261,9 +264,9 @@ def test_bridge_skips_extract_when_disabled(tmp_path: Path, monkeypatch):
     _seed_lib(method)
     job = _MockJob()
 
-    from skillq.skillq_runtime import bridge as bridge_mod
+    from skillq.runtime import bridge as bridge_mod
 
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
     # The hook closes over an `extractor` var; if it's None the extract
     # branch is skipped without calling SkillExtractor.extract.
     # We don't need to assert the .extract call count — the fact that
@@ -297,8 +300,8 @@ def test_bridge_extracts_on_failure_no_skill(tmp_path: Path, monkeypatch):
     )
     _patch_extractor_to_return(monkeypatch, new_skill)
 
-    from skillq.skillq_runtime import bridge as bridge_mod
-    from skillq.method.attribution import Attribution, TrialAttribution
+    from skillq.runtime import bridge as bridge_mod
+    from skillq.layers.l3_attribution.models import Attribution, TrialAttribution
 
     def returning_failure(self, **kwargs):
         return TrialAttribution(
@@ -323,7 +326,7 @@ def test_bridge_extracts_on_failure_no_skill(tmp_path: Path, monkeypatch):
     )
     _seed_lib(method)
     job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     result = _fake_trial_result(reward=0.0, trial_uri=str(tmp_path / "trial-x"))
     event = _fake_hook_event("trial-x", result=result)
@@ -360,8 +363,8 @@ def test_bridge_extracts_on_failure_even_when_skill_exists(tmp_path: Path, monke
         called["n"] += 1
         return new_skill
 
-    from skillq.skillq_runtime import bridge as bridge_mod
-    from skillq.method.attribution import Attribution, TrialAttribution
+    from skillq.runtime import bridge as bridge_mod
+    from skillq.layers.l3_attribution.models import Attribution, TrialAttribution
 
     monkeypatch.setattr(bridge_mod.SkillExtractor, "extract_batch", fake_extract_batch)
     monkeypatch.setattr(
@@ -389,7 +392,7 @@ def test_bridge_extracts_on_failure_even_when_skill_exists(tmp_path: Path, monke
     )
     _seed_lib(method)
     job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     result = _fake_trial_result(reward=0.0, trial_uri=str(tmp_path / "trial-x"))
     event = _fake_hook_event("trial-x", result=result)
@@ -420,7 +423,7 @@ def test_bridge_flush_writes_mirror_to_seed_dir(tmp_path: Path, monkeypatch):
     new_skill = Skill(skill_id="auto-mirrored", body=body)
     _patch_extractor_to_return(monkeypatch, new_skill)
 
-    from skillq.skillq_runtime import bridge as bridge_mod
+    from skillq.runtime import bridge as bridge_mod
 
     monkeypatch.setattr(
         bridge_mod.AttributionAnalyzer,
@@ -443,7 +446,7 @@ def test_bridge_flush_writes_mirror_to_seed_dir(tmp_path: Path, monkeypatch):
     )
     _seed_lib(method)
     job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     result = _fake_trial_result(reward=1.0, trial_uri=str(tmp_path / "trial-x"))
     event = _fake_hook_event("trial-x", result=result)
@@ -487,7 +490,7 @@ def test_bridge_extracts_on_nonzero_agent_exit_with_trajectory(
     )
     _patch_extractor_to_return(monkeypatch, new_skill)
 
-    from skillq.skillq_runtime import bridge as bridge_mod
+    from skillq.runtime import bridge as bridge_mod
 
     # Return FAILURE_SKILL_NOT_USED so Rule 5 fires (failure-mode extract).
     monkeypatch.setattr(
@@ -509,7 +512,7 @@ def test_bridge_extracts_on_nonzero_agent_exit_with_trajectory(
     )
     _seed_lib(method)
     job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     trial_dir = tmp_path / "trial-x"
     trial_dir.mkdir(parents=True, exist_ok=True)
@@ -543,7 +546,7 @@ def test_bridge_skips_extract_on_oom_even_with_trajectory(
     called = {"n": 0}
     new_skill = Skill(skill_id="should-not-appear", body="x" * 200)
 
-    from skillq.skillq_runtime import bridge as bridge_mod
+    from skillq.runtime import bridge as bridge_mod
 
     async def fake_extract_batch(self, **kwargs):
         called["n"] += 1
@@ -566,7 +569,7 @@ def test_bridge_skips_extract_on_oom_even_with_trajectory(
     )
     _seed_lib(method)
     job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     trial_dir = tmp_path / "trial-x"
     trial_dir.mkdir(parents=True, exist_ok=True)
@@ -594,7 +597,7 @@ def test_bridge_skips_extract_on_failed_run_without_trajectory(
     called = {"n": 0}
     new_skill = Skill(skill_id="should-not-appear", body="x" * 200)
 
-    from skillq.skillq_runtime import bridge as bridge_mod
+    from skillq.runtime import bridge as bridge_mod
 
     monkeypatch.setattr(
         bridge_mod.AttributionAnalyzer,
@@ -612,7 +615,7 @@ def test_bridge_skips_extract_on_failed_run_without_trajectory(
     )
     _seed_lib(method)
     job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     # trial_dir exists but agent/trajectory.json does NOT
     trial_dir = tmp_path / "trial-x"
@@ -649,7 +652,7 @@ def test_extract_buffer_carries_gap_description_to_extractor(
     """
     _patch_litellm_backends(monkeypatch)
 
-    from skillq.skillq_runtime import bridge as bridge_mod
+    from skillq.runtime import bridge as bridge_mod
 
     GAP_TEXT = (
         "a skill whose description names 'hardware-circuit-synthesis' "
@@ -692,7 +695,7 @@ def test_extract_buffer_carries_gap_description_to_extractor(
     )
     _seed_lib(method)
     job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     trial_dir = tmp_path / "trial-x"
     trial_dir.mkdir(parents=True, exist_ok=True)
@@ -727,7 +730,7 @@ def test_extract_buffer_gap_description_empty_by_default(
     formatter checks ``t.get('gap_description', '')``."""
     _patch_litellm_backends(monkeypatch)
 
-    from skillq.skillq_runtime import bridge as bridge_mod
+    from skillq.runtime import bridge as bridge_mod
 
     captured: dict[str, Any] = {}
 
@@ -759,7 +762,7 @@ def test_extract_buffer_gap_description_empty_by_default(
     )
     _seed_lib(method)
     job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     trial_dir = tmp_path / "trial-x"
     trial_dir.mkdir(parents=True, exist_ok=True)

@@ -4,6 +4,18 @@ All notable changes to `skillq` (the branch-style entrypoint that re-uses
 the upstream `skills_vote` lifecycle AND runs the SkillQ paper's
 four-layer method on top of Harbor) are documented here.
 
+> **2026-06-29 — Dead-code cleanup + docstring rewrite (layers/runtime refactor follow-up)**
+>
+> Follow-up to the uncommitted `paper_mode/→skillq_runtime/→layers/+runtime/` refactor:
+> - Deleted physical dead dirs: `skillq/method/__pycache__/`, `skillq/skillq_runtime/__pycache__/`, `skillq/paper_mode/` (root-owned Docker residue, needs manual `sudo rm -rf`).
+> - Deleted `skillq/layers/l4_evolve/dispatcher.py` — exported `dispatch_evolve()` was never called (the live rule table is `runtime/steps.py:step_dispatch_evolve`).
+> - Rewrote 47 `_legacy_runtime`/`_legacy_method` docstring references + 10 bare `skillq_runtime`/`skillq.method` references across 35 files to point at current canonical module paths (`layers/`, `runtime/`, `services/`, `shared/`).
+> - Fixed stale "paper"→"skillq" project-name in `_resolvers.py` + `env.py` docstrings.
+> - Fixed `experiments/RUNNING.md:202` outdated `import_path: skillq.skillq_runtime.agent` → `skillq.runtime.agent`.
+> - Updated `README.md` layout section to the layers/runtime/services/shared structure.
+>
+> No behavior change. Regression: `import skillq` + `ruff check` + `pytest` pass.
+
 > **2026-06-26 — Attribution enum rename + L3/L4 create-vs-edit split + L1 force-use text**
 >
 > Three coordinated changes that make the L1→L3→L4 contract explicit.

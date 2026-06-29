@@ -29,7 +29,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from skillq.skillq_runtime import bridge as bridge_mod  # noqa: E402
+from skillq.runtime import bridge as bridge_mod  # noqa: E402
+from skillq.shared.calls_log import extract_skill_calls_from_session  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -95,19 +96,19 @@ def _other_tool_use(tool_name: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 def test_extract_returns_empty_when_session_dir_missing(tmp_path: Path):
     """No ``agent/sessions/projects`` dir → empty list, no exception."""
-    assert bridge_mod._extract_skill_calls_from_session(tmp_path) == []
+    assert extract_skill_calls_from_session(tmp_path) == []
 
 
 def test_extract_returns_empty_when_no_jsonl_files(tmp_path: Path):
     """Dir exists but no jsonl files → empty list."""
     (tmp_path / "agent" / "sessions" / "projects" / "x").mkdir(parents=True)
-    assert bridge_mod._extract_skill_calls_from_session(tmp_path) == []
+    assert extract_skill_calls_from_session(tmp_path) == []
 
 
 def test_extract_returns_empty_for_empty_jsonl(tmp_path: Path):
     p = _write_session_jsonl(tmp_path)
     assert p.stat().st_size == 0
-    assert bridge_mod._extract_skill_calls_from_session(tmp_path) == []
+    assert extract_skill_calls_from_session(tmp_path) == []
 
 
 def test_extract_skips_malformed_jsonl_lines(tmp_path: Path):
@@ -122,7 +123,7 @@ def test_extract_skips_malformed_jsonl_lines(tmp_path: Path):
         + "still bad\n",
         encoding="utf-8",
     )
-    out = bridge_mod._extract_skill_calls_from_session(tmp_path)
+    out = extract_skill_calls_from_session(tmp_path)
     assert len(out) == 1
     assert out[0].skill_id == "fix-git-basics"
 
@@ -137,7 +138,7 @@ def test_extract_picks_skill_blocks_from_nested_content(tmp_path: Path):
         _text_msg("assistant", "I'll use the skill"),
         _other_tool_use("Edit"),
     )
-    out = bridge_mod._extract_skill_calls_from_session(tmp_path)
+    out = extract_skill_calls_from_session(tmp_path)
     assert [r.skill_id for r in out] == ["fix-git-basics", "git-recover"]
 
 
@@ -150,7 +151,7 @@ def test_extract_ignores_non_skill_tools(tmp_path: Path):
         _other_tool_use("Read"),
         _skill_tool_use("parse-cobol"),
     )
-    out = bridge_mod._extract_skill_calls_from_session(tmp_path)
+    out = extract_skill_calls_from_session(tmp_path)
     assert len(out) == 1
     assert out[0].skill_id == "parse-cobol"
 
@@ -171,7 +172,7 @@ def test_extract_skips_skill_blocks_with_empty_skill_name(tmp_path: Path):
         bad_block,
         _skill_tool_use("fix-git-basics"),
     )
-    out = bridge_mod._extract_skill_calls_from_session(tmp_path)
+    out = extract_skill_calls_from_session(tmp_path)
     assert [r.skill_id for r in out] == ["fix-git-basics"]
 
 
@@ -190,7 +191,7 @@ def test_extract_uses_most_recent_jsonl(tmp_path: Path):
     )
     # Sanity: newer has a later mtime
     assert newer.stat().st_mtime > older.stat().st_mtime
-    out = bridge_mod._extract_skill_calls_from_session(tmp_path)
+    out = extract_skill_calls_from_session(tmp_path)
     assert [r.skill_id for r in out] == ["from-newer-session"]
 
 
@@ -198,7 +199,7 @@ def test_extract_returns_record_with_empty_metadata(tmp_path: Path):
     """Returned records have top_k=[], approved=True, ts=0.0,
     intent_text="" — the Q-update path doesn't need these."""
     _write_session_jsonl(tmp_path, _skill_tool_use("parse-cobol"))
-    out = bridge_mod._extract_skill_calls_from_session(tmp_path)
+    out = extract_skill_calls_from_session(tmp_path)
     assert len(out) == 1
     assert out[0].skill_id == "parse-cobol"
     assert out[0].requested == "parse-cobol"

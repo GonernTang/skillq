@@ -9,9 +9,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from skillq.method.attribution import (  # noqa: E402
+from skillq.layers.l3_attribution.analyzer import AttributionAnalyzer  # noqa: E402
+from skillq.layers.l3_attribution.models import (  # noqa: E402
     Attribution,
-    AttributionAnalyzer,
     LiteLLMAttributionBackend,
     StubAttributionBackend,
     TrialAttribution,
@@ -225,7 +225,7 @@ def test_prompt_includes_r_task_placeholder():
     rendered string — guards against regressions where someone
     reformats the template and drops the new placeholder.
     """
-    from skillq.method.prompts import ATTRIBUTION_PROMPT
+    from skillq.layers.l3_attribution.prompts import ATTRIBUTION_PROMPT
 
     rendered = ATTRIBUTION_PROMPT.format(
         r_task=1, task="x", cwd="/", trial_dir="/",

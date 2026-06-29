@@ -16,7 +16,7 @@ from pathlib import Path
 
 def test_default_reuse_flags():
     """reuse_q_table and reuse_embedding_cache default to True."""
-    from skillq.skillq_runtime.config import MethodConfig
+    from skillq.config import MethodConfig
 
     cfg = MethodConfig()
     assert cfg.reuse_q_table is True
@@ -25,7 +25,7 @@ def test_default_reuse_flags():
 
 def test_explicit_reuse_flags():
     """Users can set either flag to False to force fresh start."""
-    from skillq.skillq_runtime.config import MethodConfig
+    from skillq.config import MethodConfig
 
     cfg = MethodConfig(reuse_q_table=False, reuse_embedding_cache=False)
     assert cfg.reuse_q_table is False
@@ -34,7 +34,7 @@ def test_explicit_reuse_flags():
 
 def test_resolved_state_path_legacy_default(tmp_path):
     """No seed_skills_dir, no state_path → <library_root>/.state/."""
-    from skillq.skillq_runtime.config import MethodConfig
+    from skillq.config import MethodConfig
 
     cfg = MethodConfig(library_root=tmp_path / "lib")
     assert cfg.resolved_state_path() == tmp_path / "lib" / ".state" / "method_state.json"
@@ -43,7 +43,7 @@ def test_resolved_state_path_legacy_default(tmp_path):
 
 def test_resolved_state_path_explicit_wins(tmp_path):
     """Explicit state_path always wins; emb_cache sits next to it."""
-    from skillq.skillq_runtime.config import MethodConfig
+    from skillq.config import MethodConfig
 
     seed = tmp_path / "skills"
     explicit = tmp_path / "explicit" / "method_state.json"
@@ -58,7 +58,7 @@ def test_resolved_state_path_no_auto_derive(tmp_path):
     explicitly to opt into co-location. This avoids silently
     abandoning existing state files when seed_skills_dir is added.
     """
-    from skillq.skillq_runtime.config import MethodConfig
+    from skillq.config import MethodConfig
 
     seed = tmp_path / "skills"
     cfg = MethodConfig(seed_skills_dir=seed, library_root=tmp_path / "lib")

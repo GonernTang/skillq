@@ -40,7 +40,7 @@ _VALID_BODY = _VALID_BODY + ("\nAdditional context paragraph.\n" * 12)
 
 def test_failure_skill_with_both_sections_accepted(tmp_path: Path):
     """Failure-mode skill with both required sections → Skill returned."""
-    from skillq.method.extractor import SkillExtractor
+    from skillq.layers.l4_evolve.create import SkillExtractor
 
     sandbox = _make_skill_sandbox(tmp_path, _VALID_BODY, "fix-x")
     ext = SkillExtractor(prompt_mode="failure")
@@ -51,7 +51,7 @@ def test_failure_skill_with_both_sections_accepted(tmp_path: Path):
 
 def test_failure_skill_missing_diagnostic_checklist_rejected(tmp_path: Path):
     """Missing 'Diagnostic checklist' → None."""
-    from skillq.method.extractor import SkillExtractor
+    from skillq.layers.l4_evolve.create import SkillExtractor
 
     body = (
         "# Fix-X\n\n"
@@ -66,7 +66,7 @@ def test_failure_skill_missing_diagnostic_checklist_rejected(tmp_path: Path):
 
 def test_failure_skill_missing_stop_signal_rejected(tmp_path: Path):
     """Missing 'Stop signal' → None."""
-    from skillq.method.extractor import SkillExtractor
+    from skillq.layers.l4_evolve.create import SkillExtractor
 
     body = (
         "# Fix-X\n\n"
@@ -81,7 +81,7 @@ def test_failure_skill_missing_stop_signal_rejected(tmp_path: Path):
 
 def test_failure_skill_missing_both_sections_rejected(tmp_path: Path):
     """Both missing → None (first failure hits Diagnostic, returns)."""
-    from skillq.method.extractor import SkillExtractor
+    from skillq.layers.l4_evolve.create import SkillExtractor
 
     body = (
         "# Fix-X\n\n"
@@ -95,7 +95,7 @@ def test_failure_skill_missing_both_sections_rejected(tmp_path: Path):
 
 def test_success_skill_no_section_requirement(tmp_path: Path):
     """Success-mode skills do NOT need Diagnostic/Stop sections."""
-    from skillq.method.extractor import SkillExtractor
+    from skillq.layers.l4_evolve.create import SkillExtractor
 
     body = (
         "# Fix-Y\n\n"
@@ -113,7 +113,7 @@ def test_enforce_false_opt_out(tmp_path: Path):
     """enforce_failure_skill_structure=False bypasses the check
     (useful for legacy prompts that don't write the structural
     sections but were already accepted)."""
-    from skillq.method.extractor import SkillExtractor
+    from skillq.layers.l4_evolve.create import SkillExtractor
 
     body = (
         "# Fix-X\n\n"
@@ -131,7 +131,7 @@ def test_enforce_false_opt_out(tmp_path: Path):
 def test_case_insensitive_section_match(tmp_path: Path):
     """Section match is case-insensitive — prompts sometimes render
     the headings in different casings."""
-    from skillq.method.extractor import SkillExtractor
+    from skillq.layers.l4_evolve.create import SkillExtractor
 
     body = (
         "# Fix-X\n\n"
@@ -148,7 +148,7 @@ def test_token_count_guard_still_runs_first(tmp_path: Path):
     """Body token guard (existing behaviour) must still fire before
     the structural check — i.e., a too-short failure-skill body is
     rejected even if it accidentally contains the section markers."""
-    from skillq.method.extractor import SkillExtractor
+    from skillq.layers.l4_evolve.create import SkillExtractor
 
     # 10 tokens, well below body_min_tokens=50 default.
     body = "## Diagnostic checklist\n## Stop signal\n"
@@ -159,7 +159,7 @@ def test_token_count_guard_still_runs_first(tmp_path: Path):
 
 def test_default_enforce_flag_is_true():
     """SkillExtractor default sets enforce_failure_skill_structure=True."""
-    from skillq.method.extractor import SkillExtractor
+    from skillq.layers.l4_evolve.create import SkillExtractor
 
     assert SkillExtractor(prompt_mode="failure").enforce_failure_skill_structure is True
     assert SkillExtractor(prompt_mode="success").enforce_failure_skill_structure is True
@@ -167,7 +167,7 @@ def test_default_enforce_flag_is_true():
 
 def test_method_config_enforce_failure_skill_structure_default_true():
     """MethodConfig default for the corresponding flag is True."""
-    from skillq.skillq_runtime.config import MethodConfig
+    from skillq.config import MethodConfig
 
     cfg = MethodConfig()
     assert cfg.enforce_failure_skill_structure is True

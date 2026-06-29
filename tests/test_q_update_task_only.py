@@ -32,12 +32,27 @@ from unittest.mock import MagicMock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from skillq.method.attribution import Attribution, TrialAttribution  # noqa: E402
-from skillq.method.library import LibManager  # noqa: E402
-from skillq.method.state import QlibState  # noqa: E402
-from skillq.method.types import Qlib, Skill  # noqa: E402
-from skillq.skillq_runtime import bridge as bridge_mod  # noqa: E402
-from skillq.skillq_runtime.config import MethodConfig  # noqa: E402
+from skillq.layers.l3_attribution.models import Attribution, TrialAttribution  # noqa: E402
+from skillq.shared.q_table import LibManager  # noqa: E402
+from skillq.shared.library import QlibState  # noqa: E402
+from skillq.shared.types import Qlib, Skill  # noqa: E402
+from skillq.runtime import bridge as bridge_mod  # noqa: E402
+from skillq.runtime import steps as steps_mod  # noqa: E402
+from skillq.config import MethodConfig  # noqa: E402
+
+
+def _patch_sync_embed(monkeypatch, replacement):
+    """Patch ``sync_embed`` where production code actually calls it.
+
+    Step 6 (2026-06-29) moved ``sync_embed`` from
+    :mod:`skillq.runtime.bridge` to
+    :func:`skillq.services.ranking_service.sync_embed`. The call sites
+    in :mod:`skillq.runtime.steps` import it under the name
+    ``sync_embed`` in ``steps``'s own namespace, so patching
+    ``bridge_mod.sync_embed`` is a no-op. We patch the steps namespace
+    directly.
+    """
+    monkeypatch.setattr(steps_mod, "sync_embed", replacement)
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +93,7 @@ def _skill_tool_use(skill_name: str) -> dict[str, Any]:
 
 
 class _MockJob:
-    """Minimal mock Job for attach_paper_registers()."""
+    """Minimal mock Job for attach_layered_registers()."""
 
     def __init__(self) -> None:
         self.on_ended: Any = None
@@ -90,14 +105,17 @@ class _MockJob:
     def on_trial_ended(self, callback: Any) -> None:
         self.on_ended = callback
 
+    def on_trial_started(self, callback: Any) -> None:
+        self.on_started = callback  # Step 7: new pipeline needs both
+
     def __len__(self) -> int:
         return 1_000_000
 
 
 def _patch_litellm_backends(monkeypatch) -> None:
     """Stub the LLM backends so the test doesn't hit network."""
-    from skillq.method.attribution import StubAttributionBackend
-    from skillq.method.retrieval import StubEmbedder
+    from skillq.layers.l3_attribution.models import StubAttributionBackend
+    from skillq.shared.backends.litellm import StubEmbedder
 
     class _StubEmbedderShim(StubEmbedder):
         def __init__(self, *args, **kwargs) -> None:
@@ -174,7 +192,7 @@ def test_q_update_uses_only_r_task(tmp_path: Path, monkeypatch):
     )
     _seed_lib(method, ["skill-a", "skill-b"])
     job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     # 2 skills, each called once. Hook log is empty → fall back to
     # session-log extraction.
@@ -220,7 +238,7 @@ def test_q_update_no_calls_no_op(tmp_path: Path, monkeypatch):
     )
     _seed_lib(method, ["git-basics"])
     job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     # Empty trial dir, no session log, no hook log.
     trial_dir = tmp_path / "trial-empty"
@@ -267,7 +285,7 @@ def test_q_update_delta_formula_is_alpha_times_r_task_minus_q_old(
     )
     _seed_lib(method, ["git-basics"])
     job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     trial_dir = tmp_path / "trial-formula"
     trial_dir.mkdir()
@@ -314,7 +332,7 @@ def test_q_update_n_retrievals_increments_by_call_count(
     )
     _seed_lib(method, ["git-basics"])
     job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     trial_dir = tmp_path / "trial-2calls"
     trial_dir.mkdir()
@@ -361,7 +379,7 @@ def test_q_update_falls_back_to_session_log_when_hook_log_empty(
     )
     _seed_lib(method, ["git-basics"])
     job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     # Crucially, do NOT write skillq_skill_calls.jsonl — that's the
     # "hook didn't fire" scenario.
@@ -404,7 +422,7 @@ def test_q_update_n_success_increments_when_r_task_one(
     )
     _seed_lib(method, ["git-basics"])
     job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     trial_dir = tmp_path / "trial-success"
     trial_dir.mkdir()
@@ -428,7 +446,7 @@ def _seed_emb_cache(method: MethodConfig, emb: dict[str, list[float]]) -> Path:
     Returns the cache path.
     """
     import json as _json
-    from skillq.method.vector_table import VectorTable
+    from skillq.shared.embeddings import VectorTable
 
     cache = VectorTable(method.resolved_state_path().parent / "emb_cache.json")
     cache.load()  # ensure parent dir exists / file present
@@ -460,7 +478,7 @@ def test_q_update_cosine_weight_irrelevant_zeroed(tmp_path: Path, monkeypatch):
 
     # phi(q) = [1, 0]; phi_s for "unrelated" = [0, 1] → cos=0 → delta=0
     monkeypatch.setattr(
-        bridge_mod, "sync_embed",
+        steps_mod, "sync_embed",
         lambda text, host="127.0.0.1", port=8765: [1.0, 0.0],
     )
 
@@ -475,7 +493,7 @@ def test_q_update_cosine_weight_irrelevant_zeroed(tmp_path: Path, monkeypatch):
     _seed_emb_cache(method, {"unrelated": [0.0, 1.0]})
 
     job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     trial_dir = tmp_path / "trial-cos-zero"
     trial_dir.mkdir()
@@ -507,7 +525,7 @@ def test_q_update_cosine_weight_relevant_full(tmp_path: Path, monkeypatch):
 
     # phi(q) = phi(s) = [1, 0] → cos=1 → full delta
     monkeypatch.setattr(
-        bridge_mod, "sync_embed",
+        steps_mod, "sync_embed",
         lambda text, host="127.0.0.1", port=8765: [1.0, 0.0],
     )
 
@@ -523,7 +541,7 @@ def test_q_update_cosine_weight_relevant_full(tmp_path: Path, monkeypatch):
     _seed_emb_cache(method, {"relevant": [1.0, 0.0]})
 
     job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     trial_dir = tmp_path / "trial-cos-full"
     trial_dir.mkdir()
@@ -558,7 +576,7 @@ def test_q_update_cosine_weight_disabled(tmp_path: Path, monkeypatch):
 
     # phi(q) != phi(s), but weight disabled so delta is full.
     monkeypatch.setattr(
-        bridge_mod, "sync_embed",
+        steps_mod, "sync_embed",
         lambda text, host="127.0.0.1", port=8765: [1.0, 0.0],
     )
 
@@ -574,7 +592,7 @@ def test_q_update_cosine_weight_disabled(tmp_path: Path, monkeypatch):
     _seed_emb_cache(method, {"unrelated-but-disabled": [0.0, 1.0]})
 
     job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     trial_dir = tmp_path / "trial-disabled"
     trial_dir.mkdir()
@@ -608,7 +626,7 @@ def test_q_update_phi_q_embed_failure_falls_back(tmp_path: Path, monkeypatch):
 
     def _fake_sync_embed_raise(*args, **kwargs):
         raise RuntimeError("embed service unavailable")
-    monkeypatch.setattr(bridge_mod, "sync_embed", _fake_sync_embed_raise)
+    monkeypatch.setattr(steps_mod, "sync_embed", _fake_sync_embed_raise)
 
     method = MethodConfig(
         library_root=tmp_path / "lib",
@@ -622,7 +640,7 @@ def test_q_update_phi_q_embed_failure_falls_back(tmp_path: Path, monkeypatch):
     _seed_emb_cache(method, {"any": [0.0, 1.0]})
 
     job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     trial_dir = tmp_path / "trial-embed-fail"
     trial_dir.mkdir()
@@ -655,7 +673,7 @@ def test_q_update_cosine_sim_recorded_in_trace(tmp_path: Path, monkeypatch):
     )
 
     monkeypatch.setattr(
-        bridge_mod, "sync_embed",
+        steps_mod, "sync_embed",
         lambda text, host="127.0.0.1", port=8765: [1.0, 0.0],
     )
 
@@ -671,7 +689,7 @@ def test_q_update_cosine_sim_recorded_in_trace(tmp_path: Path, monkeypatch):
     _seed_emb_cache(method, {"skill-a": [1.0, 0.0]})  # parallel → cos=1
 
     job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     trial_dir = tmp_path / "trial-trace"
     trial_dir.mkdir()

@@ -28,13 +28,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from skillq.method.attribution import TrialAttribution  # noqa: E402
-from skillq.method.prompts import (  # noqa: E402
+from skillq.layers.l3_attribution.models import TrialAttribution  # noqa: E402
+from skillq.layers.l3_attribution.prompts import (  # noqa: E402
     ATTRIBUTION_PROMPT,
+)
+from skillq.layers.l4_evolve.prompts import (  # noqa: E402
     BATCHED_EXTRACT_SKILL_FROM_FAILURE_PROMPT,
     BATCHED_EXTRACT_SKILL_PROMPT,
 )
-from skillq.skillq_runtime.agentic_search import HOOK_INSTRUCTIONS_SNIPPET  # noqa: E402
+from skillq.runtime.agentic_search import HOOK_INSTRUCTIONS_SNIPPET  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

@@ -31,7 +31,7 @@ import pytest
 def test_edit_refiner_default_uses_anthropic_prefix(monkeypatch):
     """EditRefiner() with no model arg → anthropic/<ANTHROPIC_MODEL>."""
     monkeypatch.setenv("ANTHROPIC_MODEL", "deepseek-v4-flash")
-    from skillq.method.edit import EditRefiner, StubEditBackend
+    from skillq.layers.l3_attribution.edit import EditRefiner, StubEditBackend
 
     refiner = EditRefiner(backend=StubEditBackend())
     assert refiner.model == "anthropic/deepseek-v4-flash"
@@ -40,7 +40,7 @@ def test_edit_refiner_default_uses_anthropic_prefix(monkeypatch):
 def test_method_config_default_editor_model(monkeypatch):
     """MethodConfig() with no editor_model → anthropic/<ANTHROPIC_MODEL>."""
     monkeypatch.setenv("ANTHROPIC_MODEL", "deepseek-v4-flash")
-    from skillq.skillq_runtime.config import MethodConfig
+    from skillq.config import MethodConfig
 
     cfg = MethodConfig()
     assert cfg.editor_model == "anthropic/deepseek-v4-flash"
@@ -50,7 +50,7 @@ def test_method_config_default_editor_model(monkeypatch):
 def test_explicit_override_still_wins(monkeypatch):
     """Pass editor_model explicitly → override beats env-driven default."""
     monkeypatch.setenv("ANTHROPIC_MODEL", "deepseek-v4-flash")
-    from skillq.skillq_runtime.config import MethodConfig
+    from skillq.config import MethodConfig
 
     cfg = MethodConfig(editor_model="openai/gpt-4o-mini")
     assert cfg.editor_model == "openai/gpt-4o-mini"

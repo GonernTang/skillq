@@ -58,7 +58,7 @@ uv run pytest tests/
 uv run skillq skillsvote run -c configs/job_skillsvote.yaml
 
 # paper mode — runs the *SkillQ paper's* four-layer method
-# (module path: skillq.skillq_runtime/)
+# (module path: skillq.runtime/)
 uv run skillq paper run -c configs/job_paper.yaml
 
 # Inspect the baseline-side help text (it's the same as `svt run --help`)
@@ -70,17 +70,16 @@ uv run skillq skillsvote run --help
 ```
 (skillq)/
 ├── skillq/
-│   ├── skillsvote_mode/  # pass-through to upstream skills_vote (baseline)
-│   ├── skillq_runtime/   # bridge + agent + entrypoint for the SkillQ method
-│   ├── method/           # orchestration primitives consumed by skillq_runtime/
-│   │                     #   (LibManager, EditRefiner, SkillExtractor,
-│   │                     #    AttributionAnalyzer, VectorTable, LiteLLMEmbedder)
-│   │                     # NOTE: the actual algorithms live in skillq_runtime/
-│   │                     #   (hook.py for L1 retrieval, bridge.py for L2-L4)
-│   └── prompts/          # external prompt templates (optional)
-├── integration/skills/skillq-method/  # SKILL.md for the agent
-├── tests/                # unit + integration tests
-└── experiments/          # Terminal-Bench 2.0 runs and ablations
+│   ├── layers/            # 4-layer paper method (l1_retrieval, l2_run, l3_attribution, l4_evolve)
+│   ├── runtime/           # orchestrator + 8-step pipeline (bridge, steps, hook, container_wiring, ...)
+│   ├── services/          # host-side /rank HTTP service (ranking_service, ranking_client)
+│   ├── shared/            # Q-table, library, embeddings, calls_log, backends (litellm)
+│   ├── skillsvote_mode/   # pass-through to upstream skills_vote (baseline)
+│   └── config.py          # MethodConfig (the method's configuration class)
+├── skills/                # skill source files (SKILL.md per skill)
+├── skillsvote/            # vendored upstream skills_vote (the baseline)
+├── tests/                 # unit + integration tests
+└── experiments/           # Terminal-Bench 2.0 runs and configs
 ```
 
 ## Why a branch-style entrypoint

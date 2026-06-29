@@ -19,10 +19,10 @@ from unittest.mock import MagicMock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from skillq.method.library import LibManager  # noqa: E402
-from skillq.method.state import QlibState  # noqa: E402
-from skillq.method.types import Qlib, Skill  # noqa: E402
-from skillq.skillq_runtime.config import MethodConfig  # noqa: E402
+from skillq.shared.q_table import LibManager  # noqa: E402
+from skillq.shared.library import QlibState  # noqa: E402
+from skillq.shared.types import Qlib, Skill  # noqa: E402
+from skillq.config import MethodConfig  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -39,6 +39,9 @@ class _MockJob:
     def on_trial_ended(self, callback: Any) -> None:
         self.on_ended = callback
 
+    def on_trial_started(self, callback: Any) -> None:
+        self.on_started = callback  # Step 7: new pipeline needs both
+
     def __len__(self) -> int:
         # The bridge uses ``len(job)`` for the buffer force-flush
         # trigger; a large sentinel keeps it dormant in unit tests.
@@ -46,9 +49,9 @@ class _MockJob:
 
 
 def _patch_litellm_backends(monkeypatch) -> None:
-    from skillq.skillq_runtime import bridge as bridge_mod
-    from skillq.method.attribution import StubAttributionBackend
-    from skillq.method.retrieval import StubEmbedder
+    from skillq.runtime import bridge as bridge_mod
+    from skillq.layers.l3_attribution.models import StubAttributionBackend
+    from skillq.shared.backends.litellm import StubEmbedder
 
     class _StubEmbedderShim(StubEmbedder):
         def __init__(self, *args, **kwargs) -> None:
@@ -66,7 +69,7 @@ def _patch_litellm_backends(monkeypatch) -> None:
 
 
 def _patch_extractor_to_return(monkeypatch, skill: Skill | None) -> None:
-    from skillq.skillq_runtime import bridge as bridge_mod
+    from skillq.runtime import bridge as bridge_mod
 
     async def fake_extract_batch(self, **kwargs) -> Skill | None:
         return skill
@@ -121,8 +124,8 @@ def test_extract_writes_q_initial_to_q_table(tmp_path: Path, monkeypatch):
     new_skill = Skill(skill_id="auto-extracted", body="x" * 200)
     _patch_extractor_to_return(monkeypatch, new_skill)
 
-    from skillq.skillq_runtime import bridge as bridge_mod
-    from skillq.method.attribution import Attribution, TrialAttribution
+    from skillq.runtime import bridge as bridge_mod
+    from skillq.layers.l3_attribution.models import Attribution, TrialAttribution
 
     monkeypatch.setattr(
         bridge_mod.AttributionAnalyzer,
@@ -143,7 +146,7 @@ def test_extract_writes_q_initial_to_q_table(tmp_path: Path, monkeypatch):
     )
     _seed_lib(method)
     job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     result = _fake_trial_result(reward=1.0, trial_uri=str(tmp_path / "trial-x"))
     event = _fake_hook_event("trial-x", result=result)
@@ -163,8 +166,8 @@ def test_extract_uses_configured_initial_q(tmp_path: Path, monkeypatch):
     new_skill = Skill(skill_id="auto", body="x" * 200)
     _patch_extractor_to_return(monkeypatch, new_skill)
 
-    from skillq.skillq_runtime import bridge as bridge_mod
-    from skillq.method.attribution import Attribution, TrialAttribution
+    from skillq.runtime import bridge as bridge_mod
+    from skillq.layers.l3_attribution.models import Attribution, TrialAttribution
 
     monkeypatch.setattr(
         bridge_mod.AttributionAnalyzer,
@@ -186,7 +189,7 @@ def test_extract_uses_configured_initial_q(tmp_path: Path, monkeypatch):
     )
     _seed_lib(method)
     job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
     result = _fake_trial_result(reward=1.0, trial_uri=str(tmp_path / "trial-x"))
     event = _fake_hook_event("trial-x", result=result)
     asyncio.run(job.on_ended(event))
@@ -289,8 +292,8 @@ def test_bridge_redumps_q_table_to_staging_on_ended(tmp_path: Path, monkeypatch)
     new_skill = Skill(skill_id="auto-fix-cwe", body="x" * 200)
     _patch_extractor_to_return(monkeypatch, new_skill)
 
-    from skillq.skillq_runtime import bridge as bridge_mod
-    from skillq.method.attribution import Attribution, TrialAttribution
+    from skillq.runtime import bridge as bridge_mod
+    from skillq.layers.l3_attribution.models import Attribution, TrialAttribution
 
     monkeypatch.setattr(
         bridge_mod.AttributionAnalyzer,
@@ -335,7 +338,7 @@ def test_bridge_redumps_q_table_to_staging_on_ended(tmp_path: Path, monkeypatch)
     assert "auto-fix-cwe" not in pre_onshot_snapshot
 
     job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
     result = _fake_trial_result(reward=1.0, trial_uri=str(trial_dir))
     event = _fake_hook_event("trial-bug3", result=result)
     asyncio.run(job.on_ended(event))

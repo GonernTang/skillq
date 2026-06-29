@@ -31,13 +31,14 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from skillq.method.attribution import Attribution, TrialAttribution  # noqa: E402
-from skillq.method.library import LibManager  # noqa: E402
-from skillq.method.state import QlibState  # noqa: E402
-from skillq.method.types import Qlib, Skill  # noqa: E402
-from skillq.method.vector_table import VectorTable  # noqa: E402
-from skillq.skillq_runtime import bridge as bridge_mod  # noqa: E402
-from skillq.skillq_runtime.config import MethodConfig  # noqa: E402
+from skillq.layers.l3_attribution.models import Attribution, TrialAttribution  # noqa: E402
+from skillq.shared.q_table import LibManager  # noqa: E402
+from skillq.shared.library import QlibState  # noqa: E402
+from skillq.shared.types import Qlib, Skill  # noqa: E402
+from skillq.shared.embeddings import VectorTable  # noqa: E402
+from skillq.runtime import bridge as bridge_mod  # noqa: E402
+from skillq.runtime import steps as steps_mod  # noqa: E402
+from skillq.config import MethodConfig  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -55,13 +56,16 @@ class _MockJob:
     def on_trial_ended(self, callback: Any) -> None:
         self.on_ended = callback
 
+    def on_trial_started(self, callback: Any) -> None:
+        self.on_started = callback  # Step 7: new pipeline needs both
+
     def __len__(self) -> int:
         return self.n_trials
 
 
 def _patch_litellm_backends(monkeypatch) -> None:
-    from skillq.method.attribution import StubAttributionBackend
-    from skillq.method.retrieval import StubEmbedder
+    from skillq.layers.l3_attribution.models import StubAttributionBackend
+    from skillq.shared.backends.litellm import StubEmbedder
 
     class _StubEmbedderShim(StubEmbedder):
         def __init__(self, *args, **kwargs) -> None:
@@ -100,14 +104,14 @@ def _patch_extractor_to_return(monkeypatch, skill_id: str, body: str):
 
 def _patch_sync_embed_to_return(monkeypatch, vec: list[float]):
     """Replace bridge.sync_embed with a fixed-vector stub."""
-    monkeypatch.setattr(bridge_mod, "sync_embed", lambda text, host, port: vec)
+    monkeypatch.setattr(steps_mod, "sync_embed", lambda text, host, port: vec)
 
 
 def _patch_sync_embed_to_raise(monkeypatch):
     """Replace bridge.sync_embed with one that raises."""
     def raising(*args, **kwargs):
         raise RuntimeError("embed daemon down")
-    monkeypatch.setattr(bridge_mod, "sync_embed", raising)
+    monkeypatch.setattr(steps_mod, "sync_embed", raising)
 
 
 def _fake_trial_result(reward: float, trial_uri: str) -> MagicMock:
@@ -152,14 +156,14 @@ def _seed_lib_with_embedding(method: MethodConfig, skill_id: str, body: str, emb
 # Default field + MethodConfig
 # ---------------------------------------------------------------------------
 def test_semantic_dedup_threshold_default():
-    from skillq.skillq_runtime.config import MethodConfig
+    from skillq.config import MethodConfig
 
     cfg = MethodConfig()
     assert cfg.semantic_dedup_threshold == pytest.approx(0.85)
 
 
 def test_semantic_dedup_threshold_bounds():
-    from skillq.skillq_runtime.config import MethodConfig
+    from skillq.config import MethodConfig
 
     with pytest.raises(ValueError):
         MethodConfig(semantic_dedup_threshold=-0.1)
@@ -169,7 +173,7 @@ def test_semantic_dedup_threshold_bounds():
 
 def test_semantic_dedup_threshold_zero_disables_field():
     """semantic_dedup_threshold=0.0 is the documented opt-out."""
-    from skillq.skillq_runtime.config import MethodConfig
+    from skillq.config import MethodConfig
 
     cfg = MethodConfig(semantic_dedup_threshold=0.0)
     assert cfg.semantic_dedup_threshold == 0.0
@@ -221,7 +225,7 @@ def test_high_cosine_skips_via_semantic_dedup(
     _patch_sync_embed_to_return(monkeypatch, existing_vec)
 
     job = _MockJob(n_trials=2)
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     trial_dir = tmp_path / "trial-1"
     trial_dir.mkdir()
@@ -266,7 +270,7 @@ def test_low_cosine_keeps_new_skill(tmp_path: Path, monkeypatch):
     _patch_sync_embed_to_return(monkeypatch, [0.0, 1.0, 0.0, 0.0])
 
     job = _MockJob(n_trials=2)
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     trial_dir = tmp_path / "trial-1"
     trial_dir.mkdir()
@@ -317,7 +321,7 @@ def test_semantic_dedup_threshold_zero_no_embed_call(
     _patch_sync_embed_to_raise(monkeypatch)  # would crash if called
 
     job = _MockJob(n_trials=2)
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     trial_dir = tmp_path / "trial-1"
     trial_dir.mkdir()
@@ -364,7 +368,7 @@ def test_semantic_dedup_embed_failure_falls_open(
     _patch_sync_embed_to_raise(monkeypatch)
 
     job = _MockJob(n_trials=2)
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     trial_dir = tmp_path / "trial-1"
     trial_dir.mkdir()
@@ -409,7 +413,7 @@ def test_semantic_dedup_does_not_block_when_lib_empty(
     _patch_sync_embed_to_return(monkeypatch, [0.5, 0.5, 0.0, 0.0])
 
     job = _MockJob(n_trials=2)
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     trial_dir = tmp_path / "trial-1"
     trial_dir.mkdir()
@@ -465,7 +469,7 @@ def test_semantic_dedup_compares_against_all_existing(
     _patch_sync_embed_to_return(monkeypatch, [0.0, 1.0, 0.0, 0.0])
 
     job = _MockJob(n_trials=2)
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     trial_dir = tmp_path / "trial-1"
     trial_dir.mkdir()

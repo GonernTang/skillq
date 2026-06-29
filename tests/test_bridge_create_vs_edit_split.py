@@ -25,11 +25,11 @@ from unittest.mock import MagicMock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from skillq.method.attribution import Attribution, TrialAttribution  # noqa: E402
-from skillq.method.library import LibManager  # noqa: E402
-from skillq.method.state import QlibState  # noqa: E402
-from skillq.method.types import Qlib, Skill  # noqa: E402
-from skillq.skillq_runtime.config import MethodConfig  # noqa: E402
+from skillq.layers.l3_attribution.models import Attribution, TrialAttribution  # noqa: E402
+from skillq.shared.q_table import LibManager  # noqa: E402
+from skillq.shared.library import QlibState  # noqa: E402
+from skillq.shared.types import Qlib, Skill  # noqa: E402
+from skillq.config import MethodConfig  # noqa: E402
 
 
 class _MockJob:
@@ -46,14 +46,17 @@ class _MockJob:
     def on_trial_ended(self, callback: Any) -> None:
         self.on_ended = callback
 
+    def on_trial_started(self, callback: Any) -> None:
+        self.on_started = callback  # Step 7: new pipeline needs both
+
     def __len__(self) -> int:
         return 1_000_000
 
 
 def _patch_litellm_backends(monkeypatch) -> None:
-    from skillq.skillq_runtime import bridge as bridge_mod
-    from skillq.method.attribution import StubAttributionBackend
-    from skillq.method.retrieval import StubEmbedder
+    from skillq.runtime import bridge as bridge_mod
+    from skillq.layers.l3_attribution.models import StubAttributionBackend
+    from skillq.shared.backends.litellm import StubEmbedder
 
     class _StubEmbedderShim(StubEmbedder):
         def __init__(self, *args, **kwargs) -> None:
@@ -72,13 +75,22 @@ def _patch_litellm_backends(monkeypatch) -> None:
     # boundary. Without a daemon reachable from the test env, that
     # call hangs for ~30s. Stub it to None so dedup falls open and
     # the test runs in <1s.
-    monkeypatch.setattr(bridge_mod, "sync_embed", lambda **kwargs: None)
+    #
+    # 2026-06-29 (Step 6 migration): sync_embed moved from
+    # skillq.runtime.bridge to skillq.services.ranking_service and is
+    # imported by skillq.runtime.steps. Patch BOTH import locations.
+    monkeypatch.setattr(bridge_mod, "sync_embed", lambda **kwargs: None, raising=False)
+    try:
+        from skillq.runtime import steps as steps_mod
+        monkeypatch.setattr(steps_mod, "sync_embed", lambda **kwargs: None)
+    except ImportError:
+        pass
 
 
 def _patch_attribution_to(monkeypatch, attribution: Attribution,
                           knowledge: str = "reusable knowledge"):
     """Force AttributionAnalyzer.analyze to return a fixed verdict."""
-    from skillq.skillq_runtime import bridge as bridge_mod
+    from skillq.runtime import bridge as bridge_mod
 
     def returning(self, **kwargs):
         return TrialAttribution(
@@ -107,7 +119,7 @@ def _patch_paths(monkeypatch) -> tuple[dict, dict]:
     the new kwargs in ``edit_calls["diagnoses"]`` and
     ``edit_calls["tails"]`` for tests that want to inspect them.
     """
-    from skillq.skillq_runtime import bridge as bridge_mod
+    from skillq.runtime import bridge as bridge_mod
 
     extract_calls: dict = {"n": 0, "modes": []}
     edit_calls: dict = {
@@ -149,7 +161,7 @@ def _seed_lib(method: MethodConfig) -> None:
 
 
 def _run_trial(tmp_path: Path, method: MethodConfig, r_task: int) -> None:
-    from skillq.skillq_runtime import bridge as bridge_mod
+    from skillq.runtime import bridge as bridge_mod
 
     trial_dir = tmp_path / "trial-x"
     # exist_ok=True so H3 tests that pre-create trial_dir to seed
@@ -170,7 +182,7 @@ def _run_trial(tmp_path: Path, method: MethodConfig, r_task: int) -> None:
     event.result = result
 
     job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
     # Verify the bridge actually loaded the seeded lib (the edit
     # gate short-circuits on empty lib). If this fails, the seed
     # helper is broken — not the test.
@@ -383,7 +395,7 @@ def test_edit_path_persists_edited_body_to_method_state(tmp_path, monkeypatch):
     body lands on disk. The seed skill's body on disk should
     contain the marker after on_ended completes.
     """
-    from skillq.skillq_runtime import bridge as bridge_mod
+    from skillq.runtime import bridge as bridge_mod
 
     _patch_litellm_backends(monkeypatch)
     _patch_attribution_to(monkeypatch, Attribution.FAILURE_SKILL_USED)
@@ -393,7 +405,7 @@ def test_edit_path_persists_edited_body_to_method_state(tmp_path, monkeypatch):
     # a Skill whose body has a recognizable marker.
     marker = "-- EDITED BODY MARKER --"
     def marker_edit(self, skill, task, failure_diagnosis="", session_tail=""):
-        from skillq.method.types import Skill as _Skill
+        from skillq.shared.types import Skill as _Skill
         return _Skill(
             skill_id=skill.skill_id,
             body=f"# Edited\n\ndescription: edited by L3.\n\n{marker}",
@@ -415,6 +427,70 @@ def test_edit_path_persists_edited_body_to_method_state(tmp_path, monkeypatch):
     )
 
 
+def test_edit_path_mirrors_edited_body_to_seed_skills_dir(
+    tmp_path, monkeypatch,
+):
+    """Phase 10 Bug 3 regression pin: L3 EditRefiner must mirror the
+    edited body to ``seed_skills_dir`` so the next trial's container
+    (which reads bind-mounted ``/skills``) sees the new body, not
+    the seed body or L3's prior write. Without this mirror, the
+    in-memory lib is correct but the bind-mount view is stale and
+    every subsequent L3 edit silently never lands on disk.
+    """
+    from skillq.runtime import bridge as bridge_mod
+
+    _patch_litellm_backends(monkeypatch)
+    _patch_attribution_to(monkeypatch, Attribution.FAILURE_SKILL_USED)
+    _patch_paths(monkeypatch)
+
+    marker = "-- L3 MIRROR MARKER --"
+    def marker_edit(self, skill, task, failure_diagnosis="", session_tail=""):
+        from skillq.shared.types import Skill as _Skill
+        return _Skill(
+            skill_id=skill.skill_id,
+            body=f"# L3-mirrored body\n\n{marker}",
+            n_retrievals=skill.n_retrievals,
+            n_uses=skill.n_uses,
+            n_success=skill.n_success,
+            metadata=skill.metadata,
+        )
+    monkeypatch.setattr(bridge_mod.EditRefiner, "propose_edit", marker_edit)
+
+    # Build a method with an explicit seed_skills_dir and pre-create
+    # the seed SKILL.md so the mirror's force=True path is exercised
+    # (the file already exists from the seed scan).
+    seed_dir = tmp_path / "seed_skills"
+    seed_dir.mkdir()
+    (seed_dir / "seed").mkdir()
+    seed_md = seed_dir / "seed" / "SKILL.md"
+    seed_md.write_text("# ORIGINAL seed body\n", encoding="utf-8")
+
+    method = MethodConfig(
+        library_root=tmp_path / "lib",
+        seed_skills_dir=seed_dir,
+        b_max=4,
+        enable_auto_extract=True,
+        seed_initial_q=0.0,
+        extract_every_n_trials=1,
+    )
+    _seed_lib(method)
+    _run_trial(tmp_path, method, r_task=0)
+
+    # After on_ended, the seed_skills_dir SKILL.md must contain the
+    # *edited* body, not the original seed body. This proves the
+    # mirror call (with force=True) actually ran and overwrote the
+    # pre-existing file.
+    on_disk = seed_md.read_text(encoding="utf-8")
+    assert marker in on_disk, (
+        f"L3 mirror failed: seed_skills_dir SKILL.md still shows the "
+        f"original seed body, not the L3 edit. Got:\n{on_disk[:200]}"
+    )
+    assert "# ORIGINAL seed body" not in on_disk, (
+        "L3 mirror fell through to the idempotent-skip path; the file "
+        "was NOT overwritten despite force=True. Bug 3 is not fixed."
+    )
+
+
 # ---------------------------------------------------------------------------
 # L3-M3: propose_edit exception must not abort the trial
 # ---------------------------------------------------------------------------
@@ -423,7 +499,7 @@ def test_l3_propose_edit_exception_does_not_abort_trial(tmp_path, monkeypatch):
     by an inner try/except. state.save must still run, and
     method_errors.jsonl must NOT exist (inner catch, not outer).
     """
-    from skillq.skillq_runtime import bridge as bridge_mod
+    from skillq.runtime import bridge as bridge_mod
 
     _patch_litellm_backends(monkeypatch)
     _patch_attribution_to(monkeypatch, Attribution.FAILURE_SKILL_USED)
@@ -623,7 +699,7 @@ def test_edit_prompt_contains_diagnosis_label(tmp_path, monkeypatch):
     placeholders. The formatted prompt sent to the backend must
     contain "FAILURE DIAGNOSIS" and "knowledge_to_extract".
     """
-    from skillq.skillq_runtime import bridge as bridge_mod
+    from skillq.runtime import bridge as bridge_mod
 
     _patch_litellm_backends(monkeypatch)
     _patch_attribution_to(
@@ -636,7 +712,7 @@ def test_edit_prompt_contains_diagnosis_label(tmp_path, monkeypatch):
     captured: dict = {"prompt": None}
 
     def capture_edit(self, skill, task, failure_diagnosis="", session_tail=""):
-        from skillq.method.prompts import EDIT_PROMPT
+        from skillq.layers.l3_attribution.prompts import EDIT_PROMPT
         prompt = EDIT_PROMPT.format(
             task=task,
             diagnosis=failure_diagnosis[: 6000 // 2],
@@ -671,7 +747,7 @@ def test_edit_prompt_drops_20pct_token_cap(tmp_path, monkeypatch):
     edit.py:73-77 since 2026-06-25) must also be gone from
     EDIT_PROMPT — they're now consistent.
     """
-    from skillq.skillq_runtime import bridge as bridge_mod
+    from skillq.runtime import bridge as bridge_mod
 
     _patch_litellm_backends(monkeypatch)
     _patch_attribution_to(monkeypatch, Attribution.FAILURE_SKILL_USED)
@@ -680,7 +756,7 @@ def test_edit_prompt_drops_20pct_token_cap(tmp_path, monkeypatch):
     captured: dict = {"prompt": None}
 
     def capture_edit(self, skill, task, failure_diagnosis="", session_tail=""):
-        from skillq.method.prompts import EDIT_PROMPT
+        from skillq.layers.l3_attribution.prompts import EDIT_PROMPT
         prompt = EDIT_PROMPT.format(
             task=task,
             diagnosis=failure_diagnosis[: 6000 // 2],

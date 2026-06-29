@@ -1,8 +1,8 @@
-"""Tests for skillq.method.embedding_service — specifically the
-``start_embedding_service_background`` ready-wait fix added
+"""Tests for skillq.services.ranking_service — specifically the
+``start_ranking_service_background`` ready-wait fix added
 2026-06-26.
 
-The race window: ``start_embedding_service_background`` spawns a
+The race window: ``start_ranking_service_background`` spawns a
 daemon thread running uvicorn, then returns immediately. uvicorn
 takes ~50-150ms to actually bind to the port, so any hook call
 fired in that window hits ECONNREFUSED, the embedding service
@@ -27,9 +27,9 @@ sys.path.insert(0, str(ROOT))
 
 import pytest  # noqa: E402
 
-from skillq.method.embedding_service import (  # noqa: E402
-    start_embedding_service_background,
-    stop_embedding_service,
+from skillq.services.ranking_service import (  # noqa: E402
+    start_ranking_service_background,
+    stop_ranking_service,
 )
 
 
@@ -60,7 +60,7 @@ def test_ready_wait_returns_after_server_binds():
     ready to serve real requests.
     """
     port = _free_port()
-    h = start_embedding_service_background(
+    h = start_ranking_service_background(
         port=port, host="127.0.0.1", ready_timeout_sec=5.0,
     )
     try:
@@ -78,7 +78,7 @@ def test_ready_wait_returns_after_server_binds():
             f"took {elapsed_ms}ms after start returned"
         )
     finally:
-        stop_embedding_service(h)
+        stop_ranking_service(h)
 
 
 def test_ready_wait_logs_warning_on_timeout():
@@ -101,19 +101,24 @@ def test_ready_wait_logs_warning_on_timeout():
         )
 
     with patch(
-        "skillq.method.embedding_service.logger"
+        # Step 3 (2026-06-26) of the refactor moved the FastAPI
+        # daemon into ``skillq.services.ranking_service``. The
+        # warning is emitted from there, not from the legacy
+        # ``embedding_service`` shim (which now only re-exports
+        # the new module's names).
+        "skillq.services.ranking_service.logger"
     ) as mock_logger:
         # Port 80 is privileged on Linux; unprivileged bind fails
         # with EACCES, uvicorn calls sys.exit(1) in the thread,
         # the poll loop never sees /healthz return 200, and the
         # ready_timeout_sec elapses.
-        second = start_embedding_service_background(
+        second = start_ranking_service_background(
             port=80,
             host="127.0.0.1",
             ready_timeout_sec=0.3,
         )
         try:
-            # Handle returned (no exception from start_embedding_service_background).
+            # Handle returned (no exception from start_ranking_service_background).
             assert second is not None
             all_calls = (
                 mock_logger.info.call_args_list
@@ -126,15 +131,15 @@ def test_ready_wait_logs_warning_on_timeout():
                 f"elapses; got calls: {[str(c) for c in all_calls]}"
             )
         finally:
-            stop_embedding_service(second)
+            stop_ranking_service(second)
 
 
 def test_handle_dict_has_required_keys():
     """Sanity check: the returned handle has the keys
-    stop_embedding_service needs.
+    stop_ranking_service needs.
     """
     port = _free_port()
-    h = start_embedding_service_background(
+    h = start_ranking_service_background(
         port=port, host="127.0.0.1", ready_timeout_sec=5.0,
     )
     try:
@@ -142,7 +147,7 @@ def test_handle_dict_has_required_keys():
         assert h["port"] == port
         assert h["thread"].is_alive()
     finally:
-        stop_embedding_service(h)
+        stop_ranking_service(h)
 
 
 if __name__ == "__main__":

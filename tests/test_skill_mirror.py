@@ -1,4 +1,4 @@
-"""Unit tests for ``skillq.method.skill_mirror.mirror_skill_to_host_dir``.
+"""Unit tests for ``skillq.shared.mirror.mirror_skill_to_host_dir``.
 
 The mirror function is invoked by the paper method's bridge after
 ``extract_batch`` returns a freshly-spawned skill, so that the new
@@ -24,8 +24,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from skillq.method.skill_mirror import mirror_skill_to_host_dir  # noqa: E402
-from skillq.method.types import Skill  # noqa: E402
+from skillq.shared.mirror import mirror_skill_to_host_dir  # noqa: E402
+from skillq.shared.types import Skill  # noqa: E402
 
 
 def test_mirror_writes_skill_md(tmp_path: Path) -> None:
@@ -55,6 +55,40 @@ def test_mirror_is_idempotent_does_not_overwrite(tmp_path: Path) -> None:
 
     assert written is False
     assert user_path.read_text(encoding="utf-8") == "# human-edited body\n"
+
+
+def test_mirror_force_overwrites_existing(tmp_path: Path) -> None:
+    """Phase 10 Bug 3: force=True opts out of idempotency.
+
+    L3 :class:`~skillq.layers.l3_attribution.edit.EditRefiner` writes
+    an in-place body edit. The default ``force=False`` would silently
+    skip the second (and later) edits — once the first edit has landed,
+    the file L3 itself wrote blocks every subsequent L3 mirror. L3 calls
+    ``mirror_skill_to_host_dir(skill, target, force=True)`` to opt in to
+    overwriting. L4 keeps ``force=False`` (default) to preserve the
+    "don't clobber human-edited SKILL.md" guarantee.
+    """
+    target = tmp_path / "host_skills"
+    skill_dir = target / "chess-image-to-move"
+    skill_dir.mkdir(parents=True)
+    skill_md = skill_dir / "SKILL.md"
+    skill_md.write_text("# ORIGINAL seed body\n", encoding="utf-8")
+
+    # Default (force=False): idempotent skip — preserves existing file.
+    skill_attempt = Skill(skill_id="chess-image-to-move", body="# LLM clobber\n")
+    assert mirror_skill_to_host_dir(skill_attempt, target) is False
+    assert skill_md.read_text(encoding="utf-8") == "# ORIGINAL seed body\n"
+
+    # force=True (L3 path): overwrites with the new body.
+    edited = Skill(skill_id="chess-image-to-move", body="# EDITED L3 body\n")
+    assert mirror_skill_to_host_dir(edited, target, force=True) is True
+    assert skill_md.read_text(encoding="utf-8") == "# EDITED L3 body\n"
+
+    # Second L3 edit (force=True): overwrites again — round-trip
+    # sanity that the mirror's force path is repeatable.
+    edited_again = Skill(skill_id="chess-image-to-move", body="# EDITED L3 body v2\n")
+    assert mirror_skill_to_host_dir(edited_again, target, force=True) is True
+    assert skill_md.read_text(encoding="utf-8") == "# EDITED L3 body v2\n"
 
 
 def test_mirror_target_none_is_noop() -> None:

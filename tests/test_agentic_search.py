@@ -8,7 +8,7 @@ Covers:
 - ``_search.sh`` is a valid bash script and runs (uses python3
   subprocess to validate it does the RRF fusion).
 - ``resolve_retrieval_mode`` picks the right mode based on lib size.
-- ``paper.skillq_runtime.bridge._attribution_and_extract_dispatch`` adds
+- ``skillq.runtime.steps.step_dispatch_evolve`` adds
   failure-attributed knowledge into the buffer (Rule 5 path).
 """
 
@@ -28,14 +28,14 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from skillq.method.types import Qlib, Skill  # noqa: E402
-from skillq.skillq_runtime.agentic_search import (  # noqa: E402
+from skillq.shared.types import Qlib, Skill  # noqa: E402
+from skillq.runtime.agentic_search import (  # noqa: E402
     AgenticSearchWriter,
     render_manifest,
     render_skill_md,
 )
-from skillq.skillq_runtime.bridge import resolve_retrieval_mode  # noqa: E402
-from skillq.skillq_runtime.config import MethodConfig  # noqa: E402
+from skillq.runtime.container_wiring import resolve_retrieval_mode  # noqa: E402
+from skillq.config import MethodConfig  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

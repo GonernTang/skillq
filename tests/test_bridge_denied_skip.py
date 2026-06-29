@@ -19,11 +19,11 @@ Concretely: a denied call must not produce any of these side-effects:
   - q_updates.jsonl trace entry
 
 These tests cover:
-  1. _SubTaskCallRecord has the denied field
-  2. _read_skill_calls_log parses the new denied flag
-  3. _read_skill_calls_log falls back to ¬approved for old JSONL
+  1. SubTaskCallRecord has the denied field
+  2. read_skill_calls_log parses the new denied flag
+  3. read_skill_calls_log falls back to ¬approved for old JSONL
      files written before the field existed
-  4. _extract_skill_calls_from_session sets denied=False (agentic
+  4. extract_skill_calls_from_session sets denied=False (agentic
      mode has no hook → nothing to deny)
   5. End-to-end: a trial whose hook log records denied=True for
      every call leaves the Q-table at the seed value
@@ -46,17 +46,17 @@ from unittest.mock import MagicMock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from skillq.method.attribution import Attribution, TrialAttribution  # noqa: E402
-from skillq.method.library import LibManager  # noqa: E402
-from skillq.method.state import QlibState  # noqa: E402
-from skillq.method.types import Qlib, Skill  # noqa: E402
-from skillq.skillq_runtime import bridge as bridge_mod  # noqa: E402
-from skillq.skillq_runtime.bridge import (  # noqa: E402
-    _extract_skill_calls_from_session,
-    _read_skill_calls_log,
-    _SubTaskCallRecord,
+from skillq.layers.l3_attribution.models import Attribution, TrialAttribution  # noqa: E402
+from skillq.shared.q_table import LibManager  # noqa: E402
+from skillq.shared.library import QlibState  # noqa: E402
+from skillq.shared.types import Qlib, Skill  # noqa: E402
+from skillq.runtime import bridge as bridge_mod  # noqa: E402
+from skillq.shared.calls_log import (  # noqa: E402
+    SubTaskCallRecord,
+    extract_skill_calls_from_session,
+    read_skill_calls_log,
 )
-from skillq.skillq_runtime.config import MethodConfig  # noqa: E402
+from skillq.config import MethodConfig  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -105,13 +105,16 @@ class _MockJob:
     def on_trial_ended(self, callback: Any) -> None:
         self.on_ended = callback
 
+    def on_trial_started(self, callback: Any) -> None:
+        self.on_started = callback  # Step 7: new pipeline needs both
+
     def __len__(self) -> int:
         return 1_000_000
 
 
 def _patch_litellm_backends(monkeypatch) -> None:
-    from skillq.method.attribution import StubAttributionBackend
-    from skillq.method.retrieval import StubEmbedder
+    from skillq.layers.l3_attribution.models import StubAttributionBackend
+    from skillq.shared.backends.litellm import StubEmbedder
 
     class _StubEmbedderShim(StubEmbedder):
         def __init__(self, *args, **kwargs) -> None:
@@ -162,11 +165,11 @@ def _seed_lib(method: MethodConfig, skill_ids: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Unit tests — _SubTaskCallRecord + _read_skill_calls_log
+# Unit tests — SubTaskCallRecord + read_skill_calls_log
 # ---------------------------------------------------------------------------
 def test_subtask_call_record_has_denied_field():
     """Sanity: the dataclass exposes a `denied` field (defaults False)."""
-    rec = _SubTaskCallRecord(
+    rec = SubTaskCallRecord(
         skill_id="x",
         requested="x",
         top_k=[],
@@ -175,7 +178,7 @@ def test_subtask_call_record_has_denied_field():
         intent_text="",
     )
     assert rec.denied is False
-    rec2 = _SubTaskCallRecord(
+    rec2 = SubTaskCallRecord(
         skill_id="y",
         requested="y",
         top_k=[],
@@ -194,7 +197,7 @@ def test_read_skill_calls_log_parses_denied_flag(tmp_path: Path):
         _make_hook_record("skill-a", approved=True, denied=False),
         _make_hook_record("skill-b", approved=False, denied=True),
     )
-    records = _read_skill_calls_log(log)
+    records = read_skill_calls_log(log)
     assert len(records) == 2
     assert records[0].skill_id == "skill-a"
     assert records[0].approved is True
@@ -230,7 +233,7 @@ def test_read_skill_calls_log_back_compat_no_denied_field(tmp_path: Path):
             "intent_text": "",
         }) + "\n"
     )
-    records = _read_skill_calls_log(p)
+    records = read_skill_calls_log(p)
     assert len(records) == 2
     # Approved→ denied=False (back-compat default)
     assert records[0].approved is True
@@ -245,7 +248,7 @@ def test_extract_skill_calls_from_session_marks_all_approved(tmp_path: Path):
     session log is implicitly approved (agent successfully called it).
     denied must default to False so the bridge still Q-updates."""
     # No hook log, no session log → empty list.
-    assert _extract_skill_calls_from_session(tmp_path) == []
+    assert extract_skill_calls_from_session(tmp_path) == []
 
     # Write a session log with one Skill tool_use.
     proj = tmp_path / "agent" / "sessions" / "projects" / "proj-1"
@@ -259,7 +262,7 @@ def test_extract_skill_calls_from_session_marks_all_approved(tmp_path: Path):
             ]},
         }) + "\n"
     )
-    records = _extract_skill_calls_from_session(tmp_path)
+    records = extract_skill_calls_from_session(tmp_path)
     assert len(records) == 1
     assert records[0].skill_id == "chess-image-to-move"
     assert records[0].approved is True
@@ -301,7 +304,7 @@ def test_bridge_skips_q_update_when_all_calls_denied(
     _seed_lib(method, ["chess-image-to-move"])
 
     job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     trial_dir = tmp_path / "trial-denied"
     trial_dir.mkdir()
@@ -376,7 +379,7 @@ def test_bridge_only_updates_approved_when_mixed(tmp_path: Path, monkeypatch):
     _seed_lib(method, ["approved-skill", "denied-skill"])
 
     job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     trial_dir = tmp_path / "trial-mixed"
     trial_dir.mkdir()
@@ -435,7 +438,7 @@ def test_bridge_q_updates_normally_when_all_approved(
     _seed_lib(method, ["git-basics", "lint-fix"])
 
     job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     trial_dir = tmp_path / "trial-all-approved"
     trial_dir.mkdir()
@@ -488,7 +491,7 @@ def test_bridge_skips_denied_even_when_trial_failed(
     _seed_lib(method, ["irrelevant"])
 
     job = _MockJob()
-    bridge_mod.attach_paper_registers(job, method)
+    bridge_mod.attach_layered_registers(job, method)
 
     trial_dir = tmp_path / "trial-fail-denied"
     trial_dir.mkdir()

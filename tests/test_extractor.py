@@ -21,7 +21,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from skillq.method.extractor import SkillExtractor  # noqa: E402
+from skillq.layers.l4_evolve.create import SkillExtractor  # noqa: E402
 
 
 def _fake_proc(*, returncode: int = 0, stdout: str = "", stderr: str = ""):

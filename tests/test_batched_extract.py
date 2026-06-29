@@ -24,11 +24,11 @@ from unittest.mock import MagicMock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from skillq.method.attribution import Attribution, TrialAttribution  # noqa: E402
-from skillq.method.library import LibManager  # noqa: E402
-from skillq.method.state import QlibState  # noqa: E402
-from skillq.method.types import Qlib, Skill  # noqa: E402
-from skillq.skillq_runtime.config import MethodConfig  # noqa: E402
+from skillq.layers.l3_attribution.models import Attribution, TrialAttribution  # noqa: E402
+from skillq.shared.q_table import LibManager  # noqa: E402
+from skillq.shared.library import QlibState  # noqa: E402
+from skillq.shared.types import Qlib, Skill  # noqa: E402
+from skillq.config import MethodConfig  # noqa: E402
 
 
 class _MockJob:
@@ -45,14 +45,17 @@ class _MockJob:
     def on_trial_ended(self, callback: Any) -> None:
         self.on_ended = callback
 
+    def on_trial_started(self, callback: Any) -> None:
+        self.on_started = callback  # Step 7: new pipeline needs both
+
     def __len__(self) -> int:
         return self.n_trials
 
 
 def _patch_litellm_backends(monkeypatch) -> None:
-    from skillq.skillq_runtime import bridge as bridge_mod
-    from skillq.method.attribution import StubAttributionBackend
-    from skillq.method.retrieval import StubEmbedder
+    from skillq.runtime import bridge as bridge_mod
+    from skillq.layers.l3_attribution.models import StubAttributionBackend
+    from skillq.shared.backends.litellm import StubEmbedder
 
     class _StubEmbedderShim(StubEmbedder):
         def __init__(self, *args, **kwargs) -> None:
@@ -74,7 +77,7 @@ def _patch_extractor_recording(monkeypatch) -> list[dict[str, Any]]:
     list that the stub appends to on each call (so tests can assert
     call count + kwargs).
     """
-    from skillq.skillq_runtime import bridge as bridge_mod
+    from skillq.runtime import bridge as bridge_mod
 
     calls: list[dict[str, Any]] = []
 
@@ -123,7 +126,7 @@ def _seed_lib(method: MethodConfig) -> None:
 
 def _patch_attribution_no_skill_seen(monkeypatch) -> None:
     """Attribution that triggers the extract path on every trial."""
-    from skillq.skillq_runtime import bridge as bridge_mod
+    from skillq.runtime import bridge as bridge_mod
 
     def returning(self, **kwargs):
         return TrialAttribution(
@@ -160,8 +163,8 @@ def test_buffer_accumulates_until_threshold(tmp_path: Path, monkeypatch):
     )
     _seed_lib(method)
     job = _MockJob(n_trials=100)        # long job → no force-flush
-    from skillq.skillq_runtime import bridge as bridge_mod
-    bridge_mod.attach_paper_registers(job, method)
+    from skillq.runtime import bridge as bridge_mod
+    bridge_mod.attach_layered_registers(job, method)
 
     for i in range(3):
         result = _fake_trial_result(reward=1.0, trial_uri=str(tmp_path / f"trial-{i}"))
@@ -193,8 +196,8 @@ def test_threshold_hit_aggregates_n_records(tmp_path: Path, monkeypatch):
     )
     _seed_lib(method)
     job = _MockJob(n_trials=4)
-    from skillq.skillq_runtime import bridge as bridge_mod
-    bridge_mod.attach_paper_registers(job, method)
+    from skillq.runtime import bridge as bridge_mod
+    bridge_mod.attach_layered_registers(job, method)
 
     for i in range(4):
         result = _fake_trial_result(reward=1.0, trial_uri=str(tmp_path / f"trial-{i}"))
@@ -228,8 +231,8 @@ def test_two_batches_in_eight_trials(tmp_path: Path, monkeypatch):
     )
     _seed_lib(method)
     job = _MockJob(n_trials=8)
-    from skillq.skillq_runtime import bridge as bridge_mod
-    bridge_mod.attach_paper_registers(job, method)
+    from skillq.runtime import bridge as bridge_mod
+    bridge_mod.attach_layered_registers(job, method)
 
     for i in range(8):
         result = _fake_trial_result(reward=1.0, trial_uri=str(tmp_path / f"trial-{i}"))
@@ -264,8 +267,8 @@ def test_force_flush_on_last_trial_drains_partial(tmp_path: Path, monkeypatch):
     _seed_lib(method)
     # IMPORTANT: n_trials matches actual #trials so force-flush fires.
     job = _MockJob(n_trials=3)
-    from skillq.skillq_runtime import bridge as bridge_mod
-    bridge_mod.attach_paper_registers(job, method)
+    from skillq.runtime import bridge as bridge_mod
+    bridge_mod.attach_layered_registers(job, method)
 
     for i in range(3):
         result = _fake_trial_result(reward=1.0, trial_uri=str(tmp_path / f"trial-{i}"))
@@ -297,8 +300,8 @@ def test_no_force_flush_when_more_trials_remain(tmp_path: Path, monkeypatch):
     )
     _seed_lib(method)
     job = _MockJob(n_trials=100)   # long job; we only run 3 trials
-    from skillq.skillq_runtime import bridge as bridge_mod
-    bridge_mod.attach_paper_registers(job, method)
+    from skillq.runtime import bridge as bridge_mod
+    bridge_mod.attach_layered_registers(job, method)
 
     for i in range(3):
         result = _fake_trial_result(reward=1.0, trial_uri=str(tmp_path / f"trial-{i}"))
@@ -329,8 +332,8 @@ def test_threshold_n_2_flushes_every_2_trials(tmp_path: Path, monkeypatch):
     )
     _seed_lib(method)
     job = _MockJob(n_trials=5)
-    from skillq.skillq_runtime import bridge as bridge_mod
-    bridge_mod.attach_paper_registers(job, method)
+    from skillq.runtime import bridge as bridge_mod
+    bridge_mod.attach_layered_registers(job, method)
 
     for i in range(5):
         result = _fake_trial_result(reward=1.0, trial_uri=str(tmp_path / f"trial-{i}"))

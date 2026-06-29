@@ -13,6 +13,8 @@ Core Linux system administration skills for managing production servers, develop
 
 ## When to Use
 
+**Important:** This skill is exclusively for Linux system administration tasks. Do not apply it to tasks involving chess, image processing, game analysis, or any non‑Linux domain.
+
 - Provisioning and maintaining Linux servers in any environment
 - Installing, updating, or removing software packages
 - Managing filesystems, disk usage, and mount points

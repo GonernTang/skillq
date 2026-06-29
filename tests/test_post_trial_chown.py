@@ -27,9 +27,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from skillq.skillq_runtime.bridge import (  # noqa: E402
-    _chown_agent_sessions_to_host_user,
-)
+from skillq.shared.chown import chown_agent_sessions_to_host_user
 
 
 def _make_session_tree(root: Path) -> Path:
@@ -50,8 +48,8 @@ def _make_session_tree(root: Path) -> Path:
 def test_chown_helper_noop_when_path_missing(tmp_path: Path):
     """Non-existent trial_dir → no os.chown calls."""
     nonexistent = tmp_path / "nope"
-    with patch("skillq.skillq_runtime.bridge.os.chown") as mock_chown:
-        _chown_agent_sessions_to_host_user(nonexistent)
+    with patch("skillq.shared.chown.os.chown") as mock_chown:
+        chown_agent_sessions_to_host_user(nonexistent)
         assert mock_chown.call_count == 0
 
 
@@ -60,16 +58,16 @@ def test_chown_helper_noop_when_agent_sessions_missing(tmp_path: Path):
     trial_dir = tmp_path / "trial"
     trial_dir.mkdir()
     (trial_dir / "skillq_state").mkdir()
-    with patch("skillq.skillq_runtime.bridge.os.chown") as mock_chown:
-        _chown_agent_sessions_to_host_user(trial_dir)
+    with patch("skillq.shared.chown.os.chown") as mock_chown:
+        chown_agent_sessions_to_host_user(trial_dir)
         assert mock_chown.call_count == 0
 
 
 def test_chown_helper_noop_when_trial_dir_none():
     """None trial_dir → silent no-op."""
-    with patch("skillq.skillq_runtime.bridge.os.chown") as mock_chown:
-        _chown_agent_sessions_to_host_user(None)
-        _chown_agent_sessions_to_host_user("")
+    with patch("skillq.shared.chown.os.chown") as mock_chown:
+        chown_agent_sessions_to_host_user(None)
+        chown_agent_sessions_to_host_user("")
         assert mock_chown.call_count == 0
 
 
@@ -80,8 +78,8 @@ def test_chown_helper_walks_all_session_files(tmp_path: Path):
     n_files = len(files)
     assert n_files >= 3, f"expected ≥3 fake session files, got {files}"
 
-    with patch("skillq.skillq_runtime.bridge.os.chown") as mock_chown:
-        _chown_agent_sessions_to_host_user(tmp_path)
+    with patch("skillq.shared.chown.os.chown") as mock_chown:
+        chown_agent_sessions_to_host_user(tmp_path)
         assert mock_chown.call_count == n_files
         # All chowns should target os.getuid() / os.getgid()
         for call in mock_chown.call_args_list:
@@ -94,11 +92,11 @@ def test_chown_helper_swallows_permission_error(tmp_path: Path):
     """os.chown raises PermissionError → helper does not propagate."""
     _make_session_tree(tmp_path)
     with patch(
-        "skillq.skillq_runtime.bridge.os.chown",
+        "skillq.shared.chown.os.chown",
         side_effect=PermissionError("not root"),
     ) as mock_chown:
         # Must not raise
-        _chown_agent_sessions_to_host_user(tmp_path)
+        chown_agent_sessions_to_host_user(tmp_path)
         # It did try to chown every file (swallowed each one)
         assert mock_chown.call_count >= 3
 
@@ -107,19 +105,19 @@ def test_chown_helper_swallows_file_not_found(tmp_path: Path):
     """os.chown raises FileNotFoundError → helper does not propagate."""
     _make_session_tree(tmp_path)
     with patch(
-        "skillq.skillq_runtime.bridge.os.chown",
+        "skillq.shared.chown.os.chown",
         side_effect=FileNotFoundError("race: file disappeared"),
     ):
         # Must not raise
-        _chown_agent_sessions_to_host_user(tmp_path)
+        chown_agent_sessions_to_host_user(tmp_path)
 
 
 def test_chown_helper_uses_follow_symlinks_false(tmp_path: Path):
     """follow_symlinks=False is passed (don't follow symlinks, avoid
     touching targets outside agent/sessions/)."""
     _make_session_tree(tmp_path)
-    with patch("skillq.skillq_runtime.bridge.os.chown") as mock_chown:
-        _chown_agent_sessions_to_host_user(tmp_path)
+    with patch("skillq.shared.chown.os.chown") as mock_chown:
+        chown_agent_sessions_to_host_user(tmp_path)
         for call in mock_chown.call_args_list:
             _, kwargs = call
             assert kwargs.get("follow_symlinks") is False, (
@@ -130,6 +128,6 @@ def test_chown_helper_uses_follow_symlinks_false(tmp_path: Path):
 def test_chown_helper_accepts_string_path(tmp_path: Path):
     """Helper accepts a str path (not just Path)."""
     _make_session_tree(tmp_path)
-    with patch("skillq.skillq_runtime.bridge.os.chown") as mock_chown:
-        _chown_agent_sessions_to_host_user(str(tmp_path))
+    with patch("skillq.shared.chown.os.chown") as mock_chown:
+        chown_agent_sessions_to_host_user(str(tmp_path))
         assert mock_chown.call_count >= 3
