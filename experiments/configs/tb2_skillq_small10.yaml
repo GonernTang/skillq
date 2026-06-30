@@ -47,7 +47,14 @@ agent_timeout_multiplier: 1.0   # see full.yaml top-of-file note: multiplier×ov
 environment:
   type: docker
   force_build: false
-  delete: true                # clean up containers after each trial
+  # 2026-07-01: HARBOR's docker.py:582 calls `docker compose down
+  # --rmi all` when delete=true, which DELETES the skills_vote/<task>
+  # base image at every trial end. Verified live: small10 run #1 lost
+  # 8/10 skills_vote images this way. Set delete=false so the images
+  # survive across runs. Container cleanup is handled by the
+  # post-run script `experiments/configs/_post_run_cleanup.sh`
+  # which prunes containers + networks but NEVER images.
+  delete: false               # preserve skills_vote images across runs
   mounts_json:
     - type: bind
       source: /home/gonern/workspace/skillq/skills

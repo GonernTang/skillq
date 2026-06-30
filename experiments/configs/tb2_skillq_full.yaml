@@ -51,7 +51,13 @@ agent_timeout_multiplier: 1.0   # see top-of-file note: multiplier×override bug
 environment:
   type: docker
   force_build: false
-  delete: true                # clean up containers after each trial (saves disk/mem)
+  # 2026-07-01: HARBOR's docker.py:582 calls `docker compose down
+  # --rmi all` when delete=true, which DELETES the skills_vote/<task>
+  # base image at every trial end. Set delete=false so images
+  # survive. Container cleanup is handled by
+  # experiments/configs/_post_run_cleanup.sh (containers + networks
+  # only, never images).
+  delete: false               # preserve skills_vote images across runs
   mounts_json:
     # Bind-mount the host's seed-skill library into the container at
     # /skills. The container hook can read skill bodies (PostToolUse)
