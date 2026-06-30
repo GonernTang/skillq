@@ -13,11 +13,21 @@ The pipeline runs at every Harbor ``on_trial_ended`` event:
 2. :func:`step_q_update` — task-only Eq.5 Q-learning
 3. :func:`step_attribute` — L3 attribution analyzer call
 4. :func:`step_maintain_lib` — Q-driven admission/eviction
-5. :func:`step_refresh_emb_cache` — batched emb_cache update
-6. :func:`step_incremental_edit` — L3 EditRefiner (gated on
+5. :func:`step_incremental_edit` — L3 EditRefiner (gated on
    ``FAILURE_SKILL_USED``)
-7. :func:`step_dispatch_evolve` — L4 rule table + extract buffer
+6. :func:`step_dispatch_evolve` — L4 rule table + extract buffer
+7. :func:`step_refresh_emb_cache` — batched emb_cache update
 8. :func:`step_save_state` — atomic ``method_state.json`` write
+   + defensive ``emb_cache.save()``
+
+**Pipeline invariant (2026-07-01, see
+``tests/test_pipeline_emb_cache_ordering.py``)**:
+``step_refresh_emb_cache`` is position 7 and must remain
+AFTER every lib-mutating step (:func:`step_maintain_lib`,
+:func:`step_incremental_edit`, :func:`step_dispatch_evolve`)
+and BEFORE :func:`step_save_state`. The previous position-5
+ordering lost L4 additions to ``emb_cache.json`` in the same
+trial — see [[emb-cache-ordering-bug]].
 
 The order matters: Q-update happens before attribution because
 Q-update is synchronous (no LLM call) and gives the early log
@@ -370,13 +380,22 @@ async def step_refresh_emb_cache(ctx: "TrialContext", result: "StepResult") -> N
     """Apply a batched emb_cache update from the lib changes.
 
     Reads ``result.lib_changes`` (collected by
-    :func:`step_maintain_lib` + any earlier step that mutates the
-    lib). Embeds added skills + removes evicted ones in one
-    round-trip to the host embed service. Saves the cache
-    atomically.
+    :func:`step_maintain_lib` (removes),
+    :func:`step_incremental_edit` (replaces), and
+    :func:`step_dispatch_evolve` (adds)) and writes a single
+    end-of-trial snapshot.
+
+    Pipeline invariant (2026-07-01): this step must run AFTER
+    every lib-mutating step and BEFORE :func:`step_save_state`.
+    Previously it ran at position 5, BEFORE
+    :func:`step_dispatch_evolve` at position 7; L4 Create
+    additions never reached ``emb_cache.json`` in the same
+    trial (see [[emb-cache-ordering-bug]]).
 
     Best-effort: a cache-refresh failure logs and continues —
-    the trial's lib / Q-table are unaffected.
+    the trial's lib / Q-table are unaffected. A redundant
+    defensive ``save()`` is also issued at the very end of
+    :func:`step_save_state` for the last-trial safety net.
     """
     services = ctx.services
     changes = result.lib_changes
@@ -392,12 +411,21 @@ async def step_refresh_emb_cache(ctx: "TrialContext", result: "StepResult") -> N
             (sid, body) for action, sid, body in changes
             if action == "add" and body
         ]
+        # "replace" carries only (skill_id, new_body). sync_lib_to_vector_table
+        # wants (skill_id, old_body, new_body) — old_body is not
+        # needed for the embed (only new is used), so pass an empty
+        # string; it's unused inside the function.
+        replaced = [
+            (sid, "", body) for action, sid, body in changes
+            if action == "replace" and body
+        ]
         removed = [
             sid for action, sid, _ in changes
             if action == "remove"
         ]
         sync_lib_to_vector_table(
             added=added,
+            replaced=replaced,
             removed=removed,
             vector_table=services.emb_cache,
             embedder=embedder,
@@ -506,23 +534,23 @@ async def step_incremental_edit(ctx: "TrialContext", result: "StepResult") -> No
                 new_skill.skill_id,
             )
 
-    # Re-embed only if the frontmatter changed.
+    # 2026-07-01: funnel the edit through result.lib_changes so
+    # step_refresh_emb_cache (which now runs LAST, after both L3
+    # edit and L4 create) writes a single end-of-trial snapshot.
+    # This fixes the emb_cache ordering bug: previously edits
+    # re-embedded inline but L4 Create at pos 7 appended to
+    # lib_changes AFTER the pos-5 emb_cache.save, so L4 additions
+    # never reached disk in the same trial. Funnelling both
+    # mutations through lib_changes means the SINGLE end-of-
+    # pipeline refresh sees the full diff.
+    #
+    # Only push when the frontmatter description changed: a
+    # no-op edit (editor returned a body identical to the top
+    # skill's) doesn't need a re-embed.
     if _description_of(top.body) != _description_of(new_skill.body):
-        try:
-            embedder = LiteLLMEmbedder(
-                model=method.embedder_model,
-                dim=int(getattr(method, "embedder_dim", 1536)),
-            )
-            sync_lib_to_vector_table(
-                replaced=[(new_skill.skill_id, top.body, new_skill.body)],
-                vector_table=services.emb_cache,
-                embedder=embedder,
-            )
-            services.emb_cache.save()
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "emb_cache refresh after incremental edit failed; continuing."
-            )
+        result.lib_changes.append(
+            ("replace", new_skill.skill_id, new_skill.body)
+        )
     logger.info(
         "Incremental edit on failure: skill %s, trial %s",
         new_skill.skill_id,
@@ -728,6 +756,21 @@ async def step_save_state(ctx: "TrialContext", result: "StepResult") -> None:
             ctx.trial_id,
         )
 
+    # 2026-07-01 defensive save: ensure emb_cache.json is written
+    # even if step_refresh_emb_cache's save was skipped (e.g. empty
+    # lib_changes or upstream cache layer swallowed an exception).
+    # This is the last-trial safety net: small10 run #1 lost 8 L4
+    # additions because the inline save fired before the L4 create
+    # appended to lib_changes. With the reorder, that path is
+    # closed; this is just belt-and-suspenders.
+    try:
+        services.emb_cache.save()
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "defensive emb_cache.save() at end of step_save_state failed; "
+            "the upstream step_refresh_emb_cache save (if any) is still on disk."
+        )
+
 
 # ---------------------------------------------------------------------------
 # Pipeline — the order of execution at every on_trial_ended event
@@ -737,9 +780,9 @@ ON_TRIAL_ENDED_PIPELINE = (
     step_q_update,
     step_attribute,
     step_maintain_lib,
-    step_refresh_emb_cache,
     step_incremental_edit,
     step_dispatch_evolve,
+    step_refresh_emb_cache,
     step_save_state,
 )
 

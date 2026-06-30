@@ -238,11 +238,14 @@ class StepResult:
     lib_changes
         ``(action, skill_id, body)`` triples accumulated during
         the trial. ``action`` is one of ``"add"`` (from
-        :func:`step_dispatch_evolve` after a batched extract)
-        or ``"remove"`` (from :func:`step_maintain_lib` when
-        ``mgr.maintain`` evicts a low-Q skill). Consumed by
-        :func:`step_refresh_emb_cache` to update the embedding
-        cache without re-embedding unchanged skills.
+        :func:`step_dispatch_evolve` after a batched extract),
+        ``"remove"`` (from :func:`step_maintain_lib` when
+        ``mgr.maintain`` evicts a low-Q skill), or ``"replace"``
+        (from :func:`step_incremental_edit` when the L3 editor
+        rewrites a skill's body). Consumed by
+        :func:`step_refresh_emb_cache` — which now runs LAST in
+        the pipeline — to update the embedding cache in a single
+        batched round-trip without re-embedding unchanged skills.
     edited_skill_id
         ``skill_id`` of the skill replaced by
         :func:`step_incremental_edit`. ``None`` if no edit
