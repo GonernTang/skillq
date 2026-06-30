@@ -51,7 +51,7 @@ agent_timeout_multiplier: 1.0   # see top-of-file note: multiplier×override bug
 environment:
   type: docker
   force_build: false
-  delete: false               # keep containers after the run for debugging
+  delete: true                # clean up containers after each trial (saves disk/mem)
   mounts_json:
     # Bind-mount the host's seed-skill library into the container at
     # /skills. The container hook can read skill bodies (PostToolUse)
@@ -113,7 +113,7 @@ method:
 
   evolve:
     enabled: true
-    extract_every_n_trials: 4
+    extract_every_n_trials: 1    # per-trial L4 create (与论文 per-trial 语义严格一致)
     enforce_failure_skill_structure: true
 
   b_max: 1000
