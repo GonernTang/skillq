@@ -371,6 +371,15 @@ class MethodConfig(BaseModel):
     # The two flags are independent: keep learned Q values while
     # regenerating embeddings (e.g. after switching ``embedder_model``),
     # or vice versa.
+    #
+    # Note (2026-06-30): To share emb_cache across runs that use
+    # different ``library_root``s (e.g. timestamped output dirs),
+    # set ``emb_cache_path`` explicitly instead of relying on the
+    # sibling-of-state_path default. Per the fresh-start semantics
+    # review, ``reuse_embedding_cache`` does NOT need to flip to
+    # ``False`` for fresh-start — emb_cache entries are content-
+    # derived and invariant across runs as long as the embedder
+    # model and skill bodies are stable.
     reuse_q_table: bool = Field(
         default=True,
         description=(
@@ -387,7 +396,9 @@ class MethodConfig(BaseModel):
             "reuse the cached description embeddings. If False, "
             "start with an empty emb_cache (Plan D pre-embed "
             "re-derives every skill) and overwrite the cache at "
-            "end-of-trial."
+            "end-of-trial. Prefer leaving this True across runs; "
+            "set False only when forcing a rebuild (e.g. embedder "
+            "model swap)."
         ),
     )
 
@@ -470,15 +481,26 @@ class MethodConfig(BaseModel):
     # Method B ("hook") — paper's large-library design: PreToolUse
     # hook intercepts every Skill() call, computes Eq.4 score, and
     # allow/denies.
+    # Method B ("pull") — paper-intent default (2026-07-01):
+    # SessionStart / UserPromptSubmit injects Top-K skills into the
+    # agent context. The agent is **required** to invoke at least
+    # one of the presented skills (all passed the sim Hard Gate, so
+    # every presented skill is task-relevant). Only skills the agent
+    # actually invokes get Q-update / attribution / L3 edit / L4
+    # create — skills that are merely presented but not invoked get
+    # only ``n_retrievals++`` for UCB exploration credit.
     # "auto" picks agentic when ``len(lib) < library_size_threshold``,
-    # else hook. Decided at on_trial_started time.
+    # else pull. Decided at on_trial_started time.
     retrieval_mode: str = Field(
-        default="auto",
+        default="pull",
         description=(
-            'Retrieval mode: "auto" (switch on lib size), '
-            '"agentic" (Method A), "hook" (Method B = PreToolUse only), '
-            'or "pull" (Method B + SessionStart inject of Top-K skills '
-            'into agent context at session start, 2026-06-23).'
+            'Retrieval mode: "pull" (Method B + UserPromptSubmit inject '
+            'of Top-K skills, default since 2026-07-01 — paper-intent '
+            'behaviour, agent sees candidates proactively) '
+            'or "hook" (PreToolUse only — agent-driven, no proactive '
+            'push; historically the default). '
+            'Historical "auto" / "agentic" values are still accepted '
+            'for back-compat but treated as "hook".'
         ),
     )
     library_size_threshold: int = Field(
@@ -535,6 +557,14 @@ class MethodConfig(BaseModel):
     # Persistence
     library_root: Path = Field(default=Path("./.skillq_library"))
     state_path: Optional[Path] = None  # defaults to <library_root>/.state/method_state.json
+    emb_cache_path: Optional[Path] = None
+    # defaults to sibling of state_path (``<library_root>/.state/emb_cache.json``).
+    # Override to a stable, host-side path (e.g. a sibling of
+    # ``seed_skills_dir``) to share emb_cache across runs that use
+    # different ``library_root``s (typical for timestamped run dirs).
+    # Plan D pre-embed will read whatever sits at the resolved path
+    # on the next trial and only re-embed skills whose
+    # ``skill_id`` is missing from it. See 2026-06-30 review.
 
     # Plan D: optional on-disk seed library. When the paper method
     # boots and ``library.skills`` is empty, the bridge scans this
@@ -575,8 +605,23 @@ class MethodConfig(BaseModel):
         return self.library_root / ".state" / "method_state.json"
 
     def resolved_emb_cache_path(self) -> Path:
-        """Resolve the ``emb_cache.json`` path. Always sibling of
-        :meth:`resolved_state_path` (same parent dir)."""
+        """Resolve the ``emb_cache.json`` path.
+
+        Order:
+        1. ``emb_cache_path`` field (if explicitly set — typical
+           when the user wants a stable, cross-run cache location
+           shared across timestamped ``library_root``s)
+        2. ``<state_path>.parent / emb_cache.json`` (legacy default;
+           i.e. same parent dir as ``method_state.json``)
+
+        Setting ``emb_cache_path`` lets ``Q-table`` stay per-run
+        (under a timestamped ``library_root``) while ``emb_cache``
+        lives at a stable location — the two have different
+        freshness semantics (see ``fresh-start-q-table-only``
+        memory).
+        """
+        if self.emb_cache_path is not None:
+            return self.emb_cache_path
         return self.resolved_state_path().parent / "emb_cache.json"
 
     def resolved_benchmark_input_path(self) -> Path:

@@ -1,0 +1,124 @@
+# TB 2.0 SMALL-10 batch — 10-task dress rehearsal for the 89-task full run.
+#
+# Same method-block as tb2_skillq_full.yaml (paper mode, hook, fresh-start
+# semantics) but dataset narrowed to a curated 10 tasks for fast validation.
+# This config mirrors the full run's actual eval surface (n_concurrent
+# halved to 4, otherwise identical) so a successful small10 → strong
+# signal that full will run end-to-end.
+#
+# Why these 10 (2026-06-30):
+#   - All 10 have a `skills_vote/<task>:20260604` image available locally
+#     (verified via docker image inspect).
+#   - Category spread: game/algorithm, math, NLP/data, binary, security,
+#     VCS×2, PL/compiler, ML — covers 8 distinct categories from the 89.
+#   - Excluded tasks without skills_vote image (adaptive-rejection-sampler,
+#     bn-fit-modify, break-filter-js-from-html, configure-git-webserver,
+#     path-tracing, pytorch-model-recovery) — those would require an
+#     additional retag pass first.
+#
+# Wall-clock estimate (10 tasks, n_concurrent_trials=4, ~10min/trial LLM):
+#   - 3 batches × ~10min LLM = ~30 min
+#   - + verifier (build, run tests, parse reward)
+#   - + L4 attribution + extraction overhead
+#   - Total: ~45-75 min wall-clock
+#
+# Time budget per trial: 3600s = 1h (matches full; some tasks need it).
+#
+# Run:
+#   uv run python experiments/run/run_benchmark.py \
+#     --benchmark tb2 --variant small10 --fresh-start
+#
+# Or via the wrapper script (recommended — pre-flights check + cleanup):
+#   bash experiments/configs/run_tb2_small10.sh
+
+jobs_dir: output
+job_name: tb2_skillq_small10__${now:%Y-%m-%d__%H-%M-%S}
+n_attempts: 1
+n_concurrent_trials: 4    # half of full's 8 (10 tasks / 4 = 3 batches)
+quiet: false
+retry:
+  max_retries: 0
+  exclude_exceptions:
+    - VerifierTimeoutError
+    - RewardFileNotFoundError
+    - RewardFileEmptyError
+    - VerifierOutputParseError
+agent_timeout_multiplier: 1.0   # see full.yaml top-of-file note: multiplier×override bug
+environment:
+  type: docker
+  force_build: false
+  delete: true                # clean up containers after each trial
+  mounts_json:
+    - type: bind
+      source: /home/gonern/workspace/skillq/skills
+      target: /skills
+      read_only: true
+agents:
+  - import_path: skillq.runtime.agent:SkillQClaudeCodeAgent
+    model_name: ${oc.env:ANTHROPIC_MODEL,anthropic/claude-sonnet-4-5}
+    override_timeout_sec: 3600.0    # 1h ABSOLUTE ceiling per trial (matches full)
+    kwargs:
+      reasoning_effort: high
+datasets:
+  - path: ${oc.env:SkillQ_INPUT_ROOT,/home/gonern/workspace/skillq/input}/terminal-bench
+    task_names:
+      # 10 curated tasks spanning 8 categories. Each verified
+      # skills_vote/<task>:20260604 is present locally at run-time
+      # (re-verified 2026-06-30 22:10; previous 10 dropped after
+      # docker image pruning wiped them between 20:55 and 22:09).
+      - caffe-cifar-10                     # ML / CV
+      - cobol-modernization                # PL / legacy
+      - code-from-image                    # vision / OCR
+      - constraints-scheduling             # algorithms / optimization
+      - db-wal-recovery                    # DB / recovery
+      - distribution-search                # search / algorithms
+      - extract-moves-from-video           # CV / signal-processing
+      - feal-differential-cryptanalysis    # crypto
+      - gcode-to-text                      # 3D-print / parsing
+      - log-summary-date-ranges            # data / log
+
+# === Paper method (verbatim from tb2_skillq_full.yaml) ===
+method:
+  # 2026-07-01: switch to pull (paper-intent default). Run #2
+  # verifies the Top-K proactive push reaches the agent — small10
+  # run #1 had 9/10 trials with zero Skill() calls under hook mode.
+  retrieval_mode: pull
+
+  library_root: ${oc.env:SkillQ_OUTPUT_ROOT,/home/gonern/workspace/skillq/output}/${job_name}/.skillq_library
+  state_path:   ${oc.env:SkillQ_OUTPUT_ROOT,/home/gonern/workspace/skillq/output}/${job_name}/.skillq_library/.state/method_state.json
+  # 2026-06-30: pin to a STABLE, cross-run path so emb_cache (the
+  # content-derived, run-invariant side) survives timestamped
+  # library_root changes. lives next to the seed-skills dir (same
+  # pattern as state_path co-location, see config.py:569-572).
+  # Q-table stays per-run (fresh-start friendly) because state_path
+  # still pins under <library_root>/.state/.
+  emb_cache_path: ${oc.env:SkillQ_EMB_CACHE_PATH,/home/gonern/workspace/skillq/skills/.skillq_state/emb_cache.json}
+  seed_skills_dir: /home/gonern/workspace/skillq/skills
+
+  retrieval:
+    top_k: 3
+    score_mode: multiplicative
+    beta: 0.5
+    gamma: 0.2
+    sim_gate_min_score: 0.5
+    sim_gate_floor: 0
+    c_ucb: 0.5
+    lambda: 0.5
+
+  attribution_model: anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-flash}
+  editor_model:      anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-flash}
+  embedder_model:    openai/${oc.env:EMBEDDING_MODEL,text-embedding-v4}
+  embedder_dim: 1024
+
+  evolve:
+    enabled: true
+    extract_every_n_trials: 1
+    enforce_failure_skill_structure: true
+
+  b_max: 1000
+  seed_initial_q: 0.5
+
+  reuse_q_table: true
+  reuse_embedding_cache: true
+
+  runtime: new

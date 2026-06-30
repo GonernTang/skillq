@@ -92,6 +92,14 @@ datasets:
 
 # === Paper method ===
 method:
+  # 2026-07-01: explicit pin. The MethodConfig default is 'pull'
+  # (paper-intent since 2026-07-01), but pinning it here is the
+  # contract for anyone reading this YAML — every paper-mode run
+  # MUST use pull-mode so the agent receives the Top-K proactively
+  # via UserPromptSubmit (otherwise the agent defaults to off-script
+  # Bash/Read/Write and the L1 contract is silently violated).
+  retrieval_mode: pull
+
   library_root: ${oc.env:SkillQ_OUTPUT_ROOT,/home/gonern/workspace/skillq/output}/${job_name}/.skillq_library
   state_path:   ${oc.env:SkillQ_OUTPUT_ROOT,/home/gonern/workspace/skillq/output}/${job_name}/.skillq_library/.state/method_state.json
   seed_skills_dir: /home/gonern/workspace/skillq/skills
@@ -101,7 +109,7 @@ method:
     score_mode: multiplicative
     beta: 0.5
     gamma: 0.2
-    sim_gate_min_score: 0.7
+    sim_gate_min_score: 0.5
     sim_gate_floor: 0
     c_ucb: 0.5
     lambda: 0.5

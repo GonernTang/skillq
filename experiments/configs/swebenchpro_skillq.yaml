@@ -58,6 +58,11 @@ datasets:
 
 # === Paper method ===
 method:
+  # 2026-07-01: explicit pin (paper-intent pull default). Method A
+  # is out of scope. Pull mode = UserPromptSubmit injects Top-K so
+  # the agent sees candidates proactively.
+  retrieval_mode: pull
+
   # SWE-Bench Pro state lives under the same .skillq_library/seed
   # path the bind-mount points at (Plan D co-location).
   library_root: ${abspath:.skillq_library/seed}

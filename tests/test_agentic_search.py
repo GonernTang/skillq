@@ -188,22 +188,55 @@ def test_search_sh_returns_empty_for_no_query(tmp_path: Path):
 
 # ---------------------------------------------------------------------------
 # resolve_retrieval_mode
+# 2026-06-30: Method A is no longer the default. "agentic" / "auto"
+# fold to "hook" with a logger.warning. The historical branches
+# below pin that fold so the next person who reads the field can't
+# mistake the demotion for a bug.
 # ---------------------------------------------------------------------------
-def test_resolve_mode_explicit():
-    method = MethodConfig(retrieval_mode="agentic")
-    assert resolve_retrieval_mode(method, n_lib_skills=0) == "agentic"
-    assert resolve_retrieval_mode(method, n_lib_skills=10_000) == "agentic"
+def test_resolve_mode_explicit_hook():
     method = MethodConfig(retrieval_mode="hook")
     assert resolve_retrieval_mode(method, n_lib_skills=0) == "hook"
+    assert resolve_retrieval_mode(method, n_lib_skills=10_000) == "hook"
 
 
-def test_resolve_mode_auto_below_threshold():
+def test_resolve_mode_legacy_agentic_folds_to_hook(caplog):
+    """retrieval_mode='agentic' is still accepted (back-compat) but
+    folds to 'hook' with a warning. n_lib_skills is now ignored."""
+    method = MethodConfig(retrieval_mode="agentic")
+    with caplog.at_level("WARNING", logger="skillq.runtime.container_wiring"):
+        assert resolve_retrieval_mode(method, n_lib_skills=0) == "hook"
+        assert resolve_retrieval_mode(method, n_lib_skills=10_000) == "hook"
+    assert any("agentic" in rec.message for rec in caplog.records), (
+        "folding 'agentic' must log a warning so operators see the demotion"
+    )
+
+
+def test_resolve_mode_legacy_auto_folds_to_hook(caplog):
+    """retrieval_mode='auto' is still accepted (back-compat) but
+    folds to 'hook' regardless of lib size."""
     method = MethodConfig(retrieval_mode="auto", library_size_threshold=100)
-    assert resolve_retrieval_mode(method, n_lib_skills=99) == "agentic"
-    assert resolve_retrieval_mode(method, n_lib_skills=0) == "agentic"
+    with caplog.at_level("WARNING", logger="skillq.runtime.container_wiring"):
+        assert resolve_retrieval_mode(method, n_lib_skills=99) == "hook"
+        assert resolve_retrieval_mode(method, n_lib_skills=0) == "hook"
+        assert resolve_retrieval_mode(method, n_lib_skills=100) == "hook"
+        assert resolve_retrieval_mode(method, n_lib_skills=10_000) == "hook"
+    assert any("auto" in rec.message for rec in caplog.records)
 
 
-def test_resolve_mode_auto_at_or_above_threshold():
-    method = MethodConfig(retrieval_mode="auto", library_size_threshold=100)
-    assert resolve_retrieval_mode(method, n_lib_skills=100) == "hook"
-    assert resolve_retrieval_mode(method, n_lib_skills=1000) == "hook"
+def test_resolve_mode_default_methodconfig_is_pull():
+    """Pinned: MethodConfig() with no overrides must default to 'pull'
+    (paper-intent since 2026-07-01). Method B + UserPromptSubmit
+    injects Top-K so the agent sees candidates proactively.
+
+    Note: ``resolve_retrieval_mode`` folds 'pull' back to 'hook' as
+    the wiring-selector (the actual env-var gate at
+    ``_wire_hook_trial`` reads ``method.retrieval_mode`` directly),
+    but the MethodConfig default has flipped from 'hook' to 'pull'.
+    """
+    method = MethodConfig()
+    assert method.retrieval_mode == "pull"
+    # resolve_retrieval_mode returns "hook" as the wiring-selector
+    # for both 'hook' and 'pull' configs (the pull-mode env vars
+    # are checked inline at the call sites).
+    assert resolve_retrieval_mode(method, n_lib_skills=0) == "hook"
+    assert resolve_retrieval_mode(method, n_lib_skills=10_000) == "hook"

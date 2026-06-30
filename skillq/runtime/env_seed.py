@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -153,8 +154,51 @@ def seed_agent_env(
         getattr(method, "hook_rank_timeout_sec", 5.0)
     )
 
-    # ---- Pull-mode top_k (only when method asks for it) ----
-    if getattr(method, "retrieval_mode", "hook") == "pull":
+    # ---- 2 paths that MUST be set before Job.create (Bug #2 2026-06-30) ----
+    #
+    # The legacy code deferred ``SKILLQ_CALLS_LOG_PATH`` /
+    # ``SKILLQ_USER_TASK`` to ``_wire_hook_trial`` (fired on
+    # ``on_trial_started`` post-Trial.__init__). But Harbor's
+    # Trial.__init__ snapshots ``config.env`` into
+    # ``agent._extra_env`` at agent-factory time — and the agent
+    # is constructed LAZILY per-trial in the worker. With
+    # ``n_concurrent_trials > 1`` and async scheduling, the
+    # mutation-then-snapshot window is non-deterministic: in some
+    # trials the late mutation wins (chess got the path), in
+    # others it loses (extract-elf got "" → hook silently skips
+    # writing the calls log → no L1 audit data).
+    #
+    # Fix: pre-seed BOTH env vars here, BEFORE ``Job.create``,
+    # using a library-scoped fixed path so ``on_trial_started``
+    # cannot race. The library-scoped path is a single file
+    # shared by all trials of the same run (``<library_root>/
+    # _calls_log/skillq_skill_calls.jsonl``). A JSONL is the right
+    # format because multiple processes can append concurrently
+    # without coordination — the hook already uses
+    # ``open(..., "a")`` which POSIX guarantees atomic for
+    # short writes.
+    #
+    # ``SKILLQ_USER_TASK`` is per-trial by nature, so we cannot
+    # pre-seed a meaningful value here. Instead the hook falls
+    # back to ``transcript_path`` (last-N assistant messages) when
+    # the env var is empty — that's the line at runtime/hook.py
+    # 356-357. So setting it to "" here is the same as the
+    # legacy default and continues to work via the fallback.
+    _library_root = Path(getattr(method, "library_root", "./.skillq_library")).resolve()
+    _calls_log_dir = _library_root / "_calls_log"
+    _calls_log_dir.mkdir(parents=True, exist_ok=True)
+    _calls_log_path = str(_calls_log_dir / "skillq_skill_calls.jsonl")
+    agent_cfg.env["SKILLQ_CALLS_LOG_PATH"] = _calls_log_path
+    agent_cfg.env["SKILLQ_USER_TASK"] = ""  # hooked via transcript_path fallback
+
+    # ---- Pull-mode top_k (default since 2026-07-01) ----
+    # retrieval_mode="pull" is the paper-intent default; in this
+    # mode the container-side hook needs SKILLQ_PULL_TOP_K to know
+    # how many top-K to inject per UserPromptSubmit. For "hook"
+    # mode we skip this — the gate fires only on Skill() tool_use
+    # and the hook's TOP_K is read from SKILLQ_HOOK_TOP_K (already
+    # seeded above).
+    if getattr(method, "retrieval_mode", "pull") == "pull":
         agent_cfg.env["SKILLQ_PULL_TOP_K"] = str(method.hook_pull_top_k)
 
     n_seeded = sum(1 for k in agent_cfg.env if k.startswith("SKILLQ_"))
