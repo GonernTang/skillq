@@ -71,15 +71,12 @@ def _patch_litellm_backends(monkeypatch) -> None:
 
     monkeypatch.setattr(bridge_mod, "LiteLLMEmbedder", _StubEmbedderShim)
     monkeypatch.setattr(bridge_mod, "LiteLLMAttributionBackend", _StubAttributionShim)
-    # 2026-06-25+ : semantic dedup calls sync_embed at the bridge
-    # boundary. Without a daemon reachable from the test env, that
-    # call hangs for ~30s. Stub it to None so dedup falls open and
-    # the test runs in <1s.
-    #
-    # 2026-06-29 (Step 6 migration): sync_embed moved from
-    # skillq.runtime.bridge to skillq.services.ranking_service and is
-    # imported by skillq.runtime.steps. Patch BOTH import locations.
-    monkeypatch.setattr(bridge_mod, "sync_embed", lambda **kwargs: None, raising=False)
+    # 2026-06-29 (Step 6 migration): sync_embed lives in
+    # skillq.services.ranking_service and is imported by
+    # skillq.runtime.steps. Patch the steps import path; the daemon
+    # is unreachable from this test env so the call would hang.
+    # (2026-06-30: the bridge_mod patch is no longer needed —
+    # bridge.py doesn't import sync_embed.)
     try:
         from skillq.runtime import steps as steps_mod
         monkeypatch.setattr(steps_mod, "sync_embed", lambda **kwargs: None)

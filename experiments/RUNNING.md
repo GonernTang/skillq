@@ -87,7 +87,6 @@ method:
   evolve:                                   # L4
     enabled: true
     extract_every_n_trials: 5
-    semantic_dedup_threshold: 0.85
   b_max: 1000
   seed_initial_q: 0.5
   reuse_q_table: true

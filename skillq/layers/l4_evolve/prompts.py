@@ -62,9 +62,6 @@ tasks can leverage this knowledge.
   3. If the trials are too heterogeneous to share a single procedure,
      decide: either pick the most reusable sub-pattern OR output
      ``status: skip`` with a clear rationale.
-  4. Do NOT create a skill that is redundant with one of the
-     available skills (list below) — in that case, output
-     ``status: skip`` with reason ``redundant``.
 
 ## Write location
 
@@ -72,17 +69,6 @@ tasks can leverage this knowledge.
   - Write your SKILL.md to: `{sandbox_dir}/create/<skill-name>/SKILL.md`
   - All file writes must be under `{sandbox_dir}/create/<skill-name>/`
   - DO NOT write outside `{sandbox_dir}`.
-
-## Available skills (avoid duplicates)
-
-The library already contains these skills. If your new skill would
-be redundant with one of these, prefer extending that one (which
-the bridge handles via near-miss edit) over creating a new one.
-If you do create a new one, ensure its scope does not overlap.
-
-```json
-{available_skills}
-```
 
 ## Aggregated trial records (chronological)
 
@@ -217,17 +203,6 @@ wins.
   - Write your SKILL.md to: `{sandbox_dir}/create/<skill-name>/SKILL.md`
   - All file writes must be under `{sandbox_dir}/create/<skill-name>/`
   - DO NOT write outside `{sandbox_dir}`.
-
-## Available skills (avoid duplicates)
-
-The library already contains these skills. If your new skill would
-be redundant with one of these, prefer extending that one (which
-the bridge handles via near-miss edit) over creating a new one.
-If you do create a new one, ensure its scope does not overlap.
-
-```json
-{available_skills}
-```
 
 ## Aggregated failure records (chronological)
 

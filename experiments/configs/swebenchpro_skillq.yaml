@@ -82,7 +82,6 @@ method:
   evolve:
     enabled: true
     extract_every_n_trials: 4
-    semantic_dedup_threshold: 0.85
     enforce_failure_skill_structure: true
 
   b_max: 1000

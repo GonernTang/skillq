@@ -4,6 +4,38 @@ All notable changes to `skillq` (the branch-style entrypoint that re-uses
 the upstream `skills_vote` lifecycle AND runs the SkillQ paper's
 four-layer method on top of Harbor) are documented here.
 
+> **2026-06-30 — Remove L4 semantic dedup + extract-prompt soft hint**
+>
+> The cosine-based semantic dedup at the L4 extract boundary (L1 Hard
+> Gate + L3 attribution routing + name-collision check is judged
+> sufficient — L1's `no_relevant_skills` already certifies "lib has
+> no skill for this task", so guarding the new-skill-vs-existing-skill
+> cosine is redundant). Accepts the risk of paraphrase-duplicate
+> skill accumulation over long runs.
+>
+> - `skillq/runtime/steps.py:_flush_buffer` — removed the 46-line
+>   semantic-dedup block; `extract_batch(...)` no longer passes
+>   `available_skill_names`.
+> - `skillq/config.py:MethodConfig` — removed `semantic_dedup_threshold`
+>   field + `EVOLVE_UNPACK` mapping entry.
+> - `skillq/layers/l4_evolve/prompts.py` — removed the
+>   "Available skills (avoid duplicates)" section and the
+>   "{available_skills}" placeholder from both success and failure
+>   extract prompts; success prompt step 4 ("Do NOT create a skill
+>   that is redundant…") removed as well.
+> - `skillq/layers/l4_evolve/create.py:SkillExtractor.extract_batch` —
+>   removed the `available_skill_names` parameter and the
+>   `available_skills` format-kwarg.
+> - YAML configs (`tb2_skillq_full/smoke/e2e`, `swebenchpro_skillq`):
+>   dropped `semantic_dedup_threshold` line.
+> - Tests: removed `tests/test_semantic_dedup.py` (whole file, 9 tests
+>   + 2 helpers) and 5 `semantic_dedup_threshold` tests from
+>   `tests/test_method_config_new_fields.py`; cleaned the obsolete
+>   `sync_embed` comment block in `tests/test_bridge_create_vs_edit_split.py`.
+>
+> Not in scope: L3 attribution prompt's `{available_skills}` placeholder
+> (path-mapping JSON, separate mechanism).
+
 > **2026-06-29 — Dead-code cleanup + docstring rewrite (layers/runtime refactor follow-up)**
 >
 > Follow-up to the uncommitted `paper_mode/→skillq_runtime/→layers/+runtime/` refactor:

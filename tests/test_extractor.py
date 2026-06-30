@@ -39,7 +39,6 @@ async def _call_extractor_batch(
     knowledge: str,
     intent_hash: int,
     sandbox_root: Path,
-    available_skill_names: list[str] | None = None,
 ):
     """Wrap the (task, knowledge) record into the one-trial list
     shape :meth:`SkillExtractor.extract_batch` expects."""
@@ -51,7 +50,6 @@ async def _call_extractor_batch(
                 "intent_hash": intent_hash,
             }
         ],
-        available_skill_names=available_skill_names,
         sandbox_root=sandbox_root,
         aggregated_intent_hash=intent_hash,
     )

@@ -51,7 +51,6 @@ RETRIEVAL_UNPACK: dict[str, str] = {
 EVOLVE_UNPACK: dict[str, str] = {
     "enabled": "enable_auto_extract",
     "extract_every_n_trials": "extract_every_n_trials",
-    "semantic_dedup_threshold": "semantic_dedup_threshold",
     "enforce_failure_skill_structure": "enforce_failure_skill_structure",
 }
 
@@ -136,24 +135,6 @@ class MethodConfig(BaseModel):
             "requirement). The prompt claims 'will be rejected by "
             "the bridge' — this flag is the enforcement. Set to "
             "False to accept any body within the token-count guard."
-        ),
-    )
-    semantic_dedup_threshold: float = Field(
-        default=0.85,
-        ge=0.0,
-        le=1.0,
-        description=(
-            "Cosine threshold for semantic dedup at the L4 extract "
-            "boundary: a new skill's description embedding is "
-            "compared against every existing skill's cached "
-            "embedding; if max cosine ≥ this threshold, the new "
-            "skill is skipped (treated as a duplicate even if its "
-            "kebab-case name differs from the existing skill). "
-            "Set to 0.0 to disable semantic dedup (the name-based "
-            "dedup at bridge.py:_flush_buffer still runs as a "
-            "fast-path). 0.85 is the conventional paraphrase-"
-            "detection threshold; raise to be stricter, lower to "
-            "allow more near-duplicates in."
         ),
     )
 

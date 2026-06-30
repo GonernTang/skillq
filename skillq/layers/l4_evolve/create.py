@@ -94,7 +94,6 @@ class SkillExtractor:
         self,
         *,
         trials: list[dict[str, Any]],
-        available_skill_names: list[str] | None = None,
         sandbox_root: Path | None = None,
         aggregated_intent_hash: int = 0,
     ) -> Skill | None:
@@ -109,6 +108,11 @@ class SkillExtractor:
         synthesize), but in our own wording and with skillq-method
         constraints. When ``prompt_mode="failure"``, the prompt is
         reframed for the Rule 5 (failure → new skill) path.
+
+        2026-06-30: ``available_skill_names`` removed — the L4
+        extract prompt no longer injects the library's skill-id list
+        (the cosine-based semantic dedup that depended on this is
+        gone). Name-collision dedup at the bridge boundary remains.
         """
         if not trials:
             return None
@@ -147,7 +151,6 @@ class SkillExtractor:
                 "n_trials": len(trials),
                 "aggregated_trials": aggregated,
                 "representative_task": representative_task,
-                "available_skills": json.dumps(available_skill_names or []),
             },
             task=representative_task,
             intent_hash=aggregated_intent_hash,

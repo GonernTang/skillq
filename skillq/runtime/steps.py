@@ -613,14 +613,9 @@ async def _flush_buffer(ctx: "TrialContext", result: "StepResult") -> None:
     Mirrors the legacy ``_flush_buffer`` closure inside
     ``attach_paper_registers``. Records are grouped by ``mode``
     so each ``claude --print`` invocation gets the right prompt
-    (success vs failure).
-
-    Semantic dedup: when
-    ``method.semantic_dedup_threshold > 0.0`` and the lib is
-    non-empty, the new skill's description is embedded via the
-    host embed service and compared (cosine) against every
-    existing skill's embedding. Above-threshold matches skip
-    the lib.add.
+    (success vs failure). L1 Hard Gate + L3 attribution routing
+    + name-collision check below are the only dedup guards
+    (2026-06-30: removed cosine-based semantic dedup).
     """
     services = ctx.services
     method = services.method
@@ -632,9 +627,6 @@ async def _flush_buffer(ctx: "TrialContext", result: "StepResult") -> None:
             mode_extractor = _extractor_for_mode(services.extractor, mode)
             new_skill = await mode_extractor.extract_batch(
                 trials=batch,
-                available_skill_names=[
-                    s.skill_id for s in services.lib.skills.values()
-                ],
             )
         except Exception:
             logger.exception(
@@ -650,52 +642,6 @@ async def _flush_buffer(ctx: "TrialContext", result: "StepResult") -> None:
                 len(batch),
             )
             continue
-        # Semantic dedup.
-        if (
-            services.emb_cache is not None
-            and method.semantic_dedup_threshold > 0.0
-            and services.lib.skills
-        ):
-            new_desc = _description_of(new_skill.body)
-            if new_desc:
-                phi_new: list[float] | None = None
-                try:
-                    phi_new = sync_embed(
-                        text=new_desc,
-                        host=method.hook_embedding_service_host or "127.0.0.1",
-                        port=method.hook_embedding_service_port,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "semantic dedup embed failed for %s; "
-                        "falling open to name-based dedup: %s",
-                        new_skill.skill_id,
-                        exc,
-                    )
-                    phi_new = None
-                if phi_new is not None:
-                    best_sid: str | None = None
-                    best_sim = -1.0
-                    for existing_sid in services.lib.skills:
-                        phi_s = services.emb_cache.get(existing_sid)
-                        if phi_s is None:
-                            continue
-                        sim = _cosine(phi_new, phi_s.tolist())
-                        if sim > best_sim:
-                            best_sid, best_sim = existing_sid, sim
-                    if (
-                        best_sid is not None
-                        and best_sim >= method.semantic_dedup_threshold
-                    ):
-                        logger.warning(
-                            "semantic dedup: %s is duplicate of %s "
-                            "(cosine=%.3f >= %.3f); skipping lib.add.",
-                            new_skill.skill_id,
-                            best_sid,
-                            best_sim,
-                            method.semantic_dedup_threshold,
-                        )
-                        continue
         if new_skill.skill_id in services.lib:
             logger.warning(
                 "extract_batch produced skill %s which is already in lib; "
