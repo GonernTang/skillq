@@ -1,0 +1,90 @@
+# TB 2.0 FROM-SCRATCH run — zero seed skills, all 89 tasks.
+#
+# First run: the 89 trials themselves generate the seed library
+# via L4 CREATE (each successful trial with no matching skill
+# triggers L4 to create one). The empty library bootstraps
+# organically — a fresh run with extract_every_n_trials=1 for
+# per-trial semantics.
+#
+# For subsequent runs, seed_skills_dir can point back to the
+# skills generated here to build on an existing library.
+#
+# Model: deepseek-v4-flash (ANTHROPIC_MODEL from .env)
+#   89 tasks × 1 attempt, 8 concurrent, 1h/trial ceiling
+#   extract_every_n_trials=1, delete=false (preserve images)
+#   Wall-clock estimate: 6-9h
+#
+# Run:
+#   uv run python experiments/run/run_benchmark.py \
+#     --benchmark tb2 --variant fromscratch
+
+jobs_dir: output
+job_name: tb2_skillq_fromscratch__${now:%Y-%m-%d__%H-%M-%S}
+n_attempts: 1
+n_concurrent_trials: 4    # conservative: avoid OOM from resource-heavy tasks
+quiet: false
+retry:
+  max_retries: 0
+  exclude_exceptions:
+    - VerifierTimeoutError
+    - RewardFileNotFoundError
+    - RewardFileEmptyError
+    - VerifierOutputParseError
+agent_timeout_multiplier: 1.0
+environment:
+  type: docker
+  force_build: false
+  delete: false
+  mounts_json:
+    - type: bind
+      source: /home/gonern/workspace/skillq/skills
+      target: /skills
+      read_only: true
+agents:
+  - import_path: skillq.runtime.agent:SkillQClaudeCodeAgent
+    model_name: ${oc.env:ANTHROPIC_MODEL,anthropic/claude-sonnet-4-5}
+    override_timeout_sec: 3600.0
+    kwargs:
+      reasoning_effort: high
+datasets:
+  # All 89 tasks — no task_names filter
+  - path: ${oc.env:SkillQ_INPUT_ROOT,/home/gonern/workspace/skillq/input}/terminal-bench
+
+method:
+  retrieval_mode: pull
+
+  library_root: ${oc.env:SkillQ_OUTPUT_ROOT,/home/gonern/workspace/skillq/output}/${job_name}/.skillq_library
+  state_path:   ${oc.env:SkillQ_OUTPUT_ROOT,/home/gonern/workspace/skillq/output}/${job_name}/.skillq_library/.state/method_state.json
+  emb_cache_path: ${oc.env:SkillQ_EMB_CACHE_PATH,/home/gonern/workspace/skillq/skills/.skillq_state/emb_cache.json}
+
+  # ZERO seed skills — the empty skills/ dir
+  seed_skills_dir: /home/gonern/workspace/skillq/skills
+
+  retrieval:
+    top_k: 3
+    score_mode: multiplicative
+    beta: 0.5
+    gamma: 0.2
+    sim_gate_min_score: 0.5
+    sim_gate_floor: 0
+    c_ucb: 0.5
+    lambda: 0.5
+
+  attribution_model: anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-flash}
+  editor_model:      anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-flash}
+  embedder_model:    openai/${oc.env:EMBEDDING_MODEL,text-embedding-v4}
+  embedder_dim: 1024
+
+  evolve:
+    enabled: true
+    extract_every_n_trials: 1
+    enforce_failure_skill_structure: true
+
+  b_max: 1000
+  seed_initial_q: 0.5
+
+  # Fresh start: no Q-table, no embedding cache to reuse
+  reuse_q_table: false
+  reuse_embedding_cache: false
+
+  runtime: new

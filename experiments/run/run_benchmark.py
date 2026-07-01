@@ -76,12 +76,10 @@ import skillq._resolvers  # noqa: F401  (auto-registers OmegaConf resolvers)
 # ``skillq paper run``. New (benchmark, variant) cells require a
 # new file under ``experiments/configs/``.
 BENCHMARK_VARIANTS: dict[tuple[str, str], str] = {
-    ("tb2", "smoke"):            "experiments/configs/tb2_skillq_smoke.yaml",
-    ("tb2", "smoke_converted"):  "experiments/configs/tb2_skillq_smoke_converted.yaml",
     ("tb2", "small10"):         "experiments/configs/tb2_skillq_small10.yaml",
     ("tb2", "small10_v2"):      "experiments/configs/tb2_skillq_small10_v2.yaml",
-    ("tb2", "e2e"):              "experiments/configs/tb2_skillq_e2e.yaml",
     ("tb2", "full"):             "experiments/configs/tb2_skillq_full.yaml",
+    ("tb2", "fromscratch"):     "experiments/configs/tb2_skillq_fromscratch.yaml",
     ("swebenchpro", "full"):     "experiments/configs/swebenchpro_skillq.yaml",
 }
 
