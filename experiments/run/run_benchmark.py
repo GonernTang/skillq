@@ -76,10 +76,13 @@ import skillq._resolvers  # noqa: F401  (auto-registers OmegaConf resolvers)
 # ``skillq paper run``. New (benchmark, variant) cells require a
 # new file under ``experiments/configs/``.
 BENCHMARK_VARIANTS: dict[tuple[str, str], str] = {
-    ("tb2", "smoke"):         "experiments/configs/tb2_skillq_smoke.yaml",
-    ("tb2", "e2e"):           "experiments/configs/tb2_skillq_e2e.yaml",
-    ("tb2", "full"):          "experiments/configs/tb2_skillq_full.yaml",
-    ("swebenchpro", "full"):  "experiments/configs/swebenchpro_skillq.yaml",
+    ("tb2", "smoke"):            "experiments/configs/tb2_skillq_smoke.yaml",
+    ("tb2", "smoke_converted"):  "experiments/configs/tb2_skillq_smoke_converted.yaml",
+    ("tb2", "small10"):         "experiments/configs/tb2_skillq_small10.yaml",
+    ("tb2", "small10_v2"):      "experiments/configs/tb2_skillq_small10_v2.yaml",
+    ("tb2", "e2e"):              "experiments/configs/tb2_skillq_e2e.yaml",
+    ("tb2", "full"):             "experiments/configs/tb2_skillq_full.yaml",
+    ("swebenchpro", "full"):     "experiments/configs/swebenchpro_skillq.yaml",
 }
 
 
@@ -167,11 +170,18 @@ def write_method_yaml(
 
     Returns the post-merge method dict (useful for --dry-run
     printing).
+
+    ``--fresh-start`` only flips ``reuse_q_table``. ``reuse_embedding_cache``
+    is left untouched: emb_cache entries are pure content-derived
+    vectors keyed by skill_id (see ``VectorTable`` in
+    ``shared/embeddings.py``), so they're invariant across runs as
+    long as the embedder model and skill bodies are stable — there's
+    no semantic reason to invalidate them on fresh-start, only a small
+    perf cost on the next trial's pre-embed pass.
     """
     merged = deep_merge(method_cfg, overrides)
     if fresh_start:
         merged["reuse_q_table"] = False
-        merged["reuse_embedding_cache"] = False
     if runtime != "new":
         merged["runtime"] = runtime
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -217,9 +227,11 @@ def main(argv: list[str] | None = None) -> int:
         "--fresh-start",
         action="store_true",
         help=(
-            "Set reuse_q_table=false AND reuse_embedding_cache=false on "
-            "the method config (replaces the deleted "
-            "method_tb2_skillq_fresh_start.yaml)."
+            "Set reuse_q_table=false on the method config — Q-table "
+            "starts at seed_initial_q for every skill (no inherited "
+            "history). emb_cache is NOT touched: it's content-derived "
+            "and invariant across runs. (Replaces the deleted "
+            "method_tb2_skillq_fresh_start.yaml.)"
         ),
     )
     parser.add_argument(

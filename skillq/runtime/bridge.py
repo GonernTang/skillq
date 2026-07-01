@@ -223,6 +223,7 @@ def build_method_services(
         SkillExtractor(
             claude_cli=method.extractor_claude_cli,
             timeout_sec=method.extract_timeout_sec,
+            model=method.extractor_model,
         )
         if method.enable_auto_extract
         else None

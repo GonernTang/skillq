@@ -178,6 +178,28 @@ class MethodConfig(BaseModel):
     embedder_model: str = "openai/text-embedding-3-small"
     embedder_dim: int = 1536
     extractor_claude_cli: str = "claude"  # the CLI binary invoked for extract
+    extractor_model: str = Field(
+        default="",
+        description=(
+            "Layer 4 (Extract) LLM model identifier passed as --model to "
+            "the claude CLI extract subprocess. When empty, falls back to "
+            "attribution_model via the _fill_extractor_model_default "
+            "validator."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _fill_extractor_model_default(self) -> "MethodConfig":
+        """Fill extractor_model from attribution_model when empty.
+
+        SkillExtractor historically had no model= param (gap 5/5),
+        defaulting to the host's claude CLI default. This ensures
+        L4 extract uses the same model as L3 attribution by default,
+        while allowing independent tuning when extractor_model is set.
+        """
+        if not self.extractor_model:
+            object.__setattr__(self, "extractor_model", self.attribution_model)
+        return self
 
     # === Per-subtask hook (refactor 2026-06-11) ===
     # The PreToolUse hook runs inside the agent container, fires

@@ -102,7 +102,24 @@ r_task = {r_task}
       the library is missing a relevant skill; bridge will
       create a guard-rail skill from this failure attribution
     - ``fail_env_issue``: environment / external / network /
-      package error — nothing actionable for the skill library
+      package error — nothing actionable for the skill library.
+      ONLY use this enum when ALL of the following hold:
+        (a) The agent could not complete the task because of an
+            infrastructure-level failure (container OOM, network
+            timeout, missing system dependency, Docker pull
+            failure, disk full), OR the verifier itself could not
+            run (VerifierTimeoutError, RewardFileNotFoundError).
+        (b) The failure is NOT explainable by the agent's own
+            actions — the agent ran tools, read files, and wrote
+            output, but the infrastructure or verifier failed
+            independently.
+      If the agent called a Skill(), ran tools, read/wrote files,
+      and the verifier returned 0.0 because the OUTPUT was
+      incorrect, this is NOT fail_env_issue — it is either
+      failure_skill_used (a skill was used and the trial still
+      failed) or failure_skill_not_used (no relevant skill was
+      available). DO NOT classify a skill-capability gap as
+      fail_env_issue.
 - ``knowledge_to_extract`` MUST be non-empty when r_task = 1 (a
   reusable procedure is the whole point of this attribution step).
   When r_task = 0, also provide a non-empty knowledge string
@@ -125,9 +142,41 @@ A skill was *viewed* if and only if the trace contains a `Read`
 tool call whose target path is `<skills_root>/<skill_name>/SKILL.md`
 (or a file inside that skill directory).
 
-A skill was *used* if the assistant's behaviour after viewing it
-matched the procedure documented in that skill (i.e., the agent
-followed the skill's workflow, not its own exploration).
+A skill was *used* if **any** of the following holds:
+
+- After viewing the SKILL.md, the assistant's subsequent actions
+  applied content drawn from that skill — steps, caveats,
+  commands, heuristics, or checklists — even partially or
+  adapted to the task. The skill *materially shaped* the path;
+  step-by-step adherence is NOT required.
+- The PreToolUse hook force-injected the skill body into the
+  agent's context (the agent called `Skill(<id>)` and the hook
+  returned `allow`) AND the agent's subsequent actions did not
+  visibly reject or contradict that content.
+
+A skill is **NOT** used only when:
+
+- The agent never called `Skill(<id>)` with this skill's id, OR
+- The agent called it, but the hook denied the call (the body
+  was never shown), OR
+- The agent called it AND was shown the body AND visibly continued
+  with wholly unrelated exploration, never applying any content
+  from the skill.
+
+**Critical success-path disambiguation.** When `r_task = 1`:
+
+- If the agent Read/used ANY skill **present in the library**
+  (i.e., it appears in `available_skills`) and the trial
+  succeeded, classify it as `success_skill_used` — the library
+  already covered this task, nothing to harvest.
+- Reserve `success_no_skill_seen` for the case where the agent
+  succeeded WITHOUT any library skill contributing — either no
+  skill was above the similarity gate (the L1 force-use hook
+  gave the agent nothing), or the agent used its own exploration
+  without touching any skill's content.
+- **Do NOT** classify as `success_no_skill_seen` just because
+  the agent adapted the skill rather than following it verbatim.
+  Partial/adapted use still counts as *used*.
 
 ## Attribution enum
 

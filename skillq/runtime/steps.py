@@ -54,10 +54,11 @@ import json
 import logging
 import time
 from collections import defaultdict
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from skillq.layers.l3_attribution.models import Attribution
+from skillq.layers.l3_attribution.models import Attribution, TrialAttribution
 from skillq.services.ranking_service import sync_embed
 from skillq.shared.backends.litellm import LiteLLMEmbedder
 from skillq.shared.embeddings import _description_of, sync_lib_to_vector_table
@@ -175,8 +176,14 @@ async def step_q_update(ctx: "TrialContext", result: "StepResult") -> None:
     emb_cache = ctx.services.emb_cache
 
     # 1. Read the PreToolUse hook log.
+    #    2026-07-01 (Bug #51/#52 fix): the per-trial calls log now
+    #    lives at ``<trial_dir>/agent/sessions/_calls_log/skillq_skill_calls.jsonl``
+    #    (the bind-mounted RW dir from
+    #    :func:`skillq.runtime.container_wiring._wire_hook_trial`).
+    #    The old library-scoped path is gone — 4 concurrent trials
+    #    sharing it caused write races / empty files.
     calls_log = _read_skill_calls_log(
-        ctx.trial_dir / "agent" / "sessions" / "skillq_skill_calls.jsonl"
+        ctx.trial_dir / "agent" / "sessions" / "_calls_log" / "skillq_skill_calls.jsonl"
     )
     if not calls_log:
         calls_log = _extract_skill_calls_from_session(ctx.trial_dir)
@@ -314,12 +321,25 @@ async def step_attribute(ctx: "TrialContext", result: "StepResult") -> None:
     Falls back to a stub verdict when the trace is missing
     (the analyzer handles this internally).
     """
-    attribution = ctx.services.attribution_analyzer.analyze(
-        task=ctx.intent_text,
-        trial_dir=ctx.trial_dir,
-        skills_root=_find_skills_dir(ctx),
-        r_task=ctx.r_task,
-    )
+    try:
+        attribution = ctx.services.attribution_analyzer.analyze(
+            task=ctx.intent_text,
+            trial_dir=ctx.trial_dir,
+            skills_root=_find_skills_dir(ctx),
+            r_task=ctx.r_task,
+        )
+    except Exception:
+        logger.exception(
+            "attribution call failed for trial %s; using fallback verdict",
+            ctx.trial_id,
+        )
+        attribution = TrialAttribution(
+            overall_attribution=(
+                Attribution.SUCCESS_NO_SKILL_SEEN if ctx.r_task
+                else Attribution.FAILURE_SKILL_USED
+            ),
+            overall_rationale="[attribution-fallback] model call failed",
+        )
     result.attribution = attribution
 
 
@@ -468,6 +488,52 @@ async def step_incremental_edit(ctx: "TrialContext", result: "StepResult") -> No
     if ctx.r_task or not services.lib.skills:
         return
     attribution = result.attribution
+
+    # Fix B (2026-07-01, small10 gap 3): cross-check fail_env_issue
+    # against the calls_log. When the LLM misclassifies a skill-
+    # capability gap as fail_env_issue, the calls_log provides
+    # objective evidence that a lib skill was actually called and
+    # approved — which means the failure IS skill-related and
+    # should trigger L3 edit.
+    if (
+        attribution is not None
+        and attribution.overall_attribution == Attribution.FAIL_ENV_ISSUE
+    ):
+        _log_path = (
+            ctx.trial_dir
+            / "agent"
+            / "sessions"
+            / "_calls_log"
+            / "skillq_skill_calls.jsonl"
+        )
+        _calls = _read_skill_calls_log(_log_path)
+        if not _calls:
+            _calls = _extract_skill_calls_from_session(ctx.trial_dir)
+        _approved_lib_calls = [
+            c for c in _calls
+            if c.skill_id and not c.denied and c.skill_id in services.lib
+        ]
+        if _approved_lib_calls:
+            logger.warning(
+                "l3_edit_clamp_env_to_skill_used: trial=%s LLM returned "
+                "fail_env_issue but calls_log shows %d approved "
+                "Skill() call(s) against lib skill(s) (first=%s) — "
+                "clamped to failure_skill_used.",
+                ctx.trial_id,
+                len(_approved_lib_calls),
+                _approved_lib_calls[0].skill_id,
+            )
+            attribution = attribution.model_copy(update={
+                "overall_attribution": Attribution.FAILURE_SKILL_USED,
+                "overall_rationale": (
+                    f"[env-issue-clamp] r_task=0 and Skill was "
+                    f"called but LLM returned fail_env_issue; "
+                    f"coerced to failure_skill_used. "
+                    f"{attribution.overall_rationale}"
+                ),
+            })
+            result.attribution = attribution
+
     if (
         attribution is None
         or attribution.overall_attribution != Attribution.FAILURE_SKILL_USED
@@ -593,9 +659,63 @@ async def step_dispatch_evolve(ctx: "TrialContext", result: "StepResult") -> Non
     if attribution is None or extractor is None:
         return
 
+    # Fix 2 (2026-07-01, small10 gap 2): cross-check the "no skill used"
+    # verdict against the container's PreToolUse calls_log. The LLM
+    # occasionally misclassifies *_NO_SKILL_SEEN / *_SKILL_NOT_USED when
+    # the agent actually called and used a skill present in the library.
+    # calls_log is objective evidence — when the LLM and calls_log
+    # disagree on "was a lib skill called+approved?" we trust calls_log
+    # and skip L4 (no harvest, no buffer add).
+    if attribution.overall_attribution in (
+        Attribution.SUCCESS_NO_SKILL_SEEN,
+        Attribution.FAILURE_SKILL_NOT_USED,
+    ):
+        _log_path = (
+            ctx.trial_dir
+            / "agent"
+            / "sessions"
+            / "_calls_log"
+            / "skillq_skill_calls.jsonl"
+        )
+        _calls = _read_skill_calls_log(_log_path)
+        if not _calls:
+            _calls = _extract_skill_calls_from_session(ctx.trial_dir)
+        _approved_lib_calls = [
+            c for c in _calls
+            if c.skill_id and not c.denied and c.skill_id in services.lib
+        ]
+        if _approved_lib_calls:
+            logger.warning(
+                "l4_dispatch_enum_override: trial=%s enum=%s but calls_log "
+                "shows %d approved Skill() call(s) against lib skill(s) "
+                "(first=%s) — verdict contradicted, skipping L4.",
+                ctx.trial_id,
+                attribution.overall_attribution.value,
+                len(_approved_lib_calls),
+                _approved_lib_calls[0].skill_id,
+            )
+            return
+
     knowledge = attribution.knowledge_to_extract.strip()
     gap_description = attribution.library_gap_skill_description.strip()
     triggered = False
+
+    if not knowledge:
+        # Fix C (2026-07-01, small10 gap 2 audit): enum says "harvest"
+        # (SUCCESS_NO_SKILL_SEEN / FAILURE_SKILL_NOT_USED) but LLM gave
+        # no procedural knowledge → silent skip previously, now visible
+        # via warning so audit can see the misclassification.
+        if attribution.overall_attribution in (
+            Attribution.SUCCESS_NO_SKILL_SEEN,
+            Attribution.FAILURE_SKILL_NOT_USED,
+        ):
+            logger.warning(
+                "l4_dispatch_skipped_empty_knowledge: trial=%s enum=%s "
+                "(knowledge_to_extract empty); no seed for the buffer.",
+                ctx.trial_id,
+                attribution.overall_attribution.value,
+            )
+        return
 
     if knowledge:
         if (
@@ -635,6 +755,40 @@ async def step_dispatch_evolve(ctx: "TrialContext", result: "StepResult") -> Non
         await _flush_buffer(ctx, result)
 
 
+def _write_extract_failure(
+    trial_dir: Path,
+    trial_id: str,
+    mode: str,
+    n_records: int,
+    reason: str,
+) -> None:
+    """Write an extract-failure record to the trial's audit log.
+
+    Fix C (2026-07-01, small10 gap 4): previously extract_batch
+    failures only appeared in the host logger — invisible in
+    trial_dir. Now each failure appends a JSONL line to
+    ``<trial_dir>/skillq_state/extract_failures.jsonl`` so the
+    audit trail is self-contained per trial.
+    """
+    state_dir = trial_dir / "skillq_state"
+    try:
+        state_dir.mkdir(parents=True, exist_ok=True)
+        with open(state_dir / "extract_failures.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": time.time(),
+                "trial_id": trial_id,
+                "mode": mode,
+                "n_records": n_records,
+                "reason": reason,
+            }) + "\n")
+    except OSError:
+        logger.warning(
+            "Failed to write extract_failures.jsonl for trial %s",
+            trial_id,
+            exc_info=True,
+        )
+
+
 async def _flush_buffer(ctx: "TrialContext", result: "StepResult") -> None:
     """Drain the extract buffer and ingest the resulting skill(s).
 
@@ -661,6 +815,10 @@ async def _flush_buffer(ctx: "TrialContext", result: "StepResult") -> None:
                 "extract_batch subprocess crashed (mode=%s); batch discarded.",
                 mode,
             )
+            _write_extract_failure(
+                ctx.trial_dir, ctx.trial_id, mode,
+                len(batch), "subprocess crashed",
+            )
             continue
         if new_skill is None:
             logger.info(
@@ -669,14 +827,31 @@ async def _flush_buffer(ctx: "TrialContext", result: "StepResult") -> None:
                 mode,
                 len(batch),
             )
-            continue
-        if new_skill.skill_id in services.lib:
-            logger.warning(
-                "extract_batch produced skill %s which is already in lib; "
-                "skipping lib.add.",
-                new_skill.skill_id,
+            _write_extract_failure(
+                ctx.trial_dir, ctx.trial_id, mode,
+                len(batch), "extract_batch returned None",
             )
             continue
+        if new_skill.skill_id in services.lib:
+            # -- name-collision resolution (Fix A, 2026-07-01) --
+            # Instead of discarding the entire batch (previous behaviour),
+            # version the skill name until we find a free slot.
+            # Example: meeting-scheduler → meeting-scheduler__v2
+            #
+            # This preserves the new skill's body (distilled from fresh
+            # trial experience) even when the LLM picks a name that
+            # collides with a seed skill.
+            new_id = f"{new_skill.skill_id}__v2"
+            suffix = 2
+            while new_id in services.lib:
+                suffix += 1
+                new_id = f"{new_skill.skill_id}__v{suffix}"
+            logger.info(
+                "extract_batch produced skill name %s (collision); renamed to %s.",
+                new_skill.skill_id,
+                new_id,
+            )
+            new_skill = replace(new_skill, skill_id=new_id)
         new_skill.admission_exempt = True
         services.lib.add(new_skill)
         mirror_skill_to_host_dir(new_skill, method.seed_skills_dir)

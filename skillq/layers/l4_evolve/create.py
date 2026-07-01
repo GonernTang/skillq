@@ -199,6 +199,13 @@ class SkillExtractor:
             f"{sandbox}/create/<your-skill-name>/SKILL.md.",
         ]
 
+        logger.info(
+            "extract_batch invoking: claude_cli=%s model=%s timeout=%ss",
+            self.claude_cli,
+            self.model or "(claude CLI default)",
+            self.timeout_sec,
+        )
+
         try:
             proc = await asyncio.to_thread(
                 subprocess.run,
