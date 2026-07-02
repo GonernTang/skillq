@@ -48,6 +48,13 @@ making the PreToolUse hook a silent fail-open.
   No Q-table mutation, no calls-log entry.
 - Anything else: pass through.
 
+2026-07-01 (Bug #51/#52 fix): per-trial state (the agent's task
+text + the per-trial calls log path) is read from the
+bind-mounted ``/logs/agent/sessions/settings.json``'s ``"skillq"``
+block via :func:`_load_skillq_settings`, NOT from env vars. Env
+vars raced against Harbor's per-trial ``agent._extra_env``
+snapshot under ``n_concurrent_trials >= 2``.
+
 **Container-safe invariants** (asserted at module-load time):
 
 1. ``SKILLQ_RANK_ENDPOINT`` is set (no default; we fail loud).
@@ -103,9 +110,69 @@ RANK_TIMEOUT_SEC = float(
 PULL_TOP_K = int(
     os.environ.get("SKILLQ_PULL_TOP_K", os.environ.get("SKILLQ_HOOK_TOP_K", "3"))
 )
-# Calls log path. Hidden under Harbor's auto-injected agent_dir
-# bind mount (no extra mount needed).
+# Calls log path + per-trial user_task are now read from the
+# bind-mounted ``/logs/agent/sessions/settings.json`` (the
+# ``"skillq"`` block) via :func:`_load_skillq_settings`. See
+# the module docstring's "2026-07-01 Bug #51/#52 fix" note.
+#
+# Back-compat shim: keep ``CALLS_LOG_PATH`` as a module-level
+# reference to the *initial* env-var value (empty by default) so
+# any direct import still gets a string. New code must use
+# :func:`_calls_log_path` instead.
 CALLS_LOG_PATH = os.environ.get("SKILLQ_CALLS_LOG_PATH", "")
+# Module-level cache so we only read the settings file once per
+# hook process (the hook is short-lived: one ProcessPool worker
+# per request, so caching per-process is fine and avoids the
+# disk round-trip on every Skill() call).
+_SETTINGS_CACHE: dict[str, Any] | None = None
+# Container path of the bind-mounted settings.json. Set by the
+# host's :func:`skillq.runtime.container_wiring._settings_json_path`
+# via ``settings.json`` -> /logs/agent/sessions/settings.json.
+_SETTINGS_PATH = "/logs/agent/sessions/settings.json"
+
+
+# ---------------------------------------------------------------------------
+# Per-trial settings.json reader (Bug #51/#52 fix)
+# ---------------------------------------------------------------------------
+def _load_skillq_settings() -> dict[str, Any]:
+    """Read the per-trial ``skillq`` block from the bind-mounted settings.json.
+
+    Cached after first successful read — the hook is short-lived
+    (one process per Skill() / UserPromptSubmit request) so per-
+    process caching is sufficient and avoids a disk round-trip on
+    every Skill() call.
+
+    Returns ``{}`` on any read failure (missing file, malformed
+    JSON, schema mismatch). Empty dict means "no per-trial state
+    available" and the hook falls back to env vars / transcript-
+    tail reads.
+    """
+    global _SETTINGS_CACHE
+    if _SETTINGS_CACHE is not None:
+        return _SETTINGS_CACHE
+    try:
+        with open(_SETTINGS_PATH, "r", encoding="utf-8") as f:
+            data = json.loads(f.read())
+    except (OSError, json.JSONDecodeError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    block = data.get("skillq", {})
+    if not isinstance(block, dict):
+        block = {}
+    _SETTINGS_CACHE = block
+    return _SETTINGS_CACHE
+
+
+def _user_task() -> str:
+    """Per-trial task intent (replaces the racy ``SKILLQ_USER_TASK`` env var)."""
+    return str(_load_skillq_settings().get("user_task", "") or "")
+
+
+def _calls_log_path() -> str:
+    """Per-trial calls-log path (replaces the racy ``SKILLQ_CALLS_LOG_PATH`` env var)."""
+    p = str(_load_skillq_settings().get("calls_log_path", "") or "")
+    return p or CALLS_LOG_PATH  # legacy fallback to env var
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +358,7 @@ def _format_pull_context(top_k: list[dict[str, Any]]) -> str:
         else:
             lines.append(f"  - {sid} (score={score:.3f})")
     lines.append(
-        "\nYou can call any of these via the Skill tool: "
+        "\nYou MUST call Skill() with one of the above skills: "
         'Skill(skill="<skill_id>")'
     )
     return "\n".join(lines)
@@ -344,7 +411,11 @@ def _handle_pretooluse_skill(payload: dict[str, Any]) -> int:
     """
     tool_input = payload.get("tool_input", {}) or {}
     requested = tool_input.get("skill", "")
-    user_task_hint = os.environ.get("SKILLQ_USER_TASK", "")
+    # 2026-07-01 (Bug #51/#52 fix): per-trial user_task comes from
+    # the bind-mounted settings.json's "skillq" block, not from
+    # the (racy) env var. Falls back to the env var / transcript
+    # tail when the settings file is missing or malformed.
+    user_task_hint = _user_task() or os.environ.get("SKILLQ_USER_TASK", "")
     transcript_path = payload.get("transcript_path") or os.environ.get(
         "SKILLQ_TRANSCRIPT"
     )
@@ -366,7 +437,7 @@ def _handle_pretooluse_skill(payload: dict[str, Any]) -> int:
         # Fail-open allow. Write a debug record so users can see
         # what happened (without aborting the hook).
         _append_jsonl(
-            CALLS_LOG_PATH,
+            _calls_log_path(),
             {
                 "ts": time.time(),
                 "requested": requested,
@@ -397,7 +468,7 @@ def _handle_pretooluse_skill(payload: dict[str, Any]) -> int:
         decision = _make_deny(reason)
 
     _append_jsonl(
-        CALLS_LOG_PATH,
+        _calls_log_path(),
         {
             "ts": time.time(),
             "requested": requested,
