@@ -254,6 +254,49 @@ def build_method_services(
 # ---------------------------------------------------------------------------
 # New pipeline (closure-free)
 # ---------------------------------------------------------------------------
+def _aggregate_results(output_dir: Path) -> None:
+    """Read skillq_results.jsonl and write a Harbor-compatible result.json."""
+    results_path = output_dir / "skillq_results.jsonl"
+    if not results_path.exists():
+        return
+    try:
+        results: list[dict[str, Any]] = []
+        with open(results_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                results.append(json.loads(line))
+        if not results:
+            return
+        mean = sum(r["reward"] for r in results) / len(results)
+        harbor_result_path = output_dir / "result.json"
+        with open(harbor_result_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "mean": round(mean, 3),
+                    "results": [
+                        {
+                            "task_name": r["task_name"],
+                            "reward": r["reward"],
+                            "trial_id": r["trial_id"],
+                        }
+                        for r in results
+                    ],
+                },
+                f,
+                indent=2,
+                ensure_ascii=False,
+            )
+        logger.info(
+            "aggregated %d trial results → result.json (mean=%.3f)",
+            len(results),
+            mean,
+        )
+    except Exception:
+        logger.exception("result.json aggregation failed")
+
+
 def _write_trial_result(
     trial_dir: Path,
     trial_id: str,
@@ -359,6 +402,12 @@ async def _on_trial_ended_new(
                 )
         except Exception:  # noqa: BLE001
             pass
+
+    # 5. Last-trial aggregation: read all per-trial results and
+    #    write a proper result.json so downstream tools work even
+    #    if Harbor never wrote its own.
+    if services.state.step >= services.expected_terminal_trials:
+        _aggregate_results(trial_dir.parent)
 
 
 def _make_on_trial_started_new(
