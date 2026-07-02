@@ -761,6 +761,8 @@ def _write_extract_failure(
     mode: str,
     n_records: int,
     reason: str,
+    task: str = "",
+    knowledge: str = "",
 ) -> None:
     """Write an extract-failure record to the trial's audit log.
 
@@ -780,6 +782,8 @@ def _write_extract_failure(
                 "mode": mode,
                 "n_records": n_records,
                 "reason": reason,
+                "task": task[:300],
+                "knowledge": knowledge[:300],
             }) + "\n")
     except OSError:
         logger.warning(
@@ -818,6 +822,8 @@ async def _flush_buffer(ctx: "TrialContext", result: "StepResult") -> None:
             _write_extract_failure(
                 ctx.trial_dir, ctx.trial_id, mode,
                 len(batch), "subprocess crashed",
+                task=batch[0].get("task", "") if batch else "",
+                knowledge=batch[0].get("knowledge", "") if batch else "",
             )
             continue
         if new_skill is None:
@@ -830,6 +836,8 @@ async def _flush_buffer(ctx: "TrialContext", result: "StepResult") -> None:
             _write_extract_failure(
                 ctx.trial_dir, ctx.trial_id, mode,
                 len(batch), "extract_batch returned None",
+                task=batch[0].get("task", "") if batch else "",
+                knowledge=batch[0].get("knowledge", "") if batch else "",
             )
             continue
         if new_skill.skill_id in services.lib:
