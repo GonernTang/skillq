@@ -254,6 +254,32 @@ def build_method_services(
 # ---------------------------------------------------------------------------
 # New pipeline (closure-free)
 # ---------------------------------------------------------------------------
+def _write_trial_result(
+    trial_dir: Path,
+    trial_id: str,
+    task_name: str,
+    reward: int,
+) -> None:
+    """Append a per-trial result line to the job-level results log."""
+    results_path = trial_dir.parent / "skillq_results.jsonl"
+    try:
+        with open(results_path, "a", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "ts": time.time(),
+                        "trial_id": trial_id,
+                        "task_name": task_name,
+                        "reward": reward,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+    except OSError:
+        pass  # best-effort; Harbor result.json is the authority
+
+
 async def _on_trial_ended_new(
     event: TrialHookEvent,
     services: MethodServices,
@@ -304,6 +330,9 @@ async def _on_trial_ended_new(
     # 4. Run the pipeline.
     try:
         await run_pipeline(ctx, result)
+        # Per-trial incremental result: append to results.jsonl so
+        # a mid-run crash doesn't lose all accumulated rewards.
+        _write_trial_result(trial_dir, event.trial_id, intent_text, r_task)
     except Exception as exc:
         # Never let a method bug abort the trial. Write a per-trial
         # record so users can diagnose what broke (Bug 5 fix).

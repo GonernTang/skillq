@@ -21,10 +21,15 @@ even when the runtime behaviour is identical.
 
 from __future__ import annotations
 
+import contextlib
+import io
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Protocol, Sequence
 
 import numpy as np
+
+logger = logging.getLogger("skillq.shared.backends.litellm")
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +55,17 @@ class LiteLLMCompletion:
         }
         if self.response_format is not None:
             kwargs["response_format"] = self.response_format
-        response = litellm.completion(**kwargs)
+        # Redirect stderr so LiteLLM's internal error spam
+        # (e.g. "Provider List: ...") cannot pollute the process
+        # stderr and crash the asyncio event loop.
+        stderr_buf = io.StringIO()
+        with contextlib.redirect_stderr(stderr_buf):
+            response = litellm.completion(**kwargs)
+        if stderr_buf.getvalue():
+            logger.warning(
+                "LiteLLM stderr captured: %s",
+                stderr_buf.getvalue()[:500],
+            )
         return response.choices[0].message.content or ""
 
 
