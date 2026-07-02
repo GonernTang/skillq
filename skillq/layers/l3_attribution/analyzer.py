@@ -38,7 +38,20 @@ class AttributionAnalyzer:
 
     backend: AttributionBackend
     model: str = "openai/gpt-4o"
-    trace_max_chars: int = 6000
+    trace_max_chars: int = 12000
+
+    @staticmethod
+    def _truncate_trace(trace: str, max_chars: int) -> str:
+        """Smart truncation: full trace when short, head+tail when long."""
+        if len(trace) <= max_chars:
+            return trace
+        half = max_chars // 2
+        skipped = len(trace) - max_chars
+        return (
+            trace[:half]
+            + f"\n\n--- ({skipped} chars skipped — trace too long) ---\n\n"
+            + trace[-half:]
+        )
 
     def analyze(
         self,
@@ -70,7 +83,7 @@ class AttributionAnalyzer:
             trial_dir=str(trial_dir),
             cwd=str(trial_dir),
             available_skills=json.dumps(available_skills, ensure_ascii=False, indent=2),
-            trace=trace[: self.trace_max_chars],
+            trace=self._truncate_trace(trace, self.trace_max_chars),
             r_task=r_task,
         )
         raw = self.backend(prompt, self.model)
