@@ -42,10 +42,19 @@ class AttributionAnalyzer:
 
     @staticmethod
     def _truncate_trace(trace: str, max_chars: int) -> str:
-        """Smart truncation: full trace when short, head+tail when long."""
-        if len(trace) <= max_chars:
+        """Smart truncation: full trace when short, head+tail when long.
+
+        Head-tail mode only activates when the skipped middle is
+        at least MIN_SKIP chars — avoids splitting when the trace
+        is only slightly over the limit.
+        """
+        if not trace:
             return trace
-        half = max_chars // 2
+        MIN_SKIP = 2000
+        if len(trace) <= max_chars + MIN_SKIP:
+            return trace[:max_chars]
+        # Reserve ~60 chars for the separator line.
+        half = (max_chars - 60) // 2
         skipped = len(trace) - max_chars
         return (
             trace[:half]
