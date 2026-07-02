@@ -201,9 +201,23 @@ def _run_command(args: argparse.Namespace) -> int:
 
         # Write split files next to the merged YAML.
         stem = merged_path.stem
-        ts = ""
         import time
         ts = time.strftime("__%Y-%m-%d__%H-%M-%S")
+
+        # Resolve ${job_name} and ${now:...} in method subtree.
+        # OmegaConf can't see Harbor's custom resolvers when loading
+        # the method YAML standalone, so we substitute them early.
+        job_name = job_cfg.get("job_name", "")
+        if method_cfg and ("${job_name}" in str(method_cfg) or "${now:" in str(method_cfg)):
+            method_cfg_str = yaml.dump(method_cfg)
+            now_val = time.strftime("%Y-%m-%d__%H-%M-%S")
+            # Resolve ${now:...} → current timestamp
+            import re as _re
+            method_cfg_str = _re.sub(r"\$\{now:[^}]*\}", now_val, method_cfg_str)
+            # Resolve ${job_name} → now-aware job name
+            job_name_resolved = _re.sub(r"\$\{now:[^}]*\}", now_val, job_name)
+            method_cfg_str = method_cfg_str.replace("${job_name}", job_name_resolved)
+            method_cfg = yaml.safe_load(method_cfg_str)
         job_path = merged_path.parent / f"{stem}{ts}.job.yaml"
         method_path = merged_path.parent / f"{stem}{ts}.method.yaml"
 

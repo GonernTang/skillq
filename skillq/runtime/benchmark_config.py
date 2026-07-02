@@ -22,6 +22,7 @@ BENCHMARK_VARIANTS: dict[tuple[str, str], str] = {
     ("tb2", "full"):             "experiments/configs/tb2_skillq_full.yaml",
     ("tb2", "fromscratch"):     "experiments/configs/tb2_skillq_fromscratch.yaml",
     ("tb2", "fromscratch_resume"): "experiments/configs/tb2_skillq_fromscratch_resume.yaml",
+    ("tb2", "fromscratch_r2"):  "experiments/configs/tb2_skillq_fromscratch_r2.yaml",
     ("tb2", "e2e"):             "experiments/configs/tb2_skillq_e2e.yaml",
     ("swebenchpro", "full"):     "experiments/configs/swebenchpro_skillq.yaml",
 }
