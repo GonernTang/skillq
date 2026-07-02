@@ -41,8 +41,32 @@ def build_parser(parent: argparse.ArgumentParser) -> None:
         "--config-path",
         dest="config_path",
         type=Path,
-        required=True,
-        help="Path to a Harbor JobConfig YAML file.",
+        default=None,
+        help="Path to a Harbor JobConfig YAML file. Mutually exclusive with --benchmark/--variant.",
+    )
+    run_p.add_argument(
+        "--benchmark",
+        choices=None,  # populated dynamically from BENCHMARK_VARIANTS
+        default=None,
+        help="Benchmark name (tb2, swebenchpro, ...). Use with --variant.",
+    )
+    run_p.add_argument(
+        "--variant",
+        choices=None,  # populated dynamically from BENCHMARK_VARIANTS
+        default=None,
+        help="Variant name (full, small10, ...). Use with --benchmark.",
+    )
+    run_p.add_argument(
+        "--fresh-start",
+        action="store_true",
+        default=False,
+        help="Set reuse_q_table=false on the method config (Q-table starts fresh).",
+    )
+    run_p.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Resolve and validate the config, print the command, then exit.",
     )
     run_p.add_argument(
         "--method-config",
@@ -151,10 +175,82 @@ def _run_command(args: argparse.Namespace) -> int:
         print(f"[mg paper] {exc}", flush=True)
         return 2
 
-    method = _load_method_config(args.method_config_path)
+    config_path = args.config_path
+    method_config_path = args.method_config_path
+
+    # Benchmark/variant shortcut: resolve merged YAML → split.
+    if args.benchmark is not None:
+        if args.config_path is not None:
+            print(
+                "[mg paper] --benchmark/--variant and -c/--config are "
+                "mutually exclusive.",
+                flush=True,
+            )
+            return 2
+        from skillq.runtime.benchmark_config import (
+            resolve_merged_yaml_path,
+            split_method_subtree,
+            write_method_yaml,
+        )
+
+        merged_path = resolve_merged_yaml_path(args.benchmark, args.variant)
+        import yaml
+
+        merged = yaml.safe_load(merged_path.read_text(encoding="utf-8"))
+        job_cfg, method_cfg = split_method_subtree(merged)
+
+        # Write split files next to the merged YAML.
+        stem = merged_path.stem
+        ts = ""
+        import time
+        ts = time.strftime("__%Y-%m-%d__%H-%M-%S")
+        job_path = merged_path.parent / f"{stem}{ts}.job.yaml"
+        method_path = merged_path.parent / f"{stem}{ts}.method.yaml"
+
+        import yaml as _yaml
+        job_path.write_text(
+            _yaml.safe_dump(job_cfg, sort_keys=False, default_flow_style=False),
+            encoding="utf-8",
+        )
+        config_path = job_path
+
+        if method_cfg is not None:
+            method_cfg = write_method_yaml(
+                method_cfg,
+                method_path,
+                fresh_start=args.fresh_start,
+            )
+            method_config_path = method_path
+
+        if args.dry_run:
+            from skillq.config import MethodConfig
+
+            method = (
+                MethodConfig.model_validate(method_cfg)
+                if method_cfg is not None
+                else MethodConfig()
+            )
+            print(f"[mg paper] benchmark={args.benchmark} variant={args.variant}", flush=True)
+            print(f"[mg paper] job_name={job_cfg.get('job_name', '?')}", flush=True)
+            print(f"[mg paper] fresh_start={args.fresh_start} runtime={method.runtime}", flush=True)
+            print(f"[mg paper] wrote {job_path}", flush=True)
+            if method_path is not None:
+                print(f"[mg paper] wrote {method_path}", flush=True)
+            print(f"[mg paper]   (effective method.reuse_q_table = {method.reuse_q_table})", flush=True)
+            print(f"[mg paper]   (effective method.reuse_embedding_cache = {method.reuse_embedding_cache})", flush=True)
+            return 0
+
+    elif args.config_path is None:
+        print(
+            "[mg paper] either -c/--config or --benchmark/--variant is required.",
+            flush=True,
+        )
+        return 2
+
+    method = _load_method_config(method_config_path)
     from skillq.runtime.entrypoint import run_paper_job_sync
 
-    return run_paper_job_sync(args.config_path, method)
+    return run_paper_job_sync(config_path, method)
 
 
 def _prime_uv_cache_command(args: argparse.Namespace) -> int:

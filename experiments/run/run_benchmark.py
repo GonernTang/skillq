@@ -69,138 +69,17 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 import skillq._resolvers  # noqa: F401  (auto-registers OmegaConf resolvers)
+from skillq.runtime.benchmark_config import (
+    BENCHMARK_VARIANTS,
+    parse_overrides,
+    deep_merge,
+    split_method_subtree,
+    write_method_yaml,
+    resolve_merged_yaml_path,
+)
 
 
-# Per (benchmark, variant) YAML file. The driver loads the file,
-# splits the ``method:`` subtree off, and dispatches to
-# ``skillq paper run``. New (benchmark, variant) cells require a
-# new file under ``experiments/configs/``.
-BENCHMARK_VARIANTS: dict[tuple[str, str], str] = {
-    ("tb2", "small10"):         "experiments/configs/tb2_skillq_small10.yaml",
-    ("tb2", "small10_v2"):      "experiments/configs/tb2_skillq_small10_v2.yaml",
-    ("tb2", "full"):             "experiments/configs/tb2_skillq_full.yaml",
-    ("tb2", "fromscratch"):     "experiments/configs/tb2_skillq_fromscratch.yaml",
-    ("swebenchpro", "full"):     "experiments/configs/swebenchpro_skillq.yaml",
-}
-
-
-def parse_overrides(items: list[str] | None) -> dict[str, Any]:
-    """Parse ``--method-override key=value`` items into a nested dict.
-
-    ``retrieval.score_mode=additive`` →
-    ``{"retrieval": {"score_mode": "additive"}}``.
-
-    ``b_max=2000`` → ``{"b_max": 2000}`` (numeric coercion).
-
-    ``reuse_q_table=false`` → ``{"reuse_q_table": False}`` (bool
-    coercion).
-    """
-    if not items:
-        return {}
-    out: dict[str, Any] = {}
-    for item in items:
-        if "=" not in item:
-            raise SystemExit(
-                f"[run_benchmark] --method-override expects key=value (got: {item!r})"
-            )
-        key, raw = item.split("=", 1)
-        key = key.strip()
-        raw = raw.strip()
-        # Coerce booleans / numbers. Keep strings as-is.
-        if raw.lower() in {"true", "false"}:
-            value: Any = raw.lower() == "true"
-        else:
-            try:
-                value = int(raw)
-            except ValueError:
-                try:
-                    value = float(raw)
-                except ValueError:
-                    value = raw
-        # Walk / build the nested dict for dotted keys.
-        parts = key.split(".")
-        cursor = out
-        for part in parts[:-1]:
-            cursor = cursor.setdefault(part, {})
-        cursor[parts[-1]] = value
-    return out
-
-
-def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    """Recursive dict merge: ``override`` wins, leaves untouched."""
-    out = dict(base)
-    for k, v in override.items():
-        if k in out and isinstance(out[k], dict) and isinstance(v, dict):
-            out[k] = deep_merge(out[k], v)
-        else:
-            out[k] = v
-    return out
-
-
-def split_method_subtree(cfg: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    """Pop the ``method`` subtree out of a merged job YAML.
-
-    Returns ``(job_cfg, method_cfg)``. ``method_cfg`` is ``None`` if
-    the merged YAML had no ``method:`` key (e.g. the legacy
-    baseline ``tb_pro_skillsvote.yaml``, which this driver does NOT
-    touch — see ``main()``).
-    """
-    if "method" not in cfg:
-        return cfg, None
-    method_cfg = cfg.pop("method")
-    if not isinstance(method_cfg, dict):
-        raise SystemExit(
-            f"[run_benchmark] 'method:' subtree must be a mapping; got {type(method_cfg).__name__}"
-        )
-    return cfg, method_cfg
-
-
-def write_method_yaml(
-    method_cfg: dict[str, Any],
-    out_path: Path,
-    *,
-    fresh_start: bool,
-    runtime: str,
-    overrides: dict[str, Any],
-) -> dict[str, Any]:
-    """Apply CLI-level adjustments (``--fresh-start``, ``--runtime``,
-    ``--method-override``) and write the method-config YAML.
-
-    Returns the post-merge method dict (useful for --dry-run
-    printing).
-
-    ``--fresh-start`` only flips ``reuse_q_table``. ``reuse_embedding_cache``
-    is left untouched: emb_cache entries are pure content-derived
-    vectors keyed by skill_id (see ``VectorTable`` in
-    ``shared/embeddings.py``), so they're invariant across runs as
-    long as the embedder model and skill bodies are stable — there's
-    no semantic reason to invalidate them on fresh-start, only a small
-    perf cost on the next trial's pre-embed pass.
-    """
-    merged = deep_merge(method_cfg, overrides)
-    if fresh_start:
-        merged["reuse_q_table"] = False
-    if runtime != "new":
-        merged["runtime"] = runtime
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(
-        yaml.safe_dump(merged, sort_keys=False, default_flow_style=False),
-        encoding="utf-8",
-    )
-    return merged
-
-
-def resolve_merged_yaml_path(benchmark: str, variant: str) -> Path:
-    """Return the absolute path to the merged YAML for the (benchmark, variant) cell."""
-    try:
-        rel = BENCHMARK_VARIANTS[(benchmark, variant)]
-    except KeyError:
-        valid = ", ".join(f"{b}/{v}" for b, v in BENCHMARK_VARIANTS)
-        raise SystemExit(
-            f"[run_benchmark] unknown (benchmark, variant) {benchmark!r}/{variant!r}; "
-            f"valid combinations: {valid}"
-        )
-    return (REPO_ROOT / rel).resolve()
+# Per (benchmark, variant) YAML file.
 
 
 def main(argv: list[str] | None = None) -> int:
