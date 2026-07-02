@@ -120,6 +120,10 @@ PULL_TOP_K = int(
 # any direct import still gets a string. New code must use
 # :func:`_calls_log_path` instead.
 CALLS_LOG_PATH = os.environ.get("SKILLQ_CALLS_LOG_PATH", "")
+# Pull-mode /rank cache: UserPromptSubmit writes top_k here so
+# PreToolUse can skip the redundant second /rank call.
+RANK_CACHE_PATH = "/tmp/skillq_rank_cache.json"
+RANK_CACHE_TTL_SEC = 300  # 5 minutes — one Skill() call per turn
 # Module-level cache so we only read the settings file once per
 # hook process (the hook is short-lived: one ProcessPool worker
 # per request, so caching per-process is fine and avoids the
@@ -367,6 +371,52 @@ def _format_pull_context(top_k: list[dict[str, Any]]) -> str:
 # ---------------------------------------------------------------------------
 # UserPromptSubmit (pull-mode) handler
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Pull-mode /rank cache (PreToolUse reuse)
+# ---------------------------------------------------------------------------
+def _write_rank_cache(
+    top_k: list[dict[str, Any]],
+    l1_sims: dict[str, float | None],
+) -> None:
+    """Persist the UserPromptSubmit /rank result so PreToolUse can reuse it."""
+    try:
+        with open(RANK_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "ts": time.time(),
+                    "top_k": [
+                        {
+                            "skill_id": e.get("skill_id"),
+                            "score": e.get("score"),
+                            "sim": e.get("sim"),
+                            "description": e.get("description", "")[:200],
+                        }
+                        for e in top_k
+                    ],
+                    "l1_sims": l1_sims,
+                },
+                f,
+                ensure_ascii=False,
+            )
+    except OSError:
+        pass  # best-effort; fallback to /rank on PreToolUse
+
+
+def _read_rank_cache() -> dict[str, Any] | None:
+    """Read the cached /rank result, if fresh enough."""
+    try:
+        with open(RANK_CACHE_PATH, "r", encoding="utf-8") as f:
+            data = json.loads(f.read())
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    elapsed = time.time() - data.get("ts", 0)
+    if elapsed > RANK_CACHE_TTL_SEC:
+        return None
+    return data
+
+
 def _handle_session_start(payload: dict[str, Any]) -> int:
     """Pull-mode: POST user prompt to ``/rank``, emit additionalContext.
 
@@ -385,6 +435,14 @@ def _handle_session_start(payload: dict[str, Any]) -> int:
         # Fail-open: skip the reminder if the daemon is unreachable.
         return 0
     top_k = body.get("top_k", [])
+    # Cache the /rank result so the subsequent PreToolUse can
+    # skip the redundant second /rank call on Skill() invocation.
+    l1_sims = {
+        entry["skill_id"]: entry.get("sim")
+        for entry in top_k
+        if entry.get("sim") is not None
+    }
+    _write_rank_cache(top_k, l1_sims)
     text = _format_pull_context(top_k)
     if body.get("reason") == "embed_unavailable":
         text += "\n\n(embedding unavailable; ranking used Q + UCB only.)"
@@ -428,6 +486,38 @@ def _handle_pretooluse_skill(payload: dict[str, Any]) -> int:
         intent_text = _read_transcript_tail(transcript_path)
 
     t0 = time.monotonic()
+
+    # Pull-mode shortcut: if UserPromptSubmit already ran /rank
+    # for this turn, reuse the cached result instead of calling
+    # /rank again. Fall back to a live /rank call when the cache
+    # is stale or missing (e.g. hook mode, or first turn).
+    cached = _read_rank_cache()
+    if cached is not None:
+        top_k = cached.get("top_k", [])
+        l1_sims = cached.get("l1_sims", {})
+        top_k_ids = {entry.get("skill_id") for entry in top_k if entry.get("skill_id")}
+        approved = requested in top_k_ids
+        _append_jsonl(
+            _calls_log_path(),
+            {
+                "ts": time.time(),
+                "requested": requested,
+                "top_k": top_k,
+                "approved": approved,
+                "denied": not approved,
+                "rank_ms": int((time.monotonic() - t0) * 1000),
+                "rank_reason": "cached",
+                "intent_text": (intent_text or "")[:500],
+                "l1_sims": l1_sims,
+            },
+        )
+        decision = _make_allow() if approved else _make_deny(
+            _format_top_k(top_k)
+        )
+        sys.stdout.write(json.dumps(decision, ensure_ascii=False))
+        sys.stdout.write("\n")
+        return 0
+
     status_code, body, rank_reason = _call_rank(
         intent_text or requested, top_k=TOP_K
     )
