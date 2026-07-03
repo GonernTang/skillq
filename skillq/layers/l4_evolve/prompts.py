@@ -229,7 +229,121 @@ wins.
 Begin now."""
 
 
+# ---------------------------------------------------------------------------
+# PER_TRIAL_EXTRACT_SKILL (single-trial path, 2026-07-03)
+# ---------------------------------------------------------------------------
+# When extract_every_n_trials=1 (or buffer threshold=1), a single trial's
+# knowledge record is the input. The batched prompt's "find common patterns
+# across N trials" framing is vacuous for N=1 and harmful when N>1 with
+# heterogeneous tasks grouped only by mode. This prompt tells the LLM to
+# distill one trial's reusable knowledge into a SKILL.md, with an explicit
+# skip gate for knowledge that is too task-specific.
+PER_TRIAL_EXTRACT_SKILL_PROMPT = """\
+You are an independent reviewer in **generative mode**. The agent
+just solved a task **without** a pre-existing skill. Below is the
+reusable procedural knowledge extracted from its trajectory.
+
+Your job: synthesize a single SKILL.md that captures this procedure
+so future agents facing similar tasks can reuse it.
+
+## Hard rules
+
+  - Skill **directory name** = kebab-case, **{name_min_words}..{name_max_words}** English words.
+  - Skill body must be **between {body_min_tokens} and {body_max_tokens} tokens**.
+  - The body must be **the FULL content of SKILL.md** (with YAML
+    frontmatter `name` / `description` per the Skill spec).
+  - Do NOT include task-specific facts: no file names from the
+    current trial, no environment-specific paths, no one-off values.
+  - The skill must be **self-contained**: an agent that has never
+    seen this trial should be able to follow the skill on a similar
+    task.
+  - If the knowledge is too task-specific to form a reusable skill,
+    output ``{"status": "skip", "reason": "<why>"}`` instead.
+  - The skill name in the YAML frontmatter must match the directory name.
+
+## Trial record
+
+**Task description**: {task}
+
+**Reusable knowledge** (extracted from the trace):
+{knowledge}
+
+## Write location
+
+  - The sandbox root is: `{sandbox_dir}`
+  - Write your SKILL.md to: `{sandbox_dir}/create/<skill-name>/SKILL.md`
+  - All file writes must be under `{sandbox_dir}/create/<skill-name>/`
+  - DO NOT write outside `{sandbox_dir}`.
+
+## What to do
+
+1. Decide on a skill name (kebab-case, **{name_min_words}..{name_max_words}** words)
+   that captures the reusable procedure.
+2. Create the directory `{sandbox_dir}/create/<skill-name>/`.
+3. Write `SKILL.md` with YAML frontmatter and the procedure body.
+4. As your **final response**, output a single JSON line:
+   `{{"status": "ok", "skill_name": "<name>", "body_tokens": <N>}}`
+   or `{{"status": "skip", "reason": "<why>"}}`.
+
+Begin now."""
+
+
+# ---------------------------------------------------------------------------
+# PER_TRIAL_EXTRACT_SKILL_FROM_FAILURE (single-trial failure path, 2026-07-03)
+# ---------------------------------------------------------------------------
+PER_TRIAL_EXTRACT_SKILL_FROM_FAILURE_PROMPT = """\
+You are an independent reviewer in **generative mode** for a
+SKILL.md creation step driven by **failure analysis**. The agent
+just failed on a task without a pre-existing skill that would have
+prevented the failure. Below is the failure attribution.
+
+Your job: synthesize a single SKILL.md that captures the *avoidance
+pattern* as a guard-rail, so future agents can avoid repeating this
+mistake.
+
+## Hard rules
+
+  - Skill **directory name** = kebab-case, **{name_min_words}..{name_max_words}** English words.
+  - Skill body must be **between {body_min_tokens} and {body_max_tokens} tokens**.
+  - The body must be **the FULL content of SKILL.md** (with YAML
+    frontmatter `name` / `description` per the Skill spec).
+  - Do NOT include task-specific facts: no file names from the
+    current trial, no environment-specific paths, no one-off values.
+  - The skill must contain TWO structural sections:
+      (a) **Diagnostic checklist** — 2-4 testable checks the agent
+          MUST run BEFORE committing to the main approach.
+      (b) **Stop signal** — a concrete threshold and reset action.
+    A skill missing either section is incomplete and will be rejected.
+  - The skill name in the YAML frontmatter must match the directory name.
+
+## Trial record
+
+**Task description**: {task}
+
+**Failure attribution** (what went wrong and why a skill was missing):
+{knowledge}
+
+## Write location
+
+  - The sandbox root is: `{sandbox_dir}`
+  - Write your SKILL.md to: `{sandbox_dir}/create/<skill-name>/SKILL.md`
+
+## What to do
+
+1. Decide on a skill name (kebab-case, **{name_min_words}..{name_max_words}** words)
+   that captures the avoidance pattern.
+2. Create the directory `{sandbox_dir}/create/<skill-name>/`.
+3. Write `SKILL.md` with YAML frontmatter and the guard-rail body.
+4. As your **final response**, output a single JSON line:
+   `{{"status": "ok", "skill_name": "<name>", "body_tokens": <N>}}`
+   or `{{"status": "skip", "reason": "<why>"}}`.
+
+Begin now."""
+
+
 __all__ = [
     "BATCHED_EXTRACT_SKILL_PROMPT",
     "BATCHED_EXTRACT_SKILL_FROM_FAILURE_PROMPT",
+    "PER_TRIAL_EXTRACT_SKILL_PROMPT",
+    "PER_TRIAL_EXTRACT_SKILL_FROM_FAILURE_PROMPT",
 ]

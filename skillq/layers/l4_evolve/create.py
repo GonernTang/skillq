@@ -39,6 +39,8 @@ from skillq.shared.hash import qhash
 from skillq.layers.l4_evolve.prompts import (
     BATCHED_EXTRACT_SKILL_FROM_FAILURE_PROMPT,
     BATCHED_EXTRACT_SKILL_PROMPT,
+    PER_TRIAL_EXTRACT_SKILL_FROM_FAILURE_PROMPT,
+    PER_TRIAL_EXTRACT_SKILL_PROMPT,
 )
 from skillq.shared.types import Skill
 
@@ -116,7 +118,21 @@ class SkillExtractor:
         """
         if not trials:
             return None
-        # Format the per-trial lines
+        # N=1 → per-trial prompt (2026-07-03).
+        # The batch prompt's "find common patterns across N trials"
+        # framing is vacuous for N=1 and harmful for heterogeneous
+        # trials grouped only by mode. Per-trial prompt distills one
+        # trial's knowledge without the spurious cross-task comparison.
+        if len(trials) == 1:
+            return await self._extract_single(
+                task=trials[0].get("task", ""),
+                knowledge=trials[0].get("knowledge", ""),
+                gap_description=trials[0].get("gap_description", ""),
+                intent_hash=aggregated_intent_hash,
+                sandbox_root=sandbox_root,
+            )
+
+        # N>1 — existing batch path unchanged.
         per_trial_lines = []
         for i, t in enumerate(trials, start=1):
             # 2026-06-25: include library_gap_skill_description when
@@ -154,6 +170,38 @@ class SkillExtractor:
             },
             task=representative_task,
             intent_hash=aggregated_intent_hash,
+            sandbox_root=sandbox_root,
+        )
+
+    async def _extract_single(
+        self,
+        *,
+        task: str,
+        knowledge: str,
+        gap_description: str,
+        intent_hash: int,
+        sandbox_root: Path | None,
+    ) -> Skill | None:
+        """Per-trial extract — N=1 fast path (2026-07-03).
+
+        Uses :data:`PER_TRIAL_EXTRACT_SKILL_PROMPT` (success) or
+        :data:`PER_TRIAL_EXTRACT_SKILL_FROM_FAILURE_PROMPT` (failure)
+        instead of the batch prompt. The prompt instructs the LLM to
+        distill one trial's knowledge into a SKILL.md, with an explicit
+        skip gate for knowledge that is too task-specific.
+        """
+        if self.prompt_mode == "failure":
+            prompt_template = PER_TRIAL_EXTRACT_SKILL_FROM_FAILURE_PROMPT
+        else:
+            prompt_template = PER_TRIAL_EXTRACT_SKILL_PROMPT
+        return await self._extract_with_prompt(
+            prompt_template=prompt_template,
+            format_kwargs={
+                "task": task,
+                "knowledge": knowledge,
+            },
+            task=task,
+            intent_hash=intent_hash,
             sandbox_root=sandbox_root,
         )
 
