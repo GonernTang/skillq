@@ -258,7 +258,7 @@ so future agents facing similar tasks can reuse it.
     seen this trial should be able to follow the skill on a similar
     task.
   - If the knowledge is too task-specific to form a reusable skill,
-    output ``{"status": "skip", "reason": "<why>"}`` instead.
+    output ``{{"status": "skip", "reason": "<why>"}}`` instead.
   - The skill name in the YAML frontmatter must match the directory name.
 
 ## Trial record

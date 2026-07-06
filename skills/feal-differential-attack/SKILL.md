@@ -22,6 +22,7 @@ description: Differential cryptanalysis attack on a FEAL-like Feistel cipher to 
 - **This skill is not applicable to SAM-based cell segmentation or any image segmentation tasks.** (If the task is about segmenting cells in an image using SAM or any other method, do not use this skill.)
 - **This skill is not applicable to Raman spectrum fitting or peak analysis tasks.** (If the task is about fitting Raman peaks (G and 2D) from a spectrum file, do not use this skill.)
 - **This skill is not applicable to MTEB leaderboard tasks, embedding model comparison, or benchmark retrieval.** (If the task is about finding the best embedding model on an MTEB leaderboard, do not use this skill.)
+- **This skill is not applicable to gRPC server setup, starting background processes, or network service deployment tasks.** (If the task is about deploying a gRPC service or running a server in the background, do not use this skill.)
 
 ## Procedure
 
@@ -71,3 +72,4 @@ When the task requires detecting takeoff and landing frames from a video of a hu
 ### 1. Preprocessing and motion magnitude
 - Compute per‑frame **absolute pixel‑wise difference** (frame‑differencing) but do **not** use a fixed threshold. Instead, calculate the motion **magnitude** for all pixels (or use a simple per‑pixel absolute difference).
 - For each frame, compute the mean and standard deviation of the non‑zero motion magnitudes across all pixels of the difference frame. Set an **adaptive threshold** per video as `mean + k
+```
