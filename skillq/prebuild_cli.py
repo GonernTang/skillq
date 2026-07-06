@@ -52,7 +52,7 @@ from pathlib import Path
 # ``$SkillQ_ROOT/experiments/prebuild/prebuild_images.py`` (mirrors
 # the upstream ``lqrl/scripts/prebuild_images.py`` location).
 # Override via ``$SkillQ_ROOT`` env var or ``--skillsvote-root`` CLI flag.
-SkillQ_ROOT = Path(os.environ.get("SkillQ_ROOT", "./skillsvote"))
+SkillQ_ROOT = Path(os.environ.get("SkillQ_ROOT", str(Path(__file__).parent.parent)))
 
 
 def build_parser(parent: argparse.ArgumentParser) -> argparse.ArgumentParser:
@@ -110,16 +110,8 @@ def _run_command(args: argparse.Namespace) -> int:
         print(f"[skillq prebuild] {exc}", file=sys.stderr)
         return 2
 
-    skillsvote_root: Path = args.skillsvote_root
-    if not skillsvote_root.exists():
-        print(
-            f"[skillq prebuild] skillsvote tree not found at {skillsvote_root}. "
-            "Pass --skillsvote-root or set $SkillQ_ROOT.",
-            file=sys.stderr,
-        )
-        return 2
-
-    prebuild_script = skillsvote_root / "experiments" / "prebuild" / "prebuild_images.py"
+    repo_root = Path(__file__).parent.parent
+    prebuild_script = repo_root / "skillq" / "prebuild_images.py"
     if not prebuild_script.exists():
         print(
             f"[skillq prebuild] prebuild script not found at {prebuild_script}.",
@@ -162,7 +154,7 @@ def _run_command(args: argparse.Namespace) -> int:
     print(f"[skillq prebuild] {' '.join(cmd)}")
     env = os.environ.copy()
     env["MAX_WORKERS"] = str(args.max_workers)
-    result = subprocess.run(cmd, cwd=str(skillsvote_root), env=env)
+    result = subprocess.run(cmd, cwd=str(repo_root), env=env)
     return result.returncode
 
 
