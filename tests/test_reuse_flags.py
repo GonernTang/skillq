@@ -15,12 +15,16 @@ from pathlib import Path
 
 
 def test_default_reuse_flags():
-    """reuse_q_table and reuse_embedding_cache default to True."""
+    """reuse_q_table and reuse_embedding_cache default to True.
+
+    emb_cache_path also defaults to None (falls back to sibling of
+    state_path). 2026-06-30."""
     from skillq.config import MethodConfig
 
     cfg = MethodConfig()
     assert cfg.reuse_q_table is True
     assert cfg.reuse_embedding_cache is True
+    assert cfg.emb_cache_path is None
 
 
 def test_explicit_reuse_flags():
@@ -30,6 +34,52 @@ def test_explicit_reuse_flags():
     cfg = MethodConfig(reuse_q_table=False, reuse_embedding_cache=False)
     assert cfg.reuse_q_table is False
     assert cfg.reuse_embedding_cache is False
+
+
+def test_emb_cache_path_default_is_sibling_of_state(tmp_path):
+    """emb_cache_path=None → emb_cache.json lives at <state_path>.parent.
+
+    Backward-compat guarantee (2026-06-30)."""
+    from skillq.config import MethodConfig
+
+    cfg = MethodConfig(library_root=tmp_path / "lib")
+    assert cfg.emb_cache_path is None
+    assert cfg.resolved_emb_cache_path() == tmp_path / "lib" / ".state" / "emb_cache.json"
+
+
+def test_emb_cache_path_explicit_overrides(tmp_path):
+    """Setting emb_cache_path explicitly decouples emb_cache from
+    state_path → cross-run reuse even with timestamped library_root.
+
+    2026-06-30: this is the entry point for sharing emb_cache across
+    small10/full/e2e runs while keeping Q-table per-run."""
+    from skillq.config import MethodConfig
+
+    stable = tmp_path / "stable_skills" / ".skillq_state" / "emb_cache.json"
+    cfg = MethodConfig(
+        library_root=tmp_path / "lib__job1__ts",
+        state_path=tmp_path / "lib__job1__ts" / ".state" / "method_state.json",
+        emb_cache_path=stable,
+    )
+    # state_path: per-job (new dir per run)
+    assert cfg.resolved_state_path() == tmp_path / "lib__job1__ts" / ".state" / "method_state.json"
+    # emb_cache_path: stable, explicit override wins
+    assert cfg.resolved_emb_cache_path() == stable
+
+
+def test_emb_cache_path_survives_fresh_start(tmp_path):
+    """resolved_emb_cache_path() does not depend on reuse_q_table or
+    reuse_embedding_cache. fresh-start keeps the path stable."""
+    from skillq.config import MethodConfig
+
+    stable = tmp_path / "stable" / "emb_cache.json"
+    cfg = MethodConfig(
+        library_root=tmp_path / "lib",
+        emb_cache_path=stable,
+        reuse_q_table=False,
+        reuse_embedding_cache=False,
+    )
+    assert cfg.resolved_emb_cache_path() == stable
 
 
 def test_resolved_state_path_legacy_default(tmp_path):

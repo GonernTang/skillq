@@ -8,10 +8,12 @@ the daemon URL). Several tests import the hook module to call its
 helper functions; without priming the env var those imports raise
 ``KeyError`` and abort test collection.
 
-We also prime ``SKILLQ_CALLS_LOG_PATH`` because the hook module reads
-it at import time too (it's a per-trial path written by the wiring
-layer). The hook's container-side main() never runs in unit tests;
-the imports below only test the helper functions.
+2026-07-01 (Bug #51/#52 fix): ``SKILLQ_CALLS_LOG_PATH`` is no
+longer read by the hook at import time (per-trial state now lives
+in the bind-mounted settings.json). We drop the priming here.
+The hook's ``CALLS_LOG_PATH`` module-level read still works
+via ``os.environ.get(..., "")`` for back-compat, but the test
+suite doesn't need to seed it.
 """
 
 from __future__ import annotations
@@ -21,7 +23,4 @@ import os
 # Must run BEFORE any test module imports skillq.runtime.hook.
 os.environ.setdefault(
     "SKILLQ_RANK_ENDPOINT", "http://127.0.0.1:8765",
-)
-os.environ.setdefault(
-    "SKILLQ_CALLS_LOG_PATH", "/tmp/skillq_test_calls.jsonl",
 )

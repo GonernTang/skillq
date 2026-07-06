@@ -12,11 +12,18 @@ hook no longer reads:
 - ``SKILLQ_EMBED_HOST`` → merged into ``SKILLQ_RANK_ENDPOINT``
 - ``SKILLQ_EMBED_PORT`` → merged into ``SKILLQ_RANK_ENDPOINT``
 
-The new env-var surface is **3 defaults** (down from 14):
+The new env-var surface is **1 default** (down from 14→3):
 
 - ``SKILLQ_RANK_ENDPOINT`` — required, default ``http://host.docker.internal:8765``
-- ``SKILLQ_CALLS_LOG_PATH`` — optional, default empty
-- ``SKILLQ_USER_TASK`` — optional, default empty (filled in at wire time)
+
+Per-trial state (the agent's task text + the hook's calls log
+path) is **not** passed via env vars anymore (env-var mutation
+in ``_wire_hook_trial`` raced against Harbor's per-trial
+snapshot). Instead it rides in the per-trial
+``<trial_dir>/skillq_state/settings.json`` (co-located with
+the hook registrations) under a sibling top-level ``"skillq"``
+key the hook reads at request time. See
+:func:`hook_settings_json`.
 
 Everything else (``SKILLQ_HOOK_*``, ``SKILLQ_SIM_GATE_*``,
 ``SKILLQ_HOOK_RANK_TIMEOUT_SEC``, ``SKILLQ_PULL_TOP_K``) is
@@ -68,13 +75,17 @@ class SkillQClaudeCodeAgent(ClaudeCode):
 
     Step 5 changes (vs the legacy implementation):
 
-    - 14 obsolete env-var defaults removed. The 3 remaining
-      defaults (``SKILLQ_RANK_ENDPOINT``,
-      ``SKILLQ_CALLS_LOG_PATH``, ``SKILLQ_USER_TASK``) are
-      defense-in-depth — the host bridge seeds all 14
-      ``SKILLQ_*`` vars (including 9 tunables the hook reads)
-      before ``Job.create`` via
+    - 14 obsolete env-var defaults removed. The single remaining
+      default (``SKILLQ_RANK_ENDPOINT``) is defense-in-depth —
+      the host bridge seeds all 14 ``SKILLQ_*`` vars (including 9
+      tunables the hook reads) before ``Job.create`` via
       :func:`skillq.runtime.env_seed.seed_agent_env`.
+    - ``SKILLQ_CALLS_LOG_PATH`` and ``SKILLQ_USER_TASK`` removed:
+      2026-07-01 (Bug #51/#52) — per-trial state is now carried
+      via the bind-mounted ``<trial_dir>/skillq_state/settings.json``
+      ``"skillq"`` block (see :func:`hook_settings_json`). Env vars
+      raced against Harbor's per-trial snapshot under
+      ``n_concurrent_trials >= 2``.
     - ``hook_script_path()`` / ``hook_settings_json()`` /
       ``hook_env()`` helpers moved into this module (Step 5
       needs them here so the new container_wiring can import
@@ -86,30 +97,22 @@ class SkillQClaudeCodeAgent(ClaudeCode):
         return "SkillQClaudeCodeAgent"
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
-        # Inject the **3 minimum** SKILLQ_* env vars the hook
-        # reads into ``self._extra_env`` so they actually reach
-        # the agent's process. The host bridge will OVERWRITE
+        # Inject the **single** SKILLQ_* env var the hook reads
+        # into ``self._extra_env`` so it actually reaches the
+        # agent's process. The host bridge will OVERWRITE
         # SKILLQ_RANK_ENDPOINT with the ranking daemon's actual
         # host:port BEFORE Trial.create, so the value seen at
-        # runtime is the host-side one; the defaults below are a
+        # runtime is the host-side one; the default below is a
         # defense-in-depth safety net for direct-import call
         # sites that don't go through the paper CLI.
         skillq_hook_env = {
             "SKILLQ_RANK_ENDPOINT": "http://host.docker.internal:8765",
-            "SKILLQ_CALLS_LOG_PATH": "",  # host fills at trial start
-            "SKILLQ_USER_TASK": "",        # host fills at trial start
         }
         super().__init__(*args, **kwargs)
         # Merge into ``self._extra_env`` (created by
-        # BaseInstalledAgent.__init__). Use ``setdefault`` for the
-        # empty default placeholders so the host wiring (which runs
-        # later via ``_wire_hook_trial``) does NOT get clobbered.
-        # 2026-06-29 (Phase 10 Bug 5 v2): the previous
-        # ``self._extra_env.update(skillq_hook_env)`` overwrote the
-        # host's SKILLQ_CALLS_LOG_PATH with ``""`` (the default
-        # placeholder), making the hook silently skip writing the
-        # calls log (its ``_append_jsonl`` early-returns on empty
-        # path).
+        # BaseInstalledAgent.__init__). Use ``setdefault`` so the
+        # host wiring (which runs later via ``seed_agent_env``)
+        # does NOT get clobbered.
         for _k, _v in skillq_hook_env.items():
             self._extra_env.setdefault(_k, _v)
 
@@ -224,6 +227,14 @@ def hook_env(
     ``SKILLQ_PULL_TOP_K``) are seeded once at job start by
     :func:`skillq.runtime.env_seed.seed_agent_env` and are NOT
     re-applied here.
+
+    2026-07-01 (Bug #51/#52): this helper is now deprecated —
+    per-trial state travels in the bind-mounted
+    ``<trial_dir>/skillq_state/settings.json`` (the ``"skillq"``
+    block), NOT via env vars (env-var mutation raced against
+    Harbor's per-trial snapshot). The function is kept for
+    back-compat with any caller still using it; the values it
+    emits are silently ignored by the current hook.
     """
     env: dict[str, str] = {
         "SKILLQ_USER_TASK": user_task[:2000],
@@ -238,6 +249,8 @@ def hook_settings_json(
     hook_container_path: str,
     script_inline: str | None = None,
     include_pull: bool = False,
+    user_task: str = "",
+    calls_log_path: str = "",
 ) -> dict[str, Any]:
     """Build the ``settings.json`` dict that registers the PreToolUse hook.
 
@@ -257,6 +270,23 @@ def hook_settings_json(
             ]
           }
         }
+
+    2026-07-01 (Bug #51/#52 fix): the returned dict also carries
+    a sibling top-level ``"skillq"`` block with per-trial state
+    the hook reads at request time:
+
+    - ``skillq.user_task`` — the agent's task intent (replaces the
+      racy ``SKILLQ_USER_TASK`` env var that was snapshot before
+      per-trial mutation reached Harbor).
+    - ``skillq.calls_log_path`` — the per-trial path the hook
+      writes Skill-call records to (replaces the shared
+      ``SKILLQ_CALLS_LOG_PATH`` env var that 4 concurrent trials
+      were racing on).
+
+    Claude Code ignores unknown top-level keys, so co-locating
+    this state with the hook registrations is safe. The hook
+    reads it lazily (with module-level cache) via
+    :func:`skillq.runtime.hook._load_skillq_settings`.
     """
     settings: dict[str, Any] = {
         "hooks": {
@@ -268,6 +298,10 @@ def hook_settings_json(
                     ],
                 },
             ],
+        },
+        "skillq": {
+            "user_task": user_task[:2000],
+            "calls_log_path": calls_log_path,
         },
     }
     if include_pull:

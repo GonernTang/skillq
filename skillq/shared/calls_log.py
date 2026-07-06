@@ -45,6 +45,18 @@ class SubTaskCallRecord:
     - ``intent_text`` — the user prompt / agent task string that the
       hook embedded for retrieval. Empty when reconstructed from
       session log fallback.
+    - ``l1_sims`` — post-gate cosine sims keyed by ``skill_id``,
+      in the order the hook received them from ``/rank``. Empty
+      when the Hard Gate dropped everything (strict mode) or when
+      the hook version did not yet write the field (Phase 10 Bug 2
+      and later).
+    - ``l1_sims_top5_pre_gate`` — top-5 pre-gate raw sims the host's
+      ``/rank`` returned in ``debug.pre_gate_top5`` (each entry is
+      ``{"skill_id": str, "sim": float}``). Survives Hard Gate
+      drops, so an audit can distinguish "L1 saw 0.05 sims (off-topic
+      query)" from "L1 saw 0.65 sims (gate too strict)". Empty when
+      the hook version did not yet write the field (Phase 10
+      Debug-Log and later).
     """
 
     skill_id: str
@@ -57,6 +69,12 @@ class SubTaskCallRecord:
     # `approved` for backward-compat with hook versions that did not
     # write it.
     denied: bool = False
+    # 2026-06-29 (Phase 10 Bug 2): post-gate L1 sims in top-k order.
+    l1_sims: dict[str, float] = field(default_factory=dict)
+    # 2026-06-29 (Phase 10 Debug-Log): pre-gate top-5 sim snapshot.
+    l1_sims_top5_pre_gate: list[dict[str, Any]] = field(
+        default_factory=list
+    )
 
 
 # Back-compat alias used inside skillq.runtime.bridge until Step 6.
@@ -89,6 +107,21 @@ def read_skill_calls_log(log_path: Path) -> list[SubTaskCallRecord]:
                 continue
             approved = bool(rec.get("approved", False))
             denied = bool(rec.get("denied", not approved))
+            # 2026-06-29 (Phase 10 Bug 2 + Debug-Log): forward the
+            # L1 sim fields written by the hook. Both are best-effort:
+            # an older hook that didn't write them yields empty
+            # defaults (the field is marked default_factory on the
+            # dataclass).
+            raw_l1 = rec.get("l1_sims")
+            l1_sims: dict[str, float] = (
+                {str(k): float(v) for k, v in raw_l1.items()}
+                if isinstance(raw_l1, dict)
+                else {}
+            )
+            raw_pre = rec.get("l1_sims_top5_pre_gate")
+            l1_sims_top5_pre_gate: list[dict[str, Any]] = (
+                list(raw_pre) if isinstance(raw_pre, list) else []
+            )
             out.append(
                 SubTaskCallRecord(
                     skill_id=str(rec.get("requested", "")),
@@ -98,12 +131,62 @@ def read_skill_calls_log(log_path: Path) -> list[SubTaskCallRecord]:
                     denied=denied,
                     ts=float(rec.get("ts", 0.0)),
                     intent_text=str(rec.get("intent_text", "")),
+                    l1_sims=l1_sims,
+                    l1_sims_top5_pre_gate=l1_sims_top5_pre_gate,
                 )
             )
     return out
 
 
 _read_skill_calls_log = read_skill_calls_log
+
+
+def _load_permission_denials(jsonl_path: Path) -> set[str]:
+    """Return the set of ``tool_use_id`` strings whose ``Skill()`` calls
+    were denied by the host's PreToolUse hook, as recorded in the
+    end-of-session ``{"type": "result", "permission_denials": [...]}``
+    block of the Claude Code session jsonl.
+
+    2026-07-01 (Bug #53 fix): previously the session-fallback
+    extractor (used when the hook log is empty) hardcoded
+    ``approved=True`` for every Skill() it found, which credited
+    denied calls as approved and polluted the Q-table. Now we
+    parse ``permission_denials`` and join against the
+    ``tool_use`` block's ``id`` field to set ``denied=True``
+    correctly.
+
+    Best-effort — returns ``set()`` on any read failure or schema
+    mismatch. A missing ``permission_denials`` block (older
+    sessions) yields the empty set, which preserves the legacy
+    "all approved" behaviour for those sessions.
+    """
+    denied: set[str] = set()
+    try:
+        with open(jsonl_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("type") != "result":
+                    continue
+                denials = rec.get("permission_denials", [])
+                if not isinstance(denials, list):
+                    continue
+                for d in denials:
+                    if not isinstance(d, dict):
+                        continue
+                    if d.get("tool_name") != "Skill":
+                        continue
+                    tid = d.get("tool_use_id")
+                    if isinstance(tid, str) and tid:
+                        denied.add(tid)
+    except OSError:
+        pass
+    return denied
 
 
 def extract_skill_calls_from_session(
@@ -125,6 +208,16 @@ def extract_skill_calls_from_session(
     ``skillq_skill_calls.jsonl`` mount was read-only and the hook
     failed to write.
 
+    2026-07-01 (Bug #53 fix): a Skill() call is now marked
+    ``approved=False, denied=True`` iff its ``tool_use`` block's
+    ``id`` appears in the end-of-session ``permission_denials``
+    list. Calls without an ``id``, or sessions without a
+    ``permission_denials`` block, default to ``approved=True``
+    (legacy behaviour). The Q-update path
+    (:func:`skillq.runtime.steps.step_q_update`) drops records
+    where ``denied=True``, so denied calls no longer pollute the
+    Q-table.
+
     Best-effort — silently returns ``[]`` on any structural failure
     (missing dir, missing files, malformed JSON lines).
     """
@@ -142,6 +235,9 @@ def extract_skill_calls_from_session(
         return []
     if not jsonls:
         return []
+    # 2026-07-01 (Bug #53 fix): load the denied tool_use_ids once
+    # so we can correlate each tool_use block by its ``id``.
+    denied_ids = _load_permission_denials(jsonls[0])
     out: list[SubTaskCallRecord] = []
     try:
         with open(jsonls[0], "r", encoding="utf-8", errors="replace") as f:
@@ -156,7 +252,7 @@ def extract_skill_calls_from_session(
                 # Claude Code session entries look like:
                 #   {"type": "assistant", "message": {"content":
                 #       [{"type": "tool_use", "name": "Skill",
-                #         "input": {"skill": "..."}}]}}
+                #         "input": {"skill": "..."}, "id": "..."}]}}
                 msg = rec.get("message", {})
                 if not isinstance(msg, dict):
                     continue
@@ -174,12 +270,19 @@ def extract_skill_calls_from_session(
                     skill_name = str(inp.get("skill", "")).strip()
                     if not skill_name:
                         continue
+                    tool_use_id = block.get("id") or ""
+                    is_denied = (
+                        isinstance(tool_use_id, str)
+                        and bool(tool_use_id)
+                        and tool_use_id in denied_ids
+                    )
                     out.append(
                         SubTaskCallRecord(
                             skill_id=skill_name,
                             requested=skill_name,
                             top_k=[],
-                            approved=True,
+                            approved=not is_denied,
+                            denied=is_denied,
                             ts=0.0,
                             intent_text="",
                         )
@@ -196,4 +299,5 @@ __all__ = [
     "SubTaskCallRecord",
     "read_skill_calls_log",
     "extract_skill_calls_from_session",
+    "_load_permission_denials",
 ]

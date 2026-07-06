@@ -36,6 +36,11 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from skillq.shared.calls_log import (  # noqa: E402
+    SubTaskCallRecord,
+    read_skill_calls_log,
+)
+
 
 @pytest.fixture
 def hook_module_fixture(monkeypatch, tmp_path: Path):
@@ -288,3 +293,139 @@ def test_calls_log_pre_gate_top5_defaults_empty(hook_module_fixture):
     lines = _payload_from_responses(hook_module_fixture, responses)
     line = lines[0]
     assert line["l1_sims_top5_pre_gate"] == []
+
+
+# ---------------------------------------------------------------------------
+# Reader side: read_skill_calls_log must surface the new fields
+#
+# The writer half is pinned by the test_calls_log_* tests above. The
+# bug fixed on 2026-06-30 was that the JSONL had the fields but the
+# SubTaskCallRecord dataclass + reader dropped them, so e2e consumers
+# (L3 attribution, analysis scripts) saw empty / missing data even
+# though the data was on disk. These tests pin the reader half.
+# ---------------------------------------------------------------------------
+def test_subtask_call_record_has_l1_sims_defaults():
+    """The dataclass exposes `l1_sims` and `l1_sims_top5_pre_gate`
+    with empty defaults so legacy code that constructs a record
+    without the new fields keeps working.
+    """
+    rec = SubTaskCallRecord(
+        skill_id="x",
+        requested="x",
+        top_k=[],
+        approved=True,
+        ts=0.0,
+        intent_text="",
+    )
+    assert rec.l1_sims == {}
+    assert rec.l1_sims_top5_pre_gate == []
+
+
+def test_read_skill_calls_log_exposes_l1_sims(tmp_path: Path):
+    """Modern hook log (Phase 10 Bug 2) carries l1_sims and the
+    reader populates SubTaskCallRecord.l1_sims from it.
+    """
+    log = tmp_path / "skillq_skill_calls.jsonl"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(json.dumps({
+        "ts": 1.0,
+        "requested": "skill-a",
+        "top_k": [],
+        "approved": True,
+        "denied": False,
+        "intent_text": "",
+        "l1_sims": {"skill-a": 0.81, "skill-b": 0.55},
+    }) + "\n")
+    records = read_skill_calls_log(log)
+    assert len(records) == 1
+    assert records[0].l1_sims == {"skill-a": 0.81, "skill-b": 0.55}
+
+
+def test_read_skill_calls_log_exposes_pre_gate_top5(tmp_path: Path):
+    """Modern hook log (Phase 10 Debug-Log) carries
+    l1_sims_top5_pre_gate and the reader surfaces it on the record.
+    """
+    log = tmp_path / "skillq_skill_calls.jsonl"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(json.dumps({
+        "ts": 2.0,
+        "requested": "skill-a",
+        "top_k": [],
+        "approved": False,
+        "denied": True,
+        "intent_text": "",
+        "l1_sims": {},
+        "l1_sims_top5_pre_gate": [
+            {"skill_id": "a", "sim": 0.65},
+            {"skill_id": "b", "sim": 0.42},
+            {"skill_id": "c", "sim": 0.31},
+        ],
+    }) + "\n")
+    records = read_skill_calls_log(log)
+    assert len(records) == 1
+    rec = records[0]
+    # The bug: this assertion would fail (always [] / not on disk)
+    # because the reader dropped the field.
+    assert rec.l1_sims_top5_pre_gate == [
+        {"skill_id": "a", "sim": 0.65},
+        {"skill_id": "b", "sim": 0.42},
+        {"skill_id": "c", "sim": 0.31},
+    ]
+    # And l1_sims must be {} (not KeyError) when the gate drops all.
+    assert rec.l1_sims == {}
+
+
+def test_read_skill_calls_log_back_compat_missing_new_fields(tmp_path: Path):
+    """Old hook logs (pre-Phase 10) have neither l1_sims nor
+    l1_sims_top5_pre_gate. The reader must yield empty defaults,
+    not raise.
+    """
+    log = tmp_path / "skillq_skill_calls.jsonl"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(
+        json.dumps({
+            "ts": 1.0,
+            "requested": "old-approved",
+            "top_k": [],
+            "approved": True,
+            "denied": False,
+            "intent_text": "",
+        }) + "\n" +
+        json.dumps({
+            "ts": 2.0,
+            "requested": "old-denied",
+            "top_k": [],
+            "approved": False,
+            "denied": True,
+            "intent_text": "",
+        }) + "\n"
+    )
+    records = read_skill_calls_log(log)
+    assert len(records) == 2
+    assert records[0].l1_sims == {}
+    assert records[0].l1_sims_top5_pre_gate == []
+    assert records[1].l1_sims == {}
+    assert records[1].l1_sims_top5_pre_gate == []
+
+
+def test_read_skill_calls_log_ignores_malformed_new_fields(tmp_path: Path):
+    """Defensive: a corrupted `l1_sims` (non-dict) or
+    `l1_sims_top5_pre_gate` (non-list) yields empty defaults rather
+    than raising — the rest of the record is still recovered.
+    """
+    log = tmp_path / "skillq_skill_calls.jsonl"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(json.dumps({
+        "ts": 1.0,
+        "requested": "skill-a",
+        "top_k": [],
+        "approved": True,
+        "denied": False,
+        "intent_text": "",
+        "l1_sims": "not-a-dict",
+        "l1_sims_top5_pre_gate": {"oops": "wrong-type"},
+    }) + "\n")
+    records = read_skill_calls_log(log)
+    assert len(records) == 1
+    assert records[0].l1_sims == {}
+    assert records[0].l1_sims_top5_pre_gate == []

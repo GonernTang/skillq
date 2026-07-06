@@ -168,17 +168,15 @@ def test_default_score_mode_matches_agent_fallback():
     from skillq.runtime.agent import SkillQClaudeCodeAgent
     import inspect
     src = inspect.getsource(SkillQClaudeCodeAgent.__init__)
-    # Step 5 (2026-06-26) reduced the agent's default dict from 14
-    # to 3 entries (RANK_ENDPOINT, CALLS_LOG_PATH, USER_TASK).
-    # The SKILLQ_HOOK_SCORE_MODE / SKILLQ_HOOK_TOP_K / etc. defaults
-    # are now seeded by the host's env_seed module. The container
-    # hook reads them from the env at module-load (the next check
-    # below), so we just verify the agent no longer hard-codes
-    # 14 SKILLQ_* env defaults.
+    # 2026-07-01 (Bug #51/#52 fix): the agent's default dict is now
+    # 1 entry (RANK_ENDPOINT). SKILLQ_CALLS_LOG_PATH + SKILLQ_USER_TASK
+    # are NO LONGER env vars — per-trial state lives in the bind-
+    # mounted settings.json's ``"skillq"`` block. We just verify
+    # the agent no longer hard-codes the per-trial env vars.
     assert "SKILLQ_HOOK_SCORE_MODE" not in src
     assert "SKILLQ_RANK_ENDPOINT" in src
-    assert "SKILLQ_CALLS_LOG_PATH" in src
-    assert "SKILLQ_USER_TASK" in src
+    assert "SKILLQ_CALLS_LOG_PATH" not in src
+    assert "SKILLQ_USER_TASK" not in src
 
     # host's env_seed must default to multiplicative (the source
     # of truth for all 9 SKILLQ_HOOK_* tunables when the user

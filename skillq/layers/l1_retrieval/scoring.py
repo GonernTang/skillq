@@ -72,7 +72,14 @@ def cosine(a: Sequence[float], b: Sequence[float]) -> float:
     na = math.sqrt(sum(x * x for x in a)) + 1e-9
     nb = math.sqrt(sum(x * x for x in b)) + 1e-9
     n = min(len(a), len(b))
-    return sum(a[i] * b[i] for i in range(n)) / (na * nb)
+    # Pin return type to Python ``float``. The pure-Python loop
+    # already produces float when ``a`` / ``b`` are lists, but
+    # ``emb_cache`` stores numpy.float32 vectors — without this cast
+    # callers receive ``numpy.float32`` and Pydantic v2's serializer
+    # chokes on it (Bug #1, 2026-06-30:
+    # ``PydanticSerializationError: Unable to serialize unknown type:
+    # <class 'numpy.float32'>`` at /rank → 500 → hook fails open).
+    return float(sum(a[i] * b[i] for i in range(n)) / (na * nb))
 
 
 _cosine = cosine  # legacy private alias used by the inline hook

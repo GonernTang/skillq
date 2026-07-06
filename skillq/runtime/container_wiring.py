@@ -248,21 +248,31 @@ def wire_one_trial(handle: ContainerWiringHandle, event: Any) -> None:
 def resolve_retrieval_mode(method: "MethodConfig", n_lib_skills: int) -> str:
     """Resolve the effective retrieval mode for one trial.
 
-    Copied verbatim from
-    :func:`skillq.runtime.bridge.resolve_retrieval_mode`.
-    Same semantics so Step 6's import-replacement is a no-op.
+    2026-06-30: Method A is kept in the code base for back-compat
+    (the agentic search writer + `_search.sh` are still wired when
+    a caller explicitly asks for them) but is no longer the
+    default. ``retrieval_mode="auto"`` / ``"agentic"`` are folded
+    into ``"hook"`` here so any old YAML / MethodConfig that
+    pinned those values silently routes to Method B. A warning
+    is logged on the fold so an operator can see the implicit
+    demotion in the job log.
 
-    - ``"agentic"`` → Method A. Returned verbatim.
-    - ``"hook"``    → Method B (PreToolUse only). Returned verbatim.
+    - ``"hook"``    → Method B (PreToolUse only). Default + returned verbatim.
     - ``"pull"``    → Method B + SessionStart inject. Returned as
       ``"hook"`` since the wiring is identical except for the
       SessionStart hook in settings.json.
-    - ``"auto"``    → picks ``"agentic"`` if the lib is below
-      ``method.library_size_threshold``, else ``"hook"``.
+    - ``"agentic"`` → historical Method A. Folded to ``"hook"`` + warning.
+    - ``"auto"``    → historical lib-size picker. Folded to ``"hook"`` + warning.
     """
     mode = getattr(method, "retrieval_mode", "hook")
-    if mode == "auto":
-        return "agentic" if n_lib_skills < method.library_size_threshold else "hook"
+    if mode in ("agentic", "auto"):
+        logger.warning(
+            "resolve_retrieval_mode: retrieval_mode=%r is historical; "
+            "folding to 'hook' (Method A is no longer the default as of "
+            "2026-06-30). n_lib_skills=%d is now ignored for mode selection.",
+            mode, n_lib_skills,
+        )
+        return "hook"
     if mode == "pull":
         return "hook"
     return mode
@@ -397,29 +407,35 @@ def _wire_hook_trial(
     """Method B wiring: 2 bind-mounts, no state JSONs, no path env vars."""
     method = handle.method
 
-    # 1. Inject path env vars (still per-trial: SKILLQ_USER_TASK +
-    #    SKILLQ_CALLS_LOG_PATH are trial-scoped; everything else is
-    #    seeded once by env_seed). SKILLQ_CALLS_LOG_PATH is set
-    #    further below alongside the RW bind-mount that backs it.
+    # 1. Per-trial state transport. 2026-07-01 (Bug #51/#52 fix):
+    #    SKILLQ_USER_TASK + SKILLQ_CALLS_LOG_PATH are NO LONGER
+    #    transported via env vars (env-var mutation here raced
+    #    against Harbor's per-trial ``agent._extra_env`` snapshot
+    #    when n_concurrent_trials >= 2). Instead they ride in the
+    #    bind-mounted ``<trial_dir>/skillq_state/settings.json``'s
+    #    ``"skillq"`` block — the file is read lazily by the hook
+    #    on every request.
     #
-    # 2026-06-29 (Fix A+): SKILLQ_USER_TASK used to be just the task
-    # slug (~15 chars like "chess-best-move") which gave L1 sim a
-    # very thin query. Now we load the full instruction.md (200-2700
-    # chars) when available, falling back to the slug otherwise.
+    #    We still load the full instruction.md here (200-2700 chars,
+    #    not just the 15-char task slug) so the hook's /rank query
+    #    has a rich intent string to match against.
     task_name = event.task_name or trial_dir.name
     intent_text = _load_task_instruction(method, task_name) or task_name
-    cfg.agent.env["SKILLQ_USER_TASK"] = intent_text[:2000]
 
-    # 2. Bind mounts: only hook script + skills tree + settings.json.
+    # 2. Bind mounts: only hook script + skills tree + settings.json +
+    #    per-trial RW mount for the calls log.
     if cfg.environment.mounts_json is None:
         cfg.environment.mounts_json = []
     mounts = cfg.environment.mounts_json
 
-    # Settings.json (host-generated once at job start; bind-mounted
-    # over the prebuilt image's default).
+    # Settings.json (host-generated per trial; bind-mounted over the
+    # prebuilt image's default). The "skillq" sub-block carries
+    # user_task + per-trial calls_log_path.
     settings_path = _settings_json_path(
         trial_dir,
         include_pull=(getattr(method, "retrieval_mode", "hook") == "pull"),
+        user_task=intent_text,
+        trial_name=cfg.trial_name or trial_dir.name,
     )
     mounts.append(
         _bind_mount(str(settings_path), CONTAINER_SETTINGS_PATH, read_only=True)
@@ -443,18 +459,22 @@ def _wire_hook_trial(
     # 2026-06-29 (Phase 10 Bug 5): per-trial RW bind-mount for the
     # hook's calls log. The prebuilt image's /logs/agent/sessions/
     # is a docker volume (not host-bound), so writes there disappear
-    # when the container stops. /logs/agent/sessions/skills is
-    # host-bound but RO. We add a RW mount at a NEW container path
-    # — the trial's own log subdir — and point SKILLQ_CALLS_LOG_PATH
-    # at it.
+    # when the container stops.
+    #
+    # 2026-07-01 (Bug #51/#52 fix): switched from library-scoped
+    # (shared across concurrent trials — caused write race) back to
+    # per-trial. The hook learns the per-trial path from the
+    # bind-mounted ``settings.json``'s ``skillq.calls_log_path``
+    # field, NOT from an env var (env vars raced against Harbor's
+    # per-trial snapshot). Host path:
+    # ``<trial_dir>/agent/sessions/_calls_log/`` → container
+    # ``/logs/agent/sessions/_calls_log/`` (RW). Each trial writes
+    # to its own file inside that mount; step_q_update reads it
+    # back via the same path.
     log_mount_host = str(trial_dir / "agent" / "sessions" / "_calls_log")
     log_mount_host_path = Path(log_mount_host)
     log_mount_host_path.mkdir(parents=True, exist_ok=True)
-    # The container target is /logs/agent/sessions/_calls_log (a NEW
-    # subdir alongside the RO skills/settings/hooks subtree).
     CONTAINER_CALLS_LOG_DIR = f"{CONTAINER_CLAUDE_CONFIG_DIR}/_calls_log"
-    CONTAINER_CALLS_LOG_PATH = f"{CONTAINER_CALLS_LOG_DIR}/skillq_skill_calls.jsonl"
-    cfg.agent.env["SKILLQ_CALLS_LOG_PATH"] = CONTAINER_CALLS_LOG_PATH
     mounts.append(
         _bind_mount(log_mount_host, CONTAINER_CALLS_LOG_DIR, read_only=False)
     )
@@ -544,18 +564,42 @@ def _wire_hook_trial(
 # ---------------------------------------------------------------------------
 # Helpers — extracted from the legacy version, kept identical
 # ---------------------------------------------------------------------------
-def _settings_json_path(trial_dir: Path, *, include_pull: bool = False) -> Path:
-    """Write (or reuse) a settings.json that registers the PreToolUse hook.
+def _settings_json_path(
+    trial_dir: Path,
+    *,
+    include_pull: bool = False,
+    user_task: str = "",
+    trial_name: str = "",
+) -> Path:
+    """Write the per-trial settings.json that registers the PreToolUse hook
+    + carries the per-trial ``skillq`` block.
 
-    Written once at the first trial's staging dir; reused on
-    subsequent trials. The container runs the hook via the same
-    Python binary the agent uses.
+    2026-07-01 (Bug #51/#52 fix): the returned file's
+    ``"skillq"`` block now carries:
+
+    - ``user_task`` — the agent's task intent (2000-char cap)
+    - ``calls_log_path`` — the per-trial path the hook writes to,
+      inside the bind-mounted ``<trial_dir>/agent/sessions/_calls_log/``
+
+    The hook reads both via :func:`skillq.runtime.hook._load_skillq_settings`
+    on every request (with module-level cache). This replaces the
+    previous env-var transport (SKILLQ_USER_TASK /
+    SKILLQ_CALLS_LOG_PATH) which raced against Harbor's per-trial
+    ``agent._extra_env`` snapshot under
+    ``n_concurrent_trials >= 2``.
     """
     from skillq.runtime.agent import hook_settings_json
 
+    calls_log_path = (
+        f"{CONTAINER_CLAUDE_CONFIG_DIR}/_calls_log/{trial_name}.jsonl"
+        if trial_name
+        else f"{CONTAINER_CLAUDE_CONFIG_DIR}/_calls_log/skillq_skill_calls.jsonl"
+    )
     settings = hook_settings_json(
         hook_container_path=CONTAINER_HOOK_PATH,
         include_pull=include_pull,
+        user_task=user_task,
+        calls_log_path=calls_log_path,
     )
     path = trial_dir / "skillq_state" / "settings.json"
     path.parent.mkdir(parents=True, exist_ok=True)

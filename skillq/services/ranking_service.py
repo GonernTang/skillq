@@ -394,7 +394,11 @@ def build_fastapi_app(
                 ranking_id=req.ranking_id,
                 debug={
                     "pre_gate_top5": [
-                        {"skill_id": s["skill_id"], "sim": round(sim, 4)}
+                        # float() in addition to round() — Pydantic v2
+                        # can't serialize numpy.float32 (Bug #1
+                        # 2026-06-30: rank endpoint 500 → fail-open)
+                        # when sims come from numpy emb-cache vectors.
+                        {"skill_id": s["skill_id"], "sim": float(round(sim, 4))}
                         for s, sim in pre_gate_top
                     ],
                 },
@@ -404,7 +408,12 @@ def build_fastapi_app(
             "/rank: returned top_k=%d reason=ok %s",
             len(scored),
             [
-                (s.skill_id, round(s.score, 4), round(s.sim or 0.0, 4))
+                # float() defensively for the logger too — logger
+                # would print ``numpy.float32(1.0)`` otherwise (ugly
+                # but not fatal; Pydantic 500 only on JSON-serialize
+                # paths).
+                (s.skill_id, float(round(s.score, 4)),
+                 float(round(s.sim or 0.0, 4)))
                 for s in scored
             ],
         )
@@ -415,7 +424,10 @@ def build_fastapi_app(
             ranking_id=req.ranking_id,
             debug={
                 "pre_gate_top5": [
-                    {"skill_id": s["skill_id"], "sim": round(sim, 4)}
+                    # Same float()-wrap as the no_relevant_skills
+                    # branch above — pre-2026-06-30 this leaked
+                    # numpy.float32 and triggered /rank 500.
+                    {"skill_id": s["skill_id"], "sim": float(round(sim, 4))}
                     for s, sim in pre_gate_top
                 ],
             },

@@ -64,8 +64,10 @@ from skillq.config import MethodConfig  # noqa: E402
 # ---------------------------------------------------------------------------
 def _write_hook_log(trial_dir: Path, *records: dict[str, Any]) -> Path:
     """Write a hook-format ``skillq_skill_calls.jsonl`` under
-    ``<trial_dir>/agent/sessions/``. Returns the log path."""
-    sessions_dir = trial_dir / "agent" / "sessions"
+    ``<trial_dir>/agent/sessions/_calls_log/`` (the per-trial RW
+    bind-mount the hook writes to since 2026-07-01). Returns the
+    log path."""
+    sessions_dir = trial_dir / "agent" / "sessions" / "_calls_log"
     sessions_dir.mkdir(parents=True, exist_ok=True)
     p = sessions_dir / "skillq_skill_calls.jsonl"
     with p.open("w", encoding="utf-8") as f:

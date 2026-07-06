@@ -178,18 +178,23 @@ def seed_agent_env(
     # ``open(..., "a")`` which POSIX guarantees atomic for
     # short writes.
     #
-    # ``SKILLQ_USER_TASK`` is per-trial by nature, so we cannot
-    # pre-seed a meaningful value here. Instead the hook falls
-    # back to ``transcript_path`` (last-N assistant messages) when
-    # the env var is empty — that's the line at runtime/hook.py
-    # 356-357. So setting it to "" here is the same as the
-    # legacy default and continues to work via the fallback.
-    _library_root = Path(getattr(method, "library_root", "./.skillq_library")).resolve()
-    _calls_log_dir = _library_root / "_calls_log"
-    _calls_log_dir.mkdir(parents=True, exist_ok=True)
-    _calls_log_path = str(_calls_log_dir / "skillq_skill_calls.jsonl")
-    agent_cfg.env["SKILLQ_CALLS_LOG_PATH"] = _calls_log_path
-    agent_cfg.env["SKILLQ_USER_TASK"] = ""  # hooked via transcript_path fallback
+    # 2026-07-01 (Bug #51/#52 fix): neither ``SKILLQ_USER_TASK``
+    # nor ``SKILLQ_CALLS_LOG_PATH`` are seeded here anymore —
+    # they are per-trial values, and pre-seeding them on a shared
+    # cfg raced against Harbor's per-trial ``agent._extra_env``
+    # snapshot under ``n_concurrent_trials >= 2``. Both values now
+    # ride in the per-trial bind-mounted
+    # ``<trial_dir>/skillq_state/settings.json`` (the ``"skillq"``
+    # block — see :func:`skillq.runtime.container_wiring._settings_json_path`
+    # and the hook's :func:`_load_skillq_settings`). No env-var
+    # mutation happens in ``_wire_hook_trial`` either; the file
+    # is read lazily by the hook on every request.
+    #
+    # ``SKILLQ_USER_TASK`` legacy fallback: when the hook reads
+    # its ``skillq.user_task`` field and gets "" (e.g. an older
+    # settings.json without the ``skillq`` block), it still
+    # falls back to ``transcript_path`` (last-N assistant messages)
+    # at runtime/hook.py 356-357 — same legacy behaviour.
 
     # ---- Pull-mode top_k (default since 2026-07-01) ----
     # retrieval_mode="pull" is the paper-intent default; in this
