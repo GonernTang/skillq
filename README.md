@@ -31,6 +31,97 @@
 > project code name; both run modes implement the user's intended
 > workflow.
 
+## Environment Setup
+
+### Prerequisites
+
+- Python 3.12+ with [uv](https://docs.astral.sh/uv/)
+- Docker (for task trial containers)
+- Claude Code API key (set in `.env` as `ANTHROPIC_API_KEY`)
+- Embedding API key (set in `.env` as `OPENAI_API_KEY` for `text-embedding-v4`)
+
+### .env file
+
+```bash
+# .env
+ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_MODEL=deepseek-v4-flash       # or anthropic/claude-sonnet-4-5
+OPENAI_API_KEY=sk-...                   # for text-embedding-v4
+EMBEDDING_MODEL=text-embedding-v4
+```
+
+### Docker Images (Terminal-Bench 2.0)
+
+The 89 TB2 task images need to be prebuilt before running experiments. Two options:
+
+**Option A: Prebuild from upstream (recommended for new machines)**
+
+Builds images from the original `alexgshaw/<task>:20251031` upstream images, adding the Claude Code agent layer. Requires Docker Hub access (~45 min for all 89 tasks, 4 concurrent).
+
+```bash
+uv run python skillq/prebuild_images.py \
+  --cfg-path experiments/configs/prebuild_tb2_claude.yaml
+```
+
+The script automatically skips already-built images (via `docker image inspect` cache). If the local source image is missing, it falls back to the upstream `alexgshaw/<task>:20251031` image from Docker Hub.
+
+**Option B: Import from existing machine**
+
+```bash
+# On the build machine
+docker save $(docker images 'skills_vote/*' --format '{{.Repository}}:{{.Tag}}') \
+  | gzip > skillq_tb2_images.tar.gz
+
+# Copy to target machine, then
+docker load < skillq_tb2_images.tar.gz
+```
+
+### Corporate Network / TLS Proxy
+
+If your network uses a TLS inspection proxy (common in corporate environments), Docker may reject Docker Hub's certificate. Add your company's root CA:
+
+```bash
+sudo cp company-ca.crt /usr/local/share/ca-certificates/
+sudo update-ca-certificates
+sudo systemctl restart docker
+# Verify
+docker pull alpine:latest
+```
+
+### WSL2 / Docker Resource Limits
+
+When running 8 concurrent trials on WSL2, socket buffer exhaustion may occur. Increase limits:
+
+```bash
+# In WSL2 (as root)
+sysctl -w net.core.rmem_max=16777216
+sysctl -w net.core.wmem_max=16777216
+
+# On Windows host (as Administrator)
+netsh int ip set dynamicportrange protocol=tcp startport=1025 numberofports=64500
+```
+
+## Quick Start
+
+```bash
+# 1. Clone and install
+git clone git@github.com:GonernTang/skillq.git
+cd skillq
+uv sync
+
+# 2. Set up .env with API keys
+
+# 3. Prebuild task images (one-time, ~45 min)
+uv run python skillq/prebuild_images.py \
+  --cfg-path experiments/configs/prebuild_tb2_claude.yaml
+
+# 4. Run a quick smoke test (3 tasks)
+uv run skillq paper run --benchmark tb2 --variant e2e
+
+# 5. Run full experiment (89 tasks, 8 concurrent)
+uv run skillq paper run --benchmark tb2 --variant fromscratch_r2
+```
+
 ## Install
 
 ```bash
