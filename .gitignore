@@ -34,7 +34,11 @@ htmlcov/
 
 # Local experiment output
 output/
-input/
+# input/terminal-bench/ is versioned (89 TB2 task definitions).
+# Keep output/ excluded; input subdirs like input/tb2/ (Harbor cache)
+# are also excluded.
+input/tb2/
+output/
 .skillq_library/
 
 # SkillQ method state when co-located with seed_skills_dir
