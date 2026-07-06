@@ -1,0 +1,86 @@
+# TB 2.0 FROMSCRATCH ROUND 3 — inherit R2 Q-table (90 entries, 57 non-default),
+# first run with per-trial extract prompt (commit c6ede06), 8 concurrent.
+#
+# Predecessor: tb2_skillq_fromscratch_r2 run (2026-07-02)
+#   - 44/89 pass (49%), 94 skills total (67 inherited + 27 new L4)
+#   - 90 Q entries, 57 non-default (63%), Q range 0.311–0.698
+#   - Q≥0.55 → 90%+ pass rate; Q≤0.45 → 0%
+#
+# Key change vs R2:
+#   - Per-trial extract prompt (N=1 branch in extract_batch) — R1/R2 used
+#     batch prompt even for single trials; R3 is the first run with correct
+#     per-trial distillation.
+#
+# Launch:
+#   skillq paper run --benchmark tb2 --variant fromscratch_r3
+#
+# Model: deepseek-v4-flash (ANTHROPIC_MODEL from .env)
+#   89 tasks × 1 attempt, 8 concurrent, 1h/trial ceiling
+#   extract_every_n_trials=1, delete=false
+#   Wall-clock estimate: ~3h
+
+jobs_dir: output
+job_name: tb2_skillq_fromscratch_r3__${now:%Y-%m-%d__%H-%M-%S}
+n_attempts: 1
+n_concurrent_trials: 8
+quiet: false
+retry:
+  max_retries: 0
+  exclude_exceptions:
+    - VerifierTimeoutError
+    - RewardFileNotFoundError
+    - RewardFileEmptyError
+    - VerifierOutputParseError
+agent_timeout_multiplier: 1.0
+environment:
+  type: docker
+  force_build: false
+  delete: false
+  mounts_json:
+    - type: bind
+      source: /home/gonern/workspace/skillq/skills
+      target: /skills
+      read_only: true
+agents:
+  - import_path: skillq.runtime.agent:SkillQClaudeCodeAgent
+    model_name: ${oc.env:ANTHROPIC_MODEL,anthropic/claude-sonnet-4-5}
+    override_timeout_sec: 3600.0
+    kwargs:
+      reasoning_effort: high
+datasets:
+  - path: ${oc.env:SkillQ_INPUT_ROOT,/home/gonern/workspace/skillq/input}/terminal-bench
+
+method:
+  retrieval_mode: pull
+
+  library_root: ${oc.env:SkillQ_OUTPUT_ROOT,/home/gonern/workspace/skillq/output}/${job_name}/.skillq_library
+  state_path:   /home/gonern/workspace/skillq/output/tb2_skillq_fromscratch__2026-07-01__19-08-16/.skillq_library/.state/method_state.json
+  seed_skills_dir: /home/gonern/workspace/skillq/skills
+
+  retrieval:
+    top_k: 3
+    score_mode: multiplicative
+    beta: 0.5
+    gamma: 0.2
+    sim_gate_min_score: 0.5
+    sim_gate_floor: 0
+    c_ucb: 0.5
+    lambda: 0.5
+
+  attribution_model: anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-flash}
+  editor_model:      anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-flash}
+  embedder_model:    openai/${oc.env:EMBEDDING_MODEL,text-embedding-v4}
+  embedder_dim: 1024
+
+  evolve:
+    enabled: true
+    extract_every_n_trials: 1
+    enforce_failure_skill_structure: true
+
+  b_max: 1000
+  seed_initial_q: 0.5
+
+  reuse_q_table: true
+  reuse_embedding_cache: true
+
+  runtime: new
