@@ -143,6 +143,18 @@ def main() -> None:
             source_build_cmd = None
             if source_image:
                 source_image = str(source_image)
+                source_image_check = subprocess.run(
+                    ["docker", "image", "inspect", source_image],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                if source_image_check.returncode != 0:
+                    print(
+                        f"Skipping {target_image}: source image "
+                        f"{source_image} not found locally. Import it from "
+                        f"the build machine via 'docker save/load' first."
+                    )
+                    continue
             else:
                 source_image = f"local/{task_name}:{resolved_image_tag}"
                 source_image_check = subprocess.run(
