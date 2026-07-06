@@ -141,6 +141,8 @@ def main() -> None:
 
             source_image = doc["environment"].get("docker_image")
             source_build_cmd = None
+            _UPSTREAM_TAG = "20251031"
+            _UPSTREAM_REGISTRY = "alexgshaw"
             if source_image:
                 source_image = str(source_image)
                 source_image_check = subprocess.run(
@@ -149,12 +151,12 @@ def main() -> None:
                     stderr=subprocess.DEVNULL,
                 )
                 if source_image_check.returncode != 0:
+                    fallback = f"{_UPSTREAM_REGISTRY}/{task_name}:{_UPSTREAM_TAG}"
                     print(
-                        f"Skipping {target_image}: source image "
-                        f"{source_image} not found locally. Import it from "
-                        f"the build machine via 'docker save/load' first."
+                        f"Source {source_image} not found locally; "
+                        f"falling back to upstream {fallback}"
                     )
-                    continue
+                    source_image = fallback
             else:
                 source_image = f"local/{task_name}:{resolved_image_tag}"
                 source_image_check = subprocess.run(
