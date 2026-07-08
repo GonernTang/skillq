@@ -300,6 +300,7 @@ def build_fastapi_app(
             candidates.append({
                 "skill_id": sid,
                 "description": (skill.body[:200] if skill.body else ""),
+                "body": skill.body,
                 "n_retrievals": skill.n_retrievals,
             })
 
@@ -361,6 +362,7 @@ def build_fastapi_app(
             mult_beta=p.beta,
             mult_gamma=p.gamma,
             sims_out=sims_out,
+            query_text=req.query,
         )
 
         # Map (skill_id, score) → ScoredSkill with description + sim.

@@ -191,6 +191,10 @@ def score_skills(
     # in top-k order. /rank handler fills this so the calls_log can
     # persist per-trial L1 sims. List is cleared + re-populated.
     sims_out: list[float] | None = None,
+    # 2026-07-08: BM25 keyword scoring (complements cosine; fused
+    # with max before the Hard Gate). Empty string (default) skips
+    # BM25 — behavior is unchanged for callers that don't pass it.
+    query_text: str = "",
 ) -> list[tuple[str, float]]:
     """Return top-k ``(skill_id, score)`` for a sub-task.
 
@@ -201,6 +205,15 @@ def score_skills(
     one-line wrapper around this function (kept for parity reference
     and rollback). The ``tests/l1_retrieval/test_scoring_parity.py``
     test pins the bit-exact contract.
+
+    Parameters
+    ----------
+    query_text : str
+        Optional raw query text for BM25 keyword scoring. When
+        non-empty, BM25 scores are computed per candidate and fused
+        with the cosine similarity via ``max(cossim, bm25)`` before
+        the Hard Gate. When empty (default), BM25 is skipped and
+        behavior is unchanged.
     """
     # 1. Raw sim per candidate (Fail-open: missing emb → sim=0)
     sims: list[float] = []
@@ -211,6 +224,13 @@ def score_skills(
             sims.append(cosine(subtask_emb, cached))
         else:
             sims.append(0.0)
+
+    # 1.5. BM25 keyword scoring (complement cosine; fused with max).
+    if query_text:
+        from skillq.layers.l1_retrieval.bm25 import bm25_similarity
+        bodies = [s.get("body", s.get("description", "")) for s in skills]
+        bm25_scores = bm25_similarity(query_text, bodies)
+        sims = [max(c, b) for c, b in zip(sims, bm25_scores, strict=True)]
 
     # 2. Hard Gate (Fix 1) — drop low-sim candidates
     skills, sims = apply_hard_gate(
