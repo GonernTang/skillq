@@ -1,3 +1,20 @@
+# E2E smoke test — 3 fast tasks to validate Q-learning fix + /rank cache.
+#
+# Picks 3 tasks known to complete quickly (<5min each) from the
+# fromscratch run. Uses the 67 L4 skills from that run as seed.
+#
+# Verifies:
+#   1. Q-table has non-default entries after the run
+#   2. /rank cache hit (PreToolUse skips duplicate call)
+#   3. L3/L4 pipeline functions normally
+#
+# n_concurrent=3, extract_every_n_trials=1
+# Wall-clock: ~15-20 min
+#
+# Run:
+#   uv run python experiments/run/run_benchmark.py \
+#     --benchmark tb2 --variant e2e
+
 jobs_dir: output
 job_name: tb2_bm25_5tasks__${now:%Y-%m-%d__%H-%M-%S}
 n_attempts: 1
@@ -29,11 +46,11 @@ agents:
 datasets:
   - path: ${oc.env:SkillQ_INPUT_ROOT,/home/gonern/workspace/skillq/input}/terminal-bench
     task_names:
-      - crack-7z-hash          # BM25: 术语匹配 "7z","hashcat" 推高
-      - build-pmars            # BM25: 纠正 cosine 误匹配 binary-image-reverse
-      - build-cython-ext       # BM25: 推过 0.5 gate 安全线
-      - sparql-university      # 对照组: 已匹配很好
-      - fix-git                # 对照组: 简单任务
+      - crack-7z-hash
+      - build-pmars
+      - build-cython-ext
+      - sparql-university
+      - fix-git
 
 method:
   retrieval_mode: pull
@@ -42,6 +59,7 @@ method:
   state_path:   ${oc.env:SkillQ_OUTPUT_ROOT,/home/gonern/workspace/skillq/output}/${job_name}/.skillq_library/.state/method_state.json
   emb_cache_path: ${oc.env:SkillQ_EMB_CACHE_PATH,/home/gonern/workspace/skillq/skills/.skillq_state/emb_cache.json}
 
+  # 67 L4 skills from the fromscratch run
   seed_skills_dir: /home/gonern/workspace/skillq/skills
 
   retrieval:
