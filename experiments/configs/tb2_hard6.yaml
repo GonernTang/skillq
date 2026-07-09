@@ -1,0 +1,84 @@
+# TB 2.0 Hard Tasks — 6 consistently failing/timeout tasks, 6 concurrent,
+# 2h timeout, deepseek-v4-pro, inherit R4 state + BM25 hybrid.
+#
+# Tasks: caffe-cifar-10, extract-moves-from-video, make-mips-interpreter,
+#         train-fasttext, video-processing, write-compressor
+#
+# Purpose: verify whether 2h timeout + stronger model + R4 skills can
+# pass these tasks that failed 4-5/5 rounds previously.
+#
+# Launch:
+#   ANTHROPIC_MODEL=deepseek-v4-pro uv run skillq paper run --benchmark tb2 --variant hard6
+
+jobs_dir: output
+job_name: tb2_hard6__${now:%Y-%m-%d__%H-%M-%S}
+n_attempts: 1
+n_concurrent_trials: 6
+quiet: false
+retry:
+  max_retries: 0
+  exclude_exceptions:
+    - VerifierTimeoutError
+    - RewardFileNotFoundError
+    - RewardFileEmptyError
+    - VerifierOutputParseError
+agent_timeout_multiplier: 1.0
+environment:
+  type: docker
+  force_build: false
+  delete: false
+  mounts_json:
+    - type: bind
+      source: /home/gonern/workspace/skillq/skills
+      target: /skills
+      read_only: true
+agents:
+  - import_path: skillq.runtime.agent:SkillQClaudeCodeAgent
+    model_name: ${oc.env:ANTHROPIC_MODEL,deepseek-v4-pro}
+    override_timeout_sec: 7200.0
+    kwargs:
+      reasoning_effort: high
+datasets:
+  - path: ${oc.env:SkillQ_INPUT_ROOT,/home/gonern/workspace/skillq/input}/terminal-bench
+    task_names:
+      - caffe-cifar-10
+      - extract-moves-from-video
+      - make-mips-interpreter
+      - train-fasttext
+      - video-processing
+      - write-compressor
+
+method:
+  retrieval_mode: pull
+
+  library_root: ${oc.env:SkillQ_OUTPUT_ROOT,/home/gonern/workspace/skillq/output}/${job_name}/.skillq_library
+  state_path:   /home/gonern/workspace/skillq/output/tb2_skillq_fromscratch__2026-07-01__19-08-16/.skillq_library/.state/method_state.json
+  seed_skills_dir: /home/gonern/workspace/skillq/skills
+
+  retrieval:
+    top_k: 3
+    score_mode: multiplicative
+    beta: 0.5
+    gamma: 0.2
+    sim_gate_min_score: 0.5
+    sim_gate_floor: 0
+    c_ucb: 0.5
+    lambda: 0.5
+
+  attribution_model: anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-pro}
+  editor_model:      anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-pro}
+  embedder_model:    openai/${oc.env:EMBEDDING_MODEL,text-embedding-v4}
+  embedder_dim: 1024
+
+  evolve:
+    enabled: true
+    extract_every_n_trials: 1
+    enforce_failure_skill_structure: true
+
+  b_max: 1000
+  seed_initial_q: 0.5
+
+  reuse_q_table: true
+  reuse_embedding_cache: true
+
+  runtime: new
