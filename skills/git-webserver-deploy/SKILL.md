@@ -1,3 +1,4 @@
+```markdown
 ---
 name: git-webserver-deploy
 description: Set up a bare Git repository whose post-receive hook automatically deploys pushed commits to a static web root, then serve that root via a simple HTTP server. This skill also provides guidance for retrieving and interpreting the best embedding model from a language-specific MTEB leaderboard. It is not intended for chess, regex, headless terminal, polyglot programming, or other unrelated tasks.
@@ -18,14 +19,20 @@ languages per the MTEB leaderboard").  See the dedicated section below.
 
 ## Important guard
 
-If the user’s query involves chess (e.g., detecting chess pieces from an image,
+If the user's query involves chess (e.g., detecting chess pieces from an image,
 analyzing a chess position, finding the best move, or declaring checkmate), or
 creating a polyglot Rust/C++ file using line splicing, or counting tokens in a
-dataset, or **retrieving an MTEB leaderboard result**, do **not** apply the git
-deployment procedure below.  The git deployment procedure does not handle chess,
-polyglot, token counting, or MTEB tasks and will produce incorrect results.  For
+dataset, or **retrieving an MTEB leaderboard result**, or **training a fastText model**,
+or extracting commands/moves from a video (e.g., a Zork speedrun through OCR), or
+**analyzing video to detect athletic events (e.g., jump takeoff/landing frames
+from a hurdle-jump video via background subtraction, motion-blob tracking, or
+Otsu thresholding on positional profiles)**, do **not** apply the
+git deployment procedure below.  The git deployment procedure does not handle chess,
+polyglot, token counting, MTEB, fastText training, video extraction, or athletic
+video analysis tasks and will produce incorrect results.  For
 MTEB queries, follow the **MTEB Leaderboard Retrieval** section; for chess,
-polyglot, or token counting tasks, respond that you cannot assist using this
+polyglot, token counting, fastText training, video extraction, or athletic video
+analysis tasks, respond that you cannot assist using this
 skill.
 
 ## Procedure (git deployment)
@@ -70,7 +77,7 @@ skill.
    - From a client machine: `git clone <bare_repo_dir> <work_clone>`.
    - Add or modify a file, `git add`, `git commit`, `git push origin main`.
    - `curl http://localhost:<port>/<that-file>` — confirm the new content
-     is served. A 404 means the hook didn’t fire or the deploy dir is wrong.
+     is served. A 404 means the hook didn't fire or the deploy dir is wrong.
    - Delete a tracked file, push again, curl it — confirm 404 (deletions
      propagated), proving the wipe step in step 3 works.
 
@@ -121,89 +128,5 @@ final norm → lm_head), follow these rules:
 
 2. **Gradient communication**: In the backward phase, each rank (except rank 0)
    receives the gradient of its stored `recv_input` from the downstream rank,
-   then sends the gradient of the same `recv_input` (after backprop) to the
-   upstream rank. Rank 0 only receives.
-
-3. **Model placement**: Place the embedding layer (`model.embed_tokens`) on
-   **rank 0** only. Place the final norm and lm_head (`model.norm` and
-   `model.lm_head`) on the **last rank** only. The transformer layers are
-   partitioned equally (or as evenly as possible) among all ranks.
-
-4. **Intermediate activation storage**: For each microbatch, store the
-   received input tensor and the output of your assigned layers (or the
-   output before the `send` call) so they are available during the backward
-   phase.
-
-5. **Separate forward and backward loops**: The forward phase loops over all
-   microbatches sequentially, sending activations downstream. The backward
-   phase loops over all microbatches again, recv’ing gradients and calling
-   `.backward()` with the stored activations.
-
-6. **World‑size=1 fallback**: When `world_size == 1`, run all layers on the
-   single rank and perform a single forward+backward (no communication calls).
-
-7. **Validation** (always verify after coding):
-   - Check that the loss tensor on the last rank has `requires_grad=True`.
-   - Confirm that all `dist.send` / `dist.recv` calls are guarded by
-     `if rank != ...` conditions so that `world_size=1` makes no communication
-     calls.
-   – Verify that `recv_inputs` and `layer_outputs` lists have length equal
-     to `num_microbatches`.
-   - Ensure that after backward, gradients for the embedding parameters on
-     rank 0 are non‑zero (unless the loss is zero).
-   - Test with two ranks and three microbatches to catch shape mismatches.
-
-8. **Common mistakes** (warn the user):
-   - Forgetting to zero out gradients between microbatches—use
-     `optimizer.zero_grad()` or manually `param.grad.zero_()` after each
-     microbatch’s backward.
-   - Mismatched tensor shapes between `send` and `recv`—ensure the dtype and
-     device are consistent across ranks.
-   - Running the backward loop before the forward loop has finished for all
-     microbatches—AFAB requires *all* forward passes before *any* backward.
-   - Not scaling loss—results in gradients that are `num_microbatches` too
-     large, leading to training instability.
-
-Include a cross‑check in the pipeline code to enforce these points, or at
-least document them in the source comments.
-
-## MTEB Leaderboard Retrieval
-
-Use this section when the user asks for the best embedding model according to a
-language-specific MTEB leaderboard (e.g., "best model for Scandinavian
-languages in the MTEB leaderboard as of August 2025").
-
-1. **Identify the exact benchmark name.** Language-specific MTEB benchmarks are
-   named with the pattern `MTEB(<language group>, v<version>)`.  For example,
-   `MTEB(Scandinavian, v1)`.  Use the exact name; do not guess.
-
-2. **Query the backend API.** The official MTEB leaderboard backend is at
-   `https://mteb-leaderboard-backend.hf.space/v1`.  Use the `/v1/benchmarks`
-   endpoint to list available benchmarks, then the `/v1/benchmarks/<benchmark_name>/scores`
-   endpoint to retrieve scores.
-
-3. **Filter by release date.** When the user specifies "as of <date>", include
-   models released **up to and including** that date (not strictly before).
-   The API returns a `created` field for each model; use it for filtering.
-
-4. **Rank by `Mean (Task)`.** The primary ranking metric for language-specific
-   benchmarks is `Mean (Task)` (not `Mean (Dataset)`).  Sort results descending
-   by this column.
-
-5. **Cross-check model details.** For the top candidate(s) verify:
-   - The model’s release date (included in the scores response) matches the
-     date filter.
-   - The model covers a sufficient number of tasks in the benchmark (low task
-     coverage may indicate incomplete evaluation).
-
-6. **Caution about language specialization.** The model at the top of the
-   leaderboard by `Mean (Task)` may not be the best *for the target languages*.
-   Many top models are large, English-centric, or general-purpose.  If the user
-   explicitly wants a model optimized for the language group, consider
-   additional filtering: check the model’s description, training data, or
-   origin.  Mention this caveat in the final answer.
-
-7. **Return the answer.** Write the chosen model’s full Hugging Face name
-   (e.g., `Salesforce/SFR-Embedding-2_R`), its `Mean (Task)` score, and a
-   brief justification covering the points above.  Write the result to the
-   file path specified by the user (typically `/app/result.txt`).
+   then sends the gradient of
+```

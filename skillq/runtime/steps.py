@@ -580,6 +580,34 @@ async def step_incremental_edit(ctx: "TrialContext", result: "StepResult") -> No
     services.lib.replace(new_skill)
     result.edited_skill_id = new_skill.skill_id
 
+    # 2026-07-09: Q-value continuity on edit — a rewritten skill body
+    # should not inherit the old Q-value wholesale (a bad skill with
+    # Q=0.1 would stay stuck; a good skill with Q=0.8 would coast).
+    # Decay toward the neutral prior (Q_init=0.5) proportional to
+    # the edit distance: the more the body changed, the less history
+    # is carried forward. Falls back to a moderate 0.5 decay when
+    # embedding is unavailable.
+    _old_q = services.mgr.q_for(new_skill.skill_id)
+    if abs(_old_q - method.seed_initial_q) > 0.01:
+        try:
+            _emb = LiteLLMEmbedder(
+                model=method.embedder_model,
+                dim=int(getattr(method, "embedder_dim", 1536)),
+            )
+            _vecs = _emb([top.body[:2000], new_skill.body[:2000]])  # type: ignore[arg-type]
+            _edit_dist = max(
+                0.0,
+                float(_cosine(_vecs[0].tolist(), _vecs[1].tolist())),
+            )
+        except Exception:
+            _edit_dist = 0.5
+        _new_q = _old_q * _edit_dist + method.seed_initial_q * (1.0 - _edit_dist)
+        services.mgr.set_q(new_skill.skill_id, _new_q)
+        logger.info(
+            "L3 edit: skill=%s Q %.3f→%.3f (edit_dist=%.3f)",
+            new_skill.skill_id, _old_q, _new_q, _edit_dist,
+        )
+
     # 2026-06-29 (Phase 10 Bug 3): critical — mirror the edited body
     # to seed_skills_dir so the next trial's container (which reads
     # bind-mounted /skills) sees the *new* body, not the seed body
