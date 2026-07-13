@@ -307,25 +307,45 @@ async def step_q_update(ctx: "TrialContext", result: "StepResult") -> None:
 # Step 3: attribute (L3 verdict)
 # ---------------------------------------------------------------------------
 async def step_attribute(ctx: "TrialContext", result: "StepResult") -> None:
-    """Run the L3 attribution analyzer.
+    """Run L3 attribution — always calls LLM for knowledge extraction.
 
-    Always called (even when ``extractor is None``) because
-    :func:`step_incremental_edit` reads the verdict to gate on
-    ``FAILURE_SKILL_USED``. Cost: +1 LLM call per trial even
-    when L4 is disabled — acceptable because L3 cannot fire
-    without the verdict.
+    The LLM receives the full session trace plus the list of current
+    library skill IDs (``available_skill_ids``) so it can reliably
+    detect whether a skill was used.  After the LLM returns, the
+    calls_log is used as ground truth to correct misclassified
+    verdicts (``FAILURE_SKILL_NOT_USED`` / ``FAIL_ENV_ISSUE`` →
+    ``FAILURE_SKILL_USED`` when a lib skill was actually called).
 
-    Writes the :class:`TrialAttribution` to ``result.attribution``
-    so the next step can read it without re-running the analyzer.
-
-    Falls back to a stub verdict when the trace is missing
-    (the analyzer handles this internally).
+    knowledge_to_extract from the LLM is always preserved — even
+    when the verdict is overridden — because it contains the raw
+    material for L3 skill edits and L4 new-skill creation.
     """
+    # Read calls_log for ground-truth skill usage check.
+    _log = (
+        ctx.trial_dir / "agent" / "sessions"
+        / "_calls_log" / "skillq_skill_calls.jsonl"
+    )
+    _calls = _read_skill_calls_log(_log)
+    if not _calls:
+        _calls = _extract_skill_calls_from_session(ctx.trial_dir)
+    _approved = [
+        c for c in _calls
+        if c.skill_id and not c.denied
+        and c.skill_id in ctx.services.lib
+    ]
+
+    # Build available skill list from the in-memory library.
+    skill_ids = list(ctx.services.lib.skills.keys())
+    logger.warning(
+        "step_attribute: trial=%s r_task=%d approved_calls=%d lib_skills=%d",
+        ctx.trial_id, ctx.r_task, len(_approved), len(skill_ids),
+    )
+
     try:
         attribution = ctx.services.attribution_analyzer.analyze(
             task=ctx.intent_text,
             trial_dir=ctx.trial_dir,
-            skills_root=_find_skills_dir(ctx),
+            available_skill_ids=skill_ids,
             r_task=ctx.r_task,
         )
     except Exception:
@@ -339,25 +359,60 @@ async def step_attribute(ctx: "TrialContext", result: "StepResult") -> None:
                 else Attribution.FAILURE_SKILL_USED
             ),
             overall_rationale="[attribution-fallback] model call failed",
+            knowledge_to_extract="",
         )
+
+    # If calls_log proves a lib skill was used but the LLM returned a
+    # mismatch, correct the verdict.  knowledge_to_extract is preserved.
+    if ctx.r_task == 0 and _approved:
+        if attribution.overall_attribution not in (
+            Attribution.FAILURE_SKILL_USED,
+        ):
+            logger.warning(
+                "attribution verdict override: trial=%s LLM=%s but "
+                "calls_log shows %d approved Skill() call(s) (first=%s) "
+                "→ clamped to failure_skill_used",
+                ctx.trial_id, attribution.overall_attribution.value,
+                len(_approved), _approved[0].skill_id,
+            )
+            attribution = attribution.model_copy(update={
+                "overall_attribution": Attribution.FAILURE_SKILL_USED,
+                "overall_rationale": (
+                    f"[calls-log-override] r_task=0, {len(_approved)} "
+                    f"Skill() calls detected, LLM returned "
+                    f"{attribution.overall_attribution.value}; "
+                    f"coerced to failure_skill_used. "
+                    f"{attribution.overall_rationale}"
+                ),
+            })
+
+    logger.warning(
+        "attribution verdict: trial=%s r_task=%d overall=%s "
+        "knowledge_chars=%d",
+        ctx.trial_id, ctx.r_task,
+        attribution.overall_attribution.value,
+        len(attribution.knowledge_to_extract),
+    )
+
     result.attribution = attribution
 
+    # Persist for post-hoc analysis.
+    try:
+        attr_path = ctx.trial_dir / "skillq_state" / "attribution_result.json"
+        attr_path.parent.mkdir(parents=True, exist_ok=True)
+        attr_path.write_text(
+            json.dumps(
+                attribution.model_dump(mode="json"), ensure_ascii=False
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    except Exception:
+        logger.exception(
+            "Failed to persist attribution_result.json for trial %s",
+            ctx.trial_id,
+        )
 
-def _find_skills_dir(ctx: "TrialContext") -> Path | None:
-    """Locate the directory lqrl's ``step_recommend`` copied skills into.
-
-    Mirrors the legacy ``_find_skills_dir`` in
-    ``runtime/bridge.py:211-228``. The per-subtask hook
-    doesn't need this; we still surface it for the attribution
-    analyzer.
-    """
-    # The legacy version took a TrialHookEvent and read
-    # ``event.config.agent.env``. In the new pipeline the env is
-    # not on the event — it's on ``ctx.services.method``'s parent
-    # job config (not currently threaded through). Until that
-    # lands we return None and let the analyzer degrade to
-    # ``available_skills = {}`` (it already handles that case).
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -456,10 +511,10 @@ async def step_refresh_emb_cache(ctx: "TrialContext", result: "StepResult") -> N
 
 
 # ---------------------------------------------------------------------------
-# Step 6: incremental_edit (L3 EditRefiner on FAILURE_SKILL_USED)
+# Step 6: incremental_edit (L4 — edit existing skill on FAILURE_SKILL_USED)
 # ---------------------------------------------------------------------------
 async def step_incremental_edit(ctx: "TrialContext", result: "StepResult") -> None:
-    """L3 in-place edit when the failing trial's attribution
+    """L4 in-place edit when the failing trial's attribution
     says a skill was used and is at fault.
 
     Gate (in order):
@@ -489,51 +544,6 @@ async def step_incremental_edit(ctx: "TrialContext", result: "StepResult") -> No
         return
     attribution = result.attribution
 
-    # Fix B (2026-07-01, small10 gap 3): cross-check fail_env_issue
-    # against the calls_log. When the LLM misclassifies a skill-
-    # capability gap as fail_env_issue, the calls_log provides
-    # objective evidence that a lib skill was actually called and
-    # approved — which means the failure IS skill-related and
-    # should trigger L3 edit.
-    if (
-        attribution is not None
-        and attribution.overall_attribution == Attribution.FAIL_ENV_ISSUE
-    ):
-        _log_path = (
-            ctx.trial_dir
-            / "agent"
-            / "sessions"
-            / "_calls_log"
-            / "skillq_skill_calls.jsonl"
-        )
-        _calls = _read_skill_calls_log(_log_path)
-        if not _calls:
-            _calls = _extract_skill_calls_from_session(ctx.trial_dir)
-        _approved_lib_calls = [
-            c for c in _calls
-            if c.skill_id and not c.denied and c.skill_id in services.lib
-        ]
-        if _approved_lib_calls:
-            logger.warning(
-                "l3_edit_clamp_env_to_skill_used: trial=%s LLM returned "
-                "fail_env_issue but calls_log shows %d approved "
-                "Skill() call(s) against lib skill(s) (first=%s) — "
-                "clamped to failure_skill_used.",
-                ctx.trial_id,
-                len(_approved_lib_calls),
-                _approved_lib_calls[0].skill_id,
-            )
-            attribution = attribution.model_copy(update={
-                "overall_attribution": Attribution.FAILURE_SKILL_USED,
-                "overall_rationale": (
-                    f"[env-issue-clamp] r_task=0 and Skill was "
-                    f"called but LLM returned fail_env_issue; "
-                    f"coerced to failure_skill_used. "
-                    f"{attribution.overall_rationale}"
-                ),
-            })
-            result.attribution = attribution
-
     if (
         attribution is None
         or attribution.overall_attribution != Attribution.FAILURE_SKILL_USED
@@ -559,6 +569,10 @@ async def step_incremental_edit(ctx: "TrialContext", result: "StepResult") -> No
         if gx:
             diagnosis_parts.append(f"library_gap_skill_description: {gx}")
     diagnosis = "\n".join(diagnosis_parts)
+    logger.warning(
+        "L3 incremental_edit: trial=%s diagnosis_chars=%d",
+        ctx.trial_id, len(diagnosis),
+    )
     tail = _read_session_assistant_tail(ctx.trial_dir, k=3, per_message_chars=2000)
 
     try:
@@ -729,10 +743,6 @@ async def step_dispatch_evolve(ctx: "TrialContext", result: "StepResult") -> Non
     triggered = False
 
     if not knowledge:
-        # Fix C (2026-07-01, small10 gap 2 audit): enum says "harvest"
-        # (SUCCESS_NO_SKILL_SEEN / FAILURE_SKILL_NOT_USED) but LLM gave
-        # no procedural knowledge → silent skip previously, now visible
-        # via warning so audit can see the misclassification.
         if attribution.overall_attribution in (
             Attribution.SUCCESS_NO_SKILL_SEEN,
             Attribution.FAILURE_SKILL_NOT_USED,
@@ -750,6 +760,10 @@ async def step_dispatch_evolve(ctx: "TrialContext", result: "StepResult") -> Non
             ctx.r_task
             and attribution.overall_attribution == Attribution.SUCCESS_NO_SKILL_SEEN
         ):
+            logger.warning(
+                "l4_dispatch_rule2_success: trial=%s knowledge_chars=%d",
+                ctx.trial_id, len(knowledge),
+            )
             buffer_full = services.extract_buffer.add(
                 task=ctx.intent_text,
                 knowledge=knowledge,
@@ -765,6 +779,10 @@ async def step_dispatch_evolve(ctx: "TrialContext", result: "StepResult") -> Non
             and attribution.overall_attribution
             == Attribution.FAILURE_SKILL_NOT_USED
         ):
+            logger.warning(
+                "l4_dispatch_rule5_failure: trial=%s knowledge_chars=%d",
+                ctx.trial_id, len(knowledge),
+            )
             buffer_full = services.extract_buffer.add(
                 task=ctx.intent_text,
                 knowledge=knowledge,

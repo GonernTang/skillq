@@ -412,7 +412,7 @@ def render_pull_recommendation(
     top_k: list[tuple[str, float]],
     skills_by_id: dict[str, Any],
     lambda_: float = 0.5,
-    c_ucb: float = 0.5,
+    c_ucb: float = 0.0,
     subtask_emb: list[float] | None = None,
 ) -> str:
     """Render a Top-K skills recommendation block for the agent's CLAUDE.md.
