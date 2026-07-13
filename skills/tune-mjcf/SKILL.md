@@ -1,30 +1,73 @@
 ---
 name: tune-mjcf
-description: Tune a MuJoCo MJCF model's simulation speed by increasing the integration timestep while preserving trajectory fidelity. Use when the user wants a faster simulation, asks to "speed up" / "tune" / "optimize" an MJCF, or needs to hit a target simulation-time-percentage without exceeding a state-difference tolerance.
+description: Speed up a MuJoCo MJCF simulation while preserving the exact state trajectory by tuning the solver and timestep without altering physics properties.
 ---
 
-# Tuning MuJoCo MJCF Simulation Speed
+# Tuning MJCF for Speed Without Breaking Correctness
 
-Speed up a MuJoCo simulation by raising the integration timestep in the MJCF `<option>` element, while keeping final-state deviation within tolerance. Smaller timesteps = more accurate but slower; larger timesteps = faster but may diverge or lose accuracy.
+Goal: make a MuJoCo simulation faster while keeping its state trajectory (within a strict tolerance, e.g. 1e-5) bit-equivalent or near-bit-equivalent to the reference model.
 
 ## Procedure
 
-1. **Read the model.** Load the MJCF and locate the `<option timestep="...">` attribute. Record the current (default) value as `t0`.
-2. **Establish a reference trajectory.** Run the simulation for the required duration using a fixed random seed and `t0`. Record the final state vector (qpos, qvel, and any relevant sensors/actuators) as `S_ref`. Also record the wall-clock simulation time as `T_ref`.
-3. **Define the success criteria.**
-   - **Tolerance:** `tol` — max allowed per-element difference between candidate final state and `S_ref` (commonly `1e-5` for tight fidelity, looser if the task allows).
-   - **Speedup target:** e.g. ≥ X% of the reference simulation time consumed, or a fixed wall-clock budget.
-4. **Sweep candidate timesteps.** Starting from `t0`, try progressively larger values (e.g. `t0 * 2`, `t0 * 3`, `t0 * 4`, …) — use binary search once you have two bracketing values (one passing, one failing). For each candidate `t_cand`:
-   - Reset the model and run with the **same random seed** and same duration.
-   - Compute the per-element max difference `max|S - S_ref|`.
-   - Check for `NaN` / `Inf` in the final state (divergence) and intermediate states if practical.
-5. **Pick the largest timestep that passes.** The optimal `t` is the largest candidate where `max|S - S_ref| < tol` AND no `NaN`/`Inf` appeared AND the measured simulation time meets the speedup target. If `t0` already exceeds the target, no change is needed.
-6. **Edit the MJCF.** Update `<option timestep="...">` to the chosen value and save.
-7. **Verify.** Re-run end-to-end with the new timestep and the original seed; confirm the state difference vs. `S_ref` is within tolerance, no `NaN`/`Inf`, and wall-clock time meets the target.
+1. **Profile the bottleneck**
+   - Measure per-step cost (MuJoCo built-in timers, `mujoco.utils.timer_time`, or a manual `time.perf_counter` loop).
+   - In most models the constraint solver dominates — not the integrator, not the broadphase.
 
-## Pitfalls
+2. **Pick the cheapest correct solver**
+   - Allowed MJCF `<option solver="...">` values: `PGS` (Projected Gauss-Seidel), `CG` (Conjugate Gradient), `Newton`. Default is `Newton`.
+   - Try `solver="PGS"` first with `iterations="1"`, then `solver="CG"` with `iterations="1"`. PGS is usually fastest on small/medium models; CG converges faster when there are many constraints.
+   - Keep `iterations` as low as the model tolerates; this is a single most-effective knob.
 
-- **Larger timesteps can also need more substeps / iterations** to stay stable. If the integrator becomes unstable (NaN), also reduce `solver` iterations or switch to `solver="RK4"` before further increasing `timestep`.
-- **Don't change contact parameters or geometry** — fidelity comparisons must differ *only* in timestep.
-- **Re-seed for every run**; otherwise measurement noise drowns the real difference.
-- **Final-state comparison is necessary but not always sufficient.** For chaotic systems, also sample intermediate states to catch trajectory drift.
+3. **Optionally raise the timestep**
+   - Increase `<option timestep="...">` (e.g. from 0.001 to 0.002 or 0.005) only if state still matches the reference.
+   - A bigger timestep cuts step count but may push the integrator past its stability region — verify after each change.
+
+4. **Validate against the reference model**
+   - Run both models from randomized initial conditions for a representative horizon (many hundreds/thousands of steps).
+   - Compare final `qpos`, `qvel`, `act`, and any other state fields you care about with `np.allclose(ref, tuned, atol=1e-5, rtol=0)`.
+   - Check that no `NaN`/`Inf` appear in any state or sensor field.
+
+5. **What NOT to touch**
+   - Do **not** modify physical properties to "help" the simulation: no body masses, geom sizes, joint `damping`/`armature`, `solref`/`solimp` contact parameters, plugin config, actuator gains, or friction values. Any of these change the physics and silently invalidate correctness.
+   - The only safe knobs are `<option solver>`, `<option iterations>`, and `<option timestep>`. Optionally `<option noslip_iterations>` / `<option cone>` are also pure solver tuning.
+
+6. **Pick the best trade-off**
+   - Among the candidates that pass the state match, choose the one with the largest wall-clock speedup.
+   - Report the speedup factor and which knobs were changed.
+
+## Minimal MJCF diff pattern
+
+```xml
+<option timestep="0.002" solver="PGS" iterations="1"/>
+```
+
+vs. the reference:
+
+```xml
+<option timestep="0.001" solver="Newton" iterations="100"/>
+```
+
+## Verification script outline
+
+```python
+import mujoco, numpy as np
+
+ref = mujoco.MjModel.from_xml_string(REF_XML)
+tuned = mujoco.MjModel.from_xml_string(TUNED_XML)
+
+for trial in range(N_TRIALS):
+    d_ref, d_tuned = mujoco.MjData(ref), mujoco.MjData(tuned)
+    d_ref.qpos[:] = np.random.uniform(-0.1, 0.1, ref.nq)
+    d_tuned.qpos[:] = d_ref.qpos[:]
+    for _ in range(N_STEPS):
+        mujoco.mj_step(ref, d_ref)
+        mujoco.mj_step(tuned, d_tuned)
+    assert np.allclose(d_ref.qpos, d_tuned.qpos, atol=1e-5, rtol=0)
+    assert np.all(np.isfinite(d_tuned.qpos)) and np.all(np.isfinite(d_tuned.qvel))
+```
+
+## Failure modes to watch for
+
+- **Trajectory drift with `CG`** at low iteration counts on models with friction cones or many contacts → fall back to `PGS`.
+- **Explosions (NaN)** when raising timestep → reduce or revert.
+- **Speedup but state diverges** → solver is too cheap; raise `iterations` or switch solver.

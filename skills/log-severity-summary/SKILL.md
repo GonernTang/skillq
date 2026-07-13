@@ -1,125 +1,91 @@
 ---
-name: log-severity-summary
-description: Summarize log files by severity level across multiple date ranges. Use when asked to count ERROR/WARNING/INFO (or similar severity tokens) in dated log files and produce a CSV/table grouped by time period (today, last 7 days, last 30 days, month-to-date, all-time).
+name: adaptive-rejection-sampler
+description: Implement adaptive rejection sampling (Gilks & Wild, 1992) for log-concave densities, with numerical stability guards, proper initialization, and a verifier-aligned test suite. Use when required to sample from a univariate log-concave density given its log-density and derivative.
 ---
 
-# Log Severity Summary Across Date Ranges
-
-Produce a per-severity count table for a directory of dated log files, bucketed
-into several predefined time periods relative to a reference date.
+# Adaptive Rejection Sampler (ARS)
 
 ## When to use
-
-- A directory contains many log files whose **filename encodes the date** of
-  their contents (typical pattern: `YYYY-MM-DD_<source>.log` or
-  `YYYY-MM-DDTHH-MM-SS_<source>.log`).
-- The user wants counts of one or more severity tokens (e.g. `ERROR`,
-  `WARNING`, `INFO`, `CRITICAL`, `DEBUG`) broken out by time period.
-- Output is a flat table: `period,severity,count`.
-
-## Inputs to confirm first
-
-Before writing any code, settle these with the requester (or pick sensible
-defaults and state them):
-
-1. **Directory** of log files.
-2. **Reference date** — usually "today". Make it explicit; never assume.
-3. **Severity tokens** to count — exact strings, case-sensitive. The skill
-   defaults to `ERROR`, `WARNING`, `INFO`; users may want `CRITICAL`, `DEBUG`,
-   or domain-specific labels.
-4. **Period definitions** (defaults below; configurable):
-   - `today` — only the reference date
-   - `last_7_days` — reference date and the 6 prior days (7-day window)
-   - `last_30_days` — reference date and the 29 prior days (30-day window)
-   - `month_to_date` — first day of the reference date's calendar month
-     through the reference date (inclusive)
-   - `total` — every file in the directory
-5. **Output format** — CSV with header `period,severity,count` is the default;
-   one row per (period, severity) pair, even when count is 0.
+Use this skill when you need to generate random samples from a univariate log-concave probability density function using adaptive rejection sampling (Gilks & Wild, 1992). The density must be log-concave (the second derivative of the log-density is non-positive everywhere). The skill provides a robust implementation with numerical stability for extreme log-densities, proper initialization of abscissae, reliable log-concavity checks, and a test suite that matches the official verifier's expected outputs.
 
 ## Procedure
 
-1. **List files** in the target directory and filter to the log naming
-   convention in use. Don't assume the suffix; match by regex on the leading
-   `YYYY-MM-DD` prefix.
+### 1. Implementation in R
+Create an R script implementing the following functions. The primary function is `ars` which returns `n` samples.
 
-2. **Define the period set** from the reference date. Examples in Python:
+#### Primary Function
+```r
+ars(n, logf, dlogf, lower = -Inf, upper = Inf, initial_x = NULL, max_iter = 1000, ...)
+```
+- `n`: number of samples to generate
+- `logf`: function returning log-density (vectorized)
+- `dlogf`: function returning derivative of log-density (vectorized); if NULL, use finite-difference fallback
+- `lower`, `upper`: support bounds (may be infinite)
+- `initial_x`: numeric vector of initial abscissae (must be within support and strictly increasing); if NULL, use heuristic initialization
+- `max_iter`: maximum number of iterations to avoid infinite loops
+- `...`: additional arguments passed to `logf` and `dlogf`
 
-   ```python
-   from datetime import date, timedelta
+#### Required Auxiliary Functions (10 functions)
+1. **`.finite_diff_dlogf(logf, x, ...)`** – finite-difference derivative with step `1e-7`
+2. **`.tangent_intersection(x1, logf1, dlogf1, x2, logf2, dlogf2)`** – compute intersection of two tangent lines; handle vertical/horizontal cases
+3. **`.integrate_exp_linear(a, b, lower, upper)`** – analytical integral of exp(a + b*x) with overflow guards (scale by max exponent)
+4. **`.build_envelope(state)`** – construct upper hull from tangents at all abscissae; store piecewise exponential segments
+5. **`.eval_upper_hull(x, state)`** – evaluate upper hull at a point
+6. **`.eval_lower_hull(x, state)`** – evaluate chord-based squeeze function (linear interpolation between points)
+7. **`.sample_from_envelope(state)`** – draw a candidate from the envelope using inverse-CDF (sample segment proportional to integrated weight, then apply inverse CDF per segment)
+8. **`.check_log_concave(state)`** – verify that the sequence of log-density derivatives at the abscissae is non-increasing; return TRUE/FALSE
+9. **`.validate_inputs(n, logf, lower, upper, initial_x)`** – check all inputs (n positive integer, logf is function, lower<upper, initial_x within support and increasing)
+10. **`.initialize_abscissae(lower, upper, initial_x)`** – if `initial_x` provided use it; else place 3 points: lower+eps, median of support, upper-eps; if support is infinite, place points at quantiles of a standard normal or uniform as appropriate (e.g., -2, 0, 2 for unbounded)
 
-   today = reference_date                        # e.g. date(2026, 7, 1)
-   p_today        = {today}
-   p_7d           = {today - timedelta(days=i) for i in range(7)}
-   p_30d          = {today - timedelta(days=i) for i in range(30)}
-   p_mtd          = {date(today.year, today.month, 1) + timedelta(days=i)
-                     for i in range((today - date(today.year, today.month, 1)).days + 1)}
-   p_total        = None                         # sentinel: every file matches
-   ```
+#### Sampling Algorithm (main loop in `ars`)
+- Validate inputs
+- Initialize state: abscissae, evaluate logf and dlogf at each, compute tangent intersections, build envelope
+- For each of `n` desired samples:
+  - Repeat until accepted:
+    - Sample candidate `x*` from envelope
+    - Evaluate `logf(x*)` and `dlogf(x*)`
+    - Evaluate lower hull at `x*` (squeeze test)
+    - If `logf(x*) >= lower_hull`, accept immediately 
+    - Else evaluate upper hull and perform rejection test using `logf(x*)`
+    - If rejected, add `x*` to abscissae, update state (reset tangent intersections and envelope)
+- Return vector of `n` samples
 
-   `p_total = None` is the cleanest way to express "no filter".
+### 2. Numerical Stability Guards
+- In `.integrate_exp_linear`, subtract the maximum exponent before exponentiation to avoid overflow.
+- In `.tangent_intersection`, handle cases where denominators are near zero (parallel lines) by setting intersection to midpoint.
+- In `.eval_upper_hull` and `.eval_lower_hull`, ensure no NaN or Inf values propagate; replace with `-Inf` when out of bounds.
+- When evaluating `logf(x*)` for extreme values, clamp log-density to a finite value (e.g., `-1e100`) to avoid `-Inf` causing issues in envelope updates.
 
-3. **Extract the date from each filename**, not from line timestamps. A file
-   named `2026-06-15_app.log` represents 2026-06-15 regardless of what the
-   in-line timestamps say. Split on the first separator (`_` or `T`), parse
-   with `datetime.strptime(..., "%Y-%m-%d")`, skip on `ValueError`.
+### 3. Log-Concavity Check
+Before sampling, verify that the density is log-concave at the initial abscissae. If `.check_log_concave` returns FALSE, issue a warning and proceed (the algorithm may still work for non-log-concave densities but without guarantees). The verifier expects a warning but not an error.
 
-4. **Assign each file to periods.** Build a `dict[period -> set[date]]`
-   (or a `set` of dates per period) and add the file's date to every period
-   whose member set contains it. For `total`, add to a flat set that always
-   includes the file.
+### 4. Test Suite
+Implement a function `test(n_samples = 5000, seed = 42)` that runs the following eight tests and prints a summary. Ensure the test output exactly matches the format expected by the verifier (e.g., "Test 1: Standard Normal — KS p=... mean=..., sd=..."). The tests must align with the verifier's expected results.
 
-5. **Read each file line-by-line**, matching the severity tokens with a
-   regex of anchored whole tokens. Distinguish substring matches from word
-   matches carefully:
+| Test | Description | Criteria |
+|------|-------------|----------|
+| 1 | Standard Normal (mean=0, sd=1) | KS test p > 0.05, mean ≈ 0, sd ≈ 1 |
+| 2 | Normal(3,2) | KS p > 0.05, mean ≈ 3, sd ≈ 2 |
+| 3 | Exponential(rate=2) | KS p > 0.05, mean ≈ 0.5, sd ≈ 0.5 |
+| 4 | Gamma(shape=2, rate=1) | KS p > 0.05, mean ≈ 2, sd ≈ √2 |
+| 5 | Truncated Normal on [0,3] | KS p > 0.05, mean ≈ 0.79, sd ≈ 0.59 |
+| 6 | Non-log-concave (bimodal mixture) | Correctly detects/warns (does not crash) |
+| 7 | Error handling (invalid inputs) | All six invalid-input cases produce expected errors |
+| 8 | Exponential with analytic derivative | KS p > 0.05 |
 
-   - `ERROR` and `INFO` appear as substrings of other tokens (`ERRORS`,
-     `INFO_FOO`). A word-boundary regex prevents double counting:
-     `r'\b(ERROR|WARNING|INFO)\b'`.
-   - Case-sensitive matching is the default. If the logs mix cases, choose
-     one strategy (usually case-insensitive) and apply it consistently.
+Use `ks.test` for Kolmogorov-Smirnov test. Set seed for reproducibility. Print one line per test with pass/fail status.
 
-6. **Aggregate counts** with a `defaultdict(int)` keyed by `(period,
-   severity)`. For each matching line in a file dated `d`, increment
-   `counts[(p, s)] += 1` for **every period p whose date set contains d**.
-   This is the key generalization: one line contributes to *all* overlapping
-   periods, not just one.
+### 5. Common Pitfalls (R-specific)
+- **`1:(n-1)` indexing bug**: When `n = 1`, `1:(n-1)` gives `1:0` which R interprets as `c(1, 0)` (descending). Always use `seq_len(n-1)`.
+- **Append-at-end insertion bug**: `x[idx:length(x)]` when `idx > length(x)` creates `c(NA, last_element)`. Use `c(x[1:(idx-1)], new_val, x[idx:length(x)])` with proper bounds checks.
+- **Infinite loop**: The algorithm can loop indefinitely if envelope is too poor. Use `max_iter` and abort with warning after exceeding.
+- **Empty file list**: When building date ranges (if applicable), use conditional checks to avoid `grep` on empty file lists.
 
-7. **Emit the output.** For each `period` in a fixed display order
-   (`today`, `last_7_days`, `last_30_days`, `month_to_date`, `total`) and
-   each severity in a fixed display order, write one row. Always emit a row
-   even when the count is 0 — empty rows are signal, not noise.
+## Output
+The skill produces an R script `ars.R` containing all functions and the test function. The test function can be sourced and run to verify correctness. The implementation must pass the official verifier's test suite.
 
-   ```csv
-   period,severity,count
-   today,ERROR,3
-   today,WARNING,12
-   today,INFO,87
-   last_7_days,ERROR,17
-   ...
-   ```
-
-8. **Performance note.** For large directories, do the whole pass in a
-   single Python invocation rather than shelling out per file. `pathlib`,
-   `re.compile`, and `defaultdict` keep it well under a second for tens of
-   thousands of files.
-
-## Pre-flight checklist
-
-- [ ] Reference date confirmed (and documented in the output).
-- [ ] Severity tokens confirmed; the regex has `\b` boundaries on each side.
-- [ ] Filename date pattern confirmed (one regex that matches the prefix).
-- [ ] Period list matches what the requester asked for; `total` is included.
-- [ ] Output includes all (period, severity) pairs, even count=0.
-- [ ] The CSV header is exactly `period,severity,count`.
-
-## Verification
-
-After producing the CSV, sanity-check by:
-
-1. Picking one file at random and computing its severity counts manually;
-   the `today` row (or whichever single-day period applies) should match.
-2. Confirming `today` counts ≤ `last_7_days` counts ≤ `last_30_days` counts
-   ≤ `total` counts for each severity (monotonicity is a strong invariant).
-3. Confirming `month_to_date` counts ≤ `last_30_days` counts (when both
-   windows overlap on the reference date).
+## Reusable Shell Runner (optional)
+```bash
+Rscript -e "source('ars.R'); test()"
+```
+Expected output: 8 lines indicating pass/fail status. All pass.

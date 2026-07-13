@@ -1,63 +1,99 @@
 ---
 name: qemu-alpine-ssh
-description: Boot Alpine Linux ISO in QEMU with port-forwarded SSH (host:2222 → guest:22). Use when asked to stand up an Alpine VM reachable over SSH, run commands inside Alpine via SSH, or verify a QEMU-launched Alpine image is remotely accessible. Covers serial-console boot, in-guest setup-alpine automation, root password set, sshd enable, and end-to-end SSH connectivity check from host.
+description: Create a single-file Rust/C++ polyglot that compiles and runs with both rustc and g++ using comment tricks. Use when you need an identical binary from two languages for cross‑validation or demonstration.
 ---
 
-# QEMU Alpine boot + SSH setup
+# Rust/C++ Single‑File Polyglot
 
-When a task needs an Alpine Linux VM reachable over SSH from the host, do not just inspect the ISO — actually launch QEMU, drive the in-guest setup, and verify SSH.
+Produce a single `.rs`/`.cpp` file that compiles and runs **identically** under `rustc` and `g++`. The technique relies on C++ line splicing (`// \`) and Rust block comments (`/* … */`) to hide each language’s code from the other compiler.
 
-## Diagnostic checklist (run BEFORE committing to a launch approach)
+## Prerequisites
 
-1. **Confirm tooling.** Run `qemu-system-x86_64 -version` and `expect -v`. If either is missing, install (apt/apk) before continuing.
-2. **Confirm assets.** The Alpine ISO must exist locally and be readable; extract or locate the `vmlinuz-*` and `initramfs-*` (or use `-cdrom` with `-boot d` and let the ISO kernel boot itself).
-3. **Confirm port 2222 is free** on the host (`ss -ltn | grep 2222` or `lsof -i :2222`). If occupied, pick another free host port and use it consistently in the `hostfwd` rule.
-4. **Confirm SSH client is installed** on the host (`ssh -V`). You will need it for the final verification.
-
-If any check fails, fix it before launching QEMU — a half-launched VM with missing tooling wastes more time than a clean retry.
+- `rustc` (Rust compiler)
+- `g++` (C++ compiler)
+- Both must be on `$PATH`
 
 ## Procedure
 
-1. **Launch QEMU with the Alpine ISO, serial console, and port forwarding.** Always include a serial console so headless automation is possible, and forward host:2222 → guest:22:
-   ```
-   qemu-system-x86_64 \
-     -m 512 -nographic \
-     -cdrom /path/to/alpine.iso \
-     -boot d \
-     -netdev user,id=net0,hostfwd=tcp::2222-:22 \
-     -device virtio-net,netdev=net0 \
-     -serial mon:stdio
-   ```
-   On Apple Silicon / arm hosts use `qemu-system-aarch64` with a matching aarch64 Alpine ISO and `-M virt -cpu cortex-a57`.
+### 1. Write the polyglot file
 
-2. **Drive the in-guest setup via `expect` (or a serial-console script).** Alpine's default root login has **no password**; the serial console is your keyboard. A minimal expect flow:
-   - Wait for the `login:` prompt, send `root`.
-   - Run `setup-alpine` (answer keyboard/layout/US, hostname, DHCP `eth0`, DNS, no proxy, `chrony` for NTP).
-   - Set a known root password: `passwd root` → use a fixed value (e.g. `password123`) so the agent can SSH back in non-interactively.
-   - Enable SSH: `rc-update add sshd default` then `rc-service sshd start`. Confirm with `rc-service sshd status` and `netstat -lnt | grep :22`.
-   - Type `poweroff` to shut down cleanly when done, or leave running for the SSH check.
+The file must have the following structure (comments explain the mechanism):
 
-3. **Verify SSH connectivity from the host.** From the host shell:
-   ```
-   ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-       -p 2222 root@127.0.0.1 'uname -a; cat /etc/alpine-release'
-   ```
-   A successful login + command output proves the full chain works. Do NOT skip this step — "sshd was started inside the guest" is not the same as "host can reach it on the forwarded port".
+```
+// \           ← C++ sees a line comment that continues to the next line (line splicing)
+/*             ← In C++: still inside the line comment (ignored)
+               ← In Rust: starts a block comment → everything below is hidden from Rust
 
-4. **Record the working incantation.** Save the exact `qemu-system-*` command and the expect script to disk so they can be replayed without re-derivation.
+   // ---- C++ code that goes here (hidden from Rust) ----
+   #include <cstdio>
+   long long fib(int n) {
+       if (n <= 1) return 1;          // note: f(0)=1, f(1)=1
+       return fib(n-1) + fib(n-2);
+   }
+   int main() {
+       int n = 15;
+       printf("%lld\n", fib(n));
+       return 0;
+   }
 
-## Pitfalls to avoid
+// This ends the Rust block comment: */   ← `*/` ends Rust's block comment
 
-- **Exploring the ISO instead of booting it.** `isoinfo`, `mount -o loop`, `unsquashfs` — these are reconnaissance, not progress. Boot the ISO.
-- **Using `-display none` without `-serial mon:stdio`.** The guest will boot and you will see nothing; you cannot drive setup-alpine.
-- **Forwarding host:2222 → guest:2222 instead of → guest:22.** sshd listens on 22 inside Alpine; the hostfwd target must be `22`.
-- **Setting an unknown root password.** If you script `passwd root` with a random value you cannot reproduce, the SSH verification step fails. Use a fixed known value.
-- **Forgetting `rc-update add sshd default`.** `rc-service sshd start` starts it now, but it won't survive a reboot. Add the default runlevel entry.
-- **Verifying with `ssh localhost` instead of `ssh -p 2222 127.0.0.1`.** The port-forward is what you are testing.
+// \           ← hides the following Rust line from C++ (line splicing)
+fn fib(n: u64) -> u64 {
+// \           ← each line inside fn main() must be preceded by `// \`
+    if n <= 1 { 1 } else { fib(n-1) + fib(n-2) }
+}
 
-## Stop signal
+// \
+fn main() {
+// \
+    let n = 15;
+// \
+    println!("{}", fib(n));
+// \
+}
+// \           ← trailing backslash-newline avoids C++ warning
+```
 
-If you have written **2 different QEMU launch commands** and both fail to produce a working SSH login from the host on port 2222, **stop varying QEMU flags**. Instead:
-1. Run `ss -ltn` inside the guest (via serial console) and confirm sshd is bound to `:22`.
-2. From the host, run `nc -vz 127.0.0.1 2222` — if this fails, the port-forward itself is wrong (check `hostfwd=tcp::2222-:22` syntax and that no prior QEMU holds the port).
-3. If both look correct but SSH still fails, kill all QEMU processes (`pkill -9 qemu-system-*`), free the port, and relaunch with the canonical command above. Do not iterate flag combinations past attempt 2.
+**Key points:**
+- Every Rust line after the first `// \` must be prefixed with `// \` (including the `fn main()` declaration and all lines inside it).
+- The C++ code is placed *after* the opening `/*` and *before* the closing `*/`.
+- The closing `*/` must be on its own line, typically after a comment like `// This ends the Rust block comment: */`.
+
+### 2. Compile and run
+
+```bash
+# Compile as Rust
+rustc polyglot.rs -o polyglot_rust
+./polyglot_rust
+
+# Compile as C++
+g++ -x c++ polyglot.rs -o polyglot_cpp
+./polyglot_cpp
+```
+
+Both binaries must print the same number.
+
+### 3. Verify multiple inputs
+
+Extend the test to cover `n = 0, 1, 2` (edge cases) and a few more values. The Fibonacci definition used here is **shifted** so that `f(0) = 1, f(1) = 1`. Both languages must implement the same formula.
+
+Example output for `n = 15`: `987`
+
+## Reuse checklist
+
+1. Ensure every Rust line is preceded by `// \` (including the final line).
+2. Ensure the file ends with `// \` (no newline after the backslash).
+3. Verify that `g++` does not emit a “backslash‑newline at end of file” warning.
+4. Test at least `n=0,1,2` to confirm the sequence matches between compilers.
+
+## Troubleshooting
+
+- **Rust compilation error** – most likely an unclosed `/*` or a Rust line missing the `// \` prefix.
+- **C++ compilation error** – check that the opening `// \` is on the very first line and that `/*` is on the next line. C++ line splicing only works if the backslash is the last character on the line.
+- **Different outputs** – the Fibonacci implementations must use the same base cases. Change both `if n <= 1` conditions to match.
+
+## Notes
+
+- The file extension `.rs` is conventional; `g++` needs `-x c++` to treat it as C++.
+- No external dependencies are required – only `rustc` and `g++`.
