@@ -67,7 +67,7 @@ method:
     gamma: 0.2
     sim_gate_min_score: 0.5
     sim_gate_floor: 0
-    c_ucb: 0.5
+    c_ucb: 0.0
     lambda: 0.5
 
   attribution_model: anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-flash}

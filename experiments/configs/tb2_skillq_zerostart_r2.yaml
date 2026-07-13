@@ -1,34 +1,28 @@
-# TB 2.0 FROMSCRATCH ROUND 2 — build on top of from-scratch run,
-# reuse seed skills (71 L4 generated) + Q-table, 8 concurrent.
+# TB 2.0 FROMSCRATCH ROUND 4 — inherit R3 Q-table (97 entries, 77 non-default),
+# first full run with BM25 hybrid retrieval (max(cosine, BM25_L2_norm)), 8 concurrent.
 #
-# Predecessor: tb2_skillq_fromscratch run (2026-07-01__19-08-16)
-#   - 48/89 pass, mean 0.539, 67 L4 skills generated
-#   - 4 non-default Q entries (Q-learning mostly dormant due to P0)
-#   - state_path hardcoded to the predecessor's method_state.json
-#     so Q-table + library carry forward
+# Predecessor: tb2_skillq_fromscratch_r3 run (2026-07-06)
+#   - R3 v2: 43/85 pass (50.6%), 97 Q entries, 79% non-default
+#   - Q range 0.191–0.766
+#   - Per-trial extract prompt functional; 5 new skills created (all Q=0.5 unused)
 #
-# Changes from fromscratch:
-#   - n_concurrent_trials: 4 → 8 (faster wall-clock, ~11 batches)
-#   - reuse_q_table: false → true (pick up predecessor Q-table)
-#   - reuse_embedding_cache: false → true (no pre-existing cache,
-#     but enables cache build-up during the run)
-#   - seed_skills_dir: points to skills/ with 71 L4 skills from R1
-#   - fresh-start semantics: removed (this IS a continued run)
+# Key change vs R3:
+#   - BM25 keyword scoring fused with cosine via max() before Hard Gate
+#     (commit 104cbe5: feat(l1): add BM25 keyword scoring)
+#   - BM25 improves exact-term matching (e.g. "7z", "hashcat", "cython")
+#     where text-embedding-v4 has blind spots
+#   - 5-task validation (2026-07-08): crack-7z-archive sim 0.66 (was <0.5 in R3)
+#
+# Launch:
+#   skillq paper run --benchmark tb2 --variant fromscratch_r4
 #
 # Model: deepseek-v4-flash (ANTHROPIC_MODEL from .env)
 #   89 tasks × 1 attempt, 8 concurrent, 1h/trial ceiling
 #   extract_every_n_trials=1, delete=false
-#   Wall-clock estimate: 4-6h (halved from fromscratch)
-#
-# Launch:
-#   skillq paper run --benchmark tb2 --variant fromscratch_r2
-#
-# Pre-launch (backup predecessor state):
-#   cp output/tb2_skillq_fromscratch__2026-07-01__19-08-16/.skillq_library/.state/method_state.json \
-#      output/tb2_skillq_fromscratch__2026-07-01__19-08-16/.skillq_library/.state/method_state.json.r1.bak
+#   Wall-clock estimate: ~3h
 
 jobs_dir: output
-job_name: tb2_skillq_fromscratch_r2__${now:%Y-%m-%d__%H-%M-%S}
+job_name: tb2_zerostart__${now:%Y-%m-%d__%H-%M-%S}
 n_attempts: 1
 n_concurrent_trials: 8
 quiet: false
@@ -61,8 +55,9 @@ datasets:
 method:
   retrieval_mode: pull
 
-  library_root: ${oc.env:SkillQ_OUTPUT_ROOT,/home/gonern/workspace/skillq/output}/${job_name}/.skillq_library
-  state_path:   /home/gonern/workspace/skillq/output/tb2_skillq_fromscratch__2026-07-01__19-08-16/.skillq_library/.state/method_state.json
+  library_root: /home/gonern/workspace/skillq/skills
+  state_path:   /home/gonern/workspace/skillq/skills/.skillq_state/.state/method_state.json
+  emb_cache_path: /home/gonern/workspace/skillq/skills/.skillq_state/emb_cache.json
   seed_skills_dir: /home/gonern/workspace/skillq/skills
 
   retrieval:
