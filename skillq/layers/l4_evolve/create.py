@@ -1,9 +1,9 @@
 """SkillExtractor — create new skills via a ``claude --print`` subprocess.
 
-Step 2 of the 2026-06-26 refactor relocated this from
-``skillq.layers.l4_evolve.create`` to
-``skillq.layers.l4_evolve.create``. The implementation is unchanged
-in Step 2; only the import paths and logger name moved.
+Step 2 of the 2026-06-26 refactor relocated this from the legacy
+``skillq/method/extractor.py`` to ``skillq/layers/l4_evolve/create.py``.
+The implementation is unchanged in Step 2; only the import paths and
+logger name moved.
 
 The extractor uses the same subprocess shape as lqrl's
 ``evolve/claude_code.py:step_evolve`` — a ``claude --print

@@ -71,8 +71,8 @@ class EditRefiner:
     The previous 20%-of-original-token cap has been removed
     (``edit_token_cap`` field deleted). The LLM is free to rewrite
     as much or as little as it judges necessary; quality control
-    falls entirely on the verifier's ``r_learning`` signal feeding
-    back into Eq. 6.
+    falls entirely on future Q-updates — a bad edit will simply
+    not be reinforced by subsequent trials.
     """
 
     backend: EditProposalBackend
@@ -119,9 +119,8 @@ class EditRefiner:
               the input)
 
         If the proposed body is empty or unchanged, the original
-        skill is returned unchanged. The verifier's ``r_learning`` is
-        the *only* quality signal — a bad edit will simply not get
-        reinforced by future Q-updates.
+        skill is returned unchanged. Future Q-updates are the only
+        quality signal — a bad edit will simply not be reinforced.
         """
         prompt = EDIT_PROMPT.format(
             task=task,

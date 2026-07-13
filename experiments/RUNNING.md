@@ -5,17 +5,19 @@ Quick-start for the single-driver workflow (post-4-layer refactor, 2026-06-29).
 ## TL;DR
 
 ```bash
-# 1. smoke (1 task, ~10 min, fastest sanity check)
-uv run python experiments/run/run_benchmark.py --benchmark tb2 --variant smoke
+# 1. Quick single-task test (chess-best-move, ~10 min)
+uv run skillq paper run --benchmark tb2 --variant full \
+  --method-override datasets.task_names=[chess-best-move] \
+  --method-override n_concurrent_trials=1
 
-# 2. e2e (3 task spanning L1/L2/L3/L4, ~30 min)
-uv run python experiments/run/run_benchmark.py --benchmark tb2 --variant e2e
+# 2. Full 89-task TB 2.0 run (~1-1.5h wall)
+uv run skillq paper run --benchmark tb2 --variant fromscratch_r2
 
-# 3. full 89-task TB 2.0 run (~1-1.5h wall)
-uv run python experiments/run/run_benchmark.py --benchmark tb2 --variant full
+# 3. From-scratch run (empty seed skills, 89 tasks)
+uv run skillq paper run --benchmark tb2 --variant fromscratch
 
-# 4. SWE-Bench Pro 1-task smoke
-uv run python experiments/run/run_benchmark.py --benchmark swebenchpro --variant smoke
+# 4. Full SWE-Bench Pro
+uv run skillq paper run --benchmark swebenchpro --variant full
 
 # 5. Baseline (no paper method, skillsvote mode)
 uv run skillq skillsvote run -c experiments/configs/tb_pro_skillsvote.yaml
@@ -26,14 +28,21 @@ uv run skillq skillsvote run -c experiments/configs/tb_pro_skillsvote.yaml
 ```
 experiments/
 ├── configs/
-│   ├── tb2_skillq_smoke.yaml     # 1 task (chess-best-move)
-│   ├── tb2_skillq_e2e.yaml       # 3 task (chess+circuit+extract)
-│   ├── tb2_skillq_full.yaml      # 89 task (full TB 2.0)
-│   ├── swebenchpro_skillq.yaml   # SWE-Bench Pro 20-instance subset
-│   └── tb_pro_skillsvote.yaml    # baseline (skillsvote mode, no paper method)
+│   ├── tb2_skillq_fromscratch.yaml        # 89-task from-scratch (R1)
+│   ├── tb2_skillq_fromscratch_r2.yaml     # 89-task seeded Q-learning (R2)
+│   ├── tb2_skillq_fromscratch_r3.yaml     # 89-task per-trial extract (R3)
+│   ├── tb2_skillq_fromscratch_r4.yaml     # 85-task BM25 hybrid (R4)
+│   ├── tb2_skillq_zerostart.yaml          # 89-task zerostart baseline
+│   ├── tb2_skillq_zerostart_r2.yaml       # 89-task zerostart R2
+│   ├── tb2_skillq_zerostart_r4.yaml       # 85-task zerostart R4
+│   ├── tb2_skillq_fromscratch_resume.yaml # resume from interrupted fromscratch
+│   ├── tb2_skillq_full.yaml               # full TB 2.0 with method subtree
+│   ├── tb2_hard6.yaml                     # 6 hard tasks benchmark
+│   ├── swebenchpro_skillq.yaml            # SWE-Bench Pro
+│   ├── tb_pro_skillsvote.yaml             # baseline (skillsvote mode, no paper method)
+│   └── prebuild_tb2_claude.yaml           # Docker image prebuild config
 └── run/
-    ├── run_benchmark.py          # single-driver (--benchmark/--variant/...)
-    └── run_tb2_paper.sh          # thin wrapper: forwards to run_benchmark.py --benchmark tb2 --variant smoke
+    └── run_benchmark.py                   # single-driver (--benchmark/--variant/...)
 ```
 
 ## Single-driver flags
@@ -41,7 +50,7 @@ experiments/
 ```bash
 uv run python experiments/run/run_benchmark.py \
     --benchmark {tb2,swebenchpro} \
-    --variant {smoke,e2e,full} \
+    --variant {fromscratch,zerostart,full,hard6,fromscratch_r2,fromscratch_r3,fromscratch_r4,zerostart_r2,zerostart_r4,fromscratch_resume} \
     [--fresh-start]                       # clear Q-table + emb_cache before run
     [--runtime {new,legacy}]              # new (default) = 4-layer pipeline, legacy = (gone, raises)
     [--method-override retrieval.score_mode=additive]   # dotlist override any method subtree field
@@ -80,7 +89,7 @@ method:
     beta: 0.5
     gamma: 0.2
     lambda: 0.5
-    c_ucb: 0.5
+    c_ucb: 0.0
   attribution_model: anthropic/${oc.env:ANTHROPIC_MODEL,...}
   editor_model:      anthropic/${oc.env:ANTHROPIC_MODEL,...}
   embedder_model:    openai/${oc.env:EMBEDDING_MODEL,...}
@@ -98,30 +107,38 @@ method:
 
 ## Variant matrix
 
-| variant | tasks | n_concurrent | timeout | expected duration |
-|---|---|---:|---:|---|
-| smoke | 1 (chess-best-move) | 1 | 1800 s | ~10 min |
-| e2e | 3 (chess + circuit + extract) | 1 | 1800 s | ~30 min |
-| full | 89 (all TB 2.0) | 8 | 3600 s | ~1-1.5 h |
+Valid ``(benchmark, variant)`` pairs (see ``skillq/runtime/benchmark_config.py:BENCHMARK_VARIANTS``):
 
-## E2E acceptance (from plan §9.6)
+| benchmark | variant | config file | description |
+|---|---:|---|---|
+| tb2 | fromscratch | tb2_skillq_fromscratch.yaml | 89 tasks, empty seed, reuse_q_table=false |
+| tb2 | fromscratch_r2 | tb2_skillq_fromscratch_r2.yaml | 89 tasks, seeded Q-table from R1 |
+| tb2 | fromscratch_r3 | tb2_skillq_fromscratch_r3.yaml | 89 tasks, per-trial extract |
+| tb2 | fromscratch_r4 | tb2_skillq_fromscratch_r4.yaml | 85 tasks, BM25 hybrid |
+| tb2 | zerostart | tb2_skillq_zerostart.yaml | 89 tasks, fresh Q-table per run |
+| tb2 | zerostart_r2 | tb2_skillq_zerostart_r2.yaml | 89 tasks, zerostart R2 |
+| tb2 | zerostart_r4 | tb2_skillq_zerostart_r4.yaml | 85 tasks, zerostart R4 |
+| tb2 | full | tb2_skillq_full.yaml | full TB 2.0 with method subtree |
+| tb2 | hard6 | tb2_hard6.yaml | 6 hard tasks benchmark |
+| swebenchpro | full | swebenchpro_skillq.yaml | SWE-Bench Pro |
 
-- **smoke**: `output/<job_name>/<trial>/result.json` exists, reward ∈ {0.0, 1.0}, `method_state.json` written, `skillq_skill_calls.jsonl` non-empty.
-- **e2e**: 3 trials all produce `result.json`; circuit-fibsqrt triggers L3 EditRefiner (edited body in `seed_skills_dir`); extract-elf triggers L4 SkillExtractor (new skill in lib + mirrored).
-- **full**: pass@1 within ±5 % of v3 baseline (`doc/old/SKILLQ_RUN_RESULTS_2026-06-25.md` records the 2026-06-25 baseline at pass@1 = 0.584).
+## E2E acceptance
+
+- **fromscratch**: 89 trials all produce `result.json`; L4 creates skills from successful trajectories; ``method_state.json`` written with Q-table entries.
+- **full**: pass@1 within ±5 % of previous baseline.
+- See ``doc/experiment_r1_r2_report.md`` and ``doc/experiment_summary_for_paper.md`` for detailed results.
 
 ## Prerequisites
 
-- `.env` configured: `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL=claude-sonnet-4-5`, `EMBEDDING_*`
+- `.env` configured: `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL=deepseek-v4-flash`, `EMBEDDING_*`, `OPENAI_API_KEY`
 - Prebuilt image `skills_vote/<task>:20260604` available
 - `input/terminal-bench/<task>/task.toml` vendored
-- `skills/_seed_stub/SKILL.md` exists
+- ``skills_seed_backup/_seed_stub/SKILL.md`` exists (seed skill stub)
 
 ## Out of scope
 
 - **Single-trial mode**: not exposed via `run_benchmark.py`. For ad-hoc debug, run `skillq paper run -c <generated_yaml>` directly.
-- **Ablation sweeps** (`ablation.py`, `beta_sweep.py`): pre-4-layer scripts, deleted in Step 8.4. To re-introduce an ablation, write a new YAML under `experiments/configs/` and call `run_benchmark.py --method-override ...`.
-- **Pre-4-layer configs** (`method_tb2_skillq_*.yaml`, `tb2_skillq_*_v3.yaml`): deleted in Step 8.2. The single merged YAML per experiment replaces them.
+- **Ablation sweeps**: to run an ablation, write a new YAML under `experiments/configs/` and call `run_benchmark.py --method-override ...`.
 - **Legacy `runtime: legacy`**: raises `RuntimeError` (intentional deprecation stub). Roll back to v0.x tag if you need pre-Step-7 behaviour.
 
 ## Historical reference
