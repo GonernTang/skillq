@@ -261,6 +261,23 @@ def _run_command(args: argparse.Namespace) -> int:
         )
         return 2
 
+    # When -c is used without --method-config, extract the method
+    # subtree from the job YAML (same as --benchmark/--variant does).
+    if method_config_path is None and config_path is not None:
+        from skillq.runtime.benchmark_config import (
+            split_method_subtree,
+            write_method_yaml,
+        )
+
+        import yaml as _yaml
+        merged = _yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        _job_cfg, method_cfg = split_method_subtree(merged)
+        if method_cfg is not None:
+            import tempfile, time
+            tmp = Path(tempfile.mkdtemp()) / "method_from_job.yaml"
+            method_cfg = write_method_yaml(method_cfg, tmp)
+            method_config_path = tmp
+
     method = _load_method_config(method_config_path)
     from skillq.runtime.entrypoint import run_paper_job_sync
 

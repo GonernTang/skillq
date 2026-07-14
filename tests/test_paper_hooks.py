@@ -262,7 +262,7 @@ def test_score_skills_additive_unchanged_regression():
         q_table=q_table,
         emb_cache=emb_cache,
         lambda_=0.5,
-        c_ucb=0.5,
+        c_ucb=0.0,
         top_k=3,
         score_mode="additive",
     )
@@ -283,7 +283,7 @@ def test_score_skills_multiplicative_basic():
         q_table=q_table,
         emb_cache=emb_cache,
         lambda_=0.5,                # ignored in multiplicative mode
-        c_ucb=0.5,
+        c_ucb=0.0,
         top_k=3,
         score_mode="multiplicative",
         mult_beta=0.5,
@@ -295,11 +295,8 @@ def test_score_skills_multiplicative_basic():
     assert result[0][0] == "A"
     # C's score should be ONLY γ·UCB (no sim term, no Q amplification)
     c_score = next(s for sid, s in result if sid == "C")
-    # UCB term: c_ucb * sqrt(log(n_total) / n); n_total=1+1=2, n=0+1=1
-    # = 0.5 * sqrt(log(2)/1) ≈ 0.5 * 0.833 = 0.417
-    import math
-    expected_c = 0.2 * 0.5 * math.sqrt(math.log(2) / 1)
-    assert abs(c_score - expected_c) < 1e-6, f"C score {c_score} != {expected_c}"
+    # UCB disabled (c_ucb=0.0): score = 0.2 * 0.0 * sqrt(log(2)/1) = 0.0
+    assert c_score == 0.0, f"C score {c_score} != 0.0 (UCB disabled)"
 
 
 def test_score_skills_gate_filters():
@@ -312,7 +309,7 @@ def test_score_skills_gate_filters():
         q_table=q_table,
         emb_cache=emb_cache,
         lambda_=0.5,
-        c_ucb=0.5,
+        c_ucb=0.0,
         top_k=3,
         score_mode="multiplicative",
         mult_beta=0.5,
@@ -337,7 +334,7 @@ def test_score_skills_gate_floor_fallback():
         q_table=q_table,
         emb_cache=emb_cache,
         lambda_=0.5,
-        c_ucb=0.5,
+        c_ucb=0.0,
         top_k=3,
         score_mode="multiplicative",
         sim_gate_threshold=0.99,
@@ -360,7 +357,7 @@ def test_score_skills_gate_aggressive_default():
         q_table=q_table,
         emb_cache=emb_cache,
         lambda_=0.5,
-        c_ucb=0.5,
+        c_ucb=0.0,
         top_k=3,
         score_mode="multiplicative",
         # explicit threshold — the production YAML opts in at 0.75
@@ -391,7 +388,7 @@ def test_score_skills_zero_sim_only_ucb():
         q_table=q_table,
         emb_cache=emb_cache,
         lambda_=0.5,
-        c_ucb=0.5,
+        c_ucb=0.0,
         top_k=2,
         score_mode="multiplicative",
         mult_beta=0.5,
@@ -433,7 +430,7 @@ def test_score_skills_clamps_out_of_range_q():
         q_table=q_table,
         emb_cache=emb_cache,
         lambda_=0.5,
-        c_ucb=0.5,
+        c_ucb=0.0,
         top_k=2,
         score_mode="multiplicative",
         mult_beta=0.5,
@@ -464,7 +461,7 @@ def test_score_skills_rejects_q_clip_kwargs():
             q_table={"x": 0.5},
             emb_cache={"x": [1.0, 0.0]},
             lambda_=0.5,
-            c_ucb=0.5,
+            c_ucb=0.0,
             top_k=1,
             score_mode="multiplicative",
             mult_beta=0.5,
@@ -498,7 +495,7 @@ def test_score_skills_sims_out_returns_post_gate_sims():
         q_table=q_table,
         emb_cache=emb_cache,
         lambda_=0.5,
-        c_ucb=0.5,
+        c_ucb=0.0,
         top_k=3,
         sim_gate_threshold=0.0,  # gate off — all sims pass
         sim_gate_floor=0,
@@ -544,7 +541,7 @@ def test_score_skills_sims_out_respects_gate():
         q_table=q_table,
         emb_cache=emb_cache,
         lambda_=0.5,
-        c_ucb=0.5,
+        c_ucb=0.0,
         top_k=2,
         sim_gate_threshold=0.5,  # gate ON at 0.5
         sim_gate_floor=1,         # keep at least 1 by descending sim

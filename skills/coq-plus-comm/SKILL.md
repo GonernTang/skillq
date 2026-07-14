@@ -1,86 +1,53 @@
 ---
 name: coq-plus-comm
-description: Complete the Coq proof of commutativity of addition (forall n m, n + m = m + n) on natural numbers using induction, plus_n_O, and plus_n_Sm. Use when asked to prove plus_comm in Coq/CoqIDE or when a proof goal involves n + m = m + n over nat.
+description: Prove addition commutativity on natural numbers (forall n m : nat, n + m = m + n) in Coq using induction, plus_n_O, and plus_n_Sm.
 ---
 
-# Proving `plus_comm` in Coq
+# Proving `n + m = m + n` in Coq
 
-The canonical proof that `n + m = m + n` for natural numbers uses
-**simple induction** on the first variable plus two lemmas from the
-standard library.
+## Goal
 
-## Prerequisites
-
-Always start the file with:
-
-```coq
-Require Import Arith.
-```
-
-This brings the relevant lemmas (`plus_n_O`, `plus_n_Sm`, `mult_*`,
-etc.) into scope. Without it, `apply` will fail with "unable to find
-an instance" errors even though the proof script is correct.
-
-## Proof skeleton
+Prove commutativity of addition on `nat`:
 
 ```coq
 Theorem plus_comm : forall n m : nat, n + m = m + n.
+```
+
+## Proof script
+
+```coq
 Proof.
-  intros m n.            (* bring both variables into context *)
-  induction n as [| n' IHn'].
-  - (* base case: n = 0 *)
-    simpl.
-    rewrite <- plus_n_O.   (* turns m into m + 0 *)
-    reflexivity.
-  - (* inductive case: n = S n' *)
-    simpl.
-    rewrite <- plus_n_Sm.  (* turns m + S n' into S (m + n') *)
-    rewrite IHn'.          (* replaces n' + m with m + n' *)
-    reflexivity.
+  intros n m.
+  induction n as [|n' IHn'].
+  - simpl. apply plus_n_O.
+  - simpl. rewrite IHn'. apply plus_n_Sm.
 Qed.
 ```
 
 ## Step-by-step reasoning
 
-1. **Introduce the variables.** `intros m n` (the order does not
-   matter; you may also `intros` them one at a time).
-2. **Induct on the first variable.** `induction n as [| n' IHn']`.
-   This produces two subgoals:
-   - base case where `n = 0`
-   - inductive case where `n = S n'` with induction hypothesis
-     `IHn' : n' + m = m + n'`.
+1. **Introduce variables.** `intros n m.` brings both quantifiers into the context, leaving goal `n + m = m + n`.
 
-### Base case (`n = 0`)
+2. **Induct on the first argument.**
+   `induction n as [|n' IHn'].` produces two subgoals:
+   - Base: `0 + m = m + 0`
+   - Step: `S n' + m = m + S n'` with hypothesis `IHn' : n' + m = m + n'`
 
-- After `simpl`, the goal becomes `m = m + 0`.
-- **Do not** try `reflexivity` directly — Coq's built-in
-  reflexivity does not rewrite `m` to `m + 0`.
-- Apply `rewrite <- plus_n_O`. The reverse arrow (`<-`) rewrites
-  `m + 0` into `m`, closing the goal at `reflexivity`.
+3. **Base case.** `simpl.` reduces `0 + m` (by Coq's definitional equality on `plus`) to `m`, leaving `m = m + 0`. `apply plus_n_O.` closes the goal — the standard library lemma `plus_n_O : forall n : nat, n = n + 0` matches directly.
 
-### Inductive case (`n = S n'`)
+4. **Inductive case.** `simpl.` unfolds the left side, turning `S n' + m` into `S (n' + m)`. Now the goal is `S (n' + m) = m + S n'`. Use `rewrite IHn'.` to replace `n' + m` with `m + n'`, yielding `S (m + n') = m + S n'`. Finally `apply plus_n_Sm.` — the lemma `plus_n_Sm : forall n m : nat, S (n + m) = n + S m` — closes the goal.
 
-- After `simpl`, the goal is `S (n' + m) = m + S n'`.
-- First, rewrite the **right-hand side** so both sides share a
-  constructor: `rewrite <- plus_n_Sm`. This turns
-  `m + S n'` into `S (m + n')`.
-- Next, apply the induction hypothesis on the left:
-  `rewrite IHn'`. This replaces `n' + m` with `m + n'`.
-- Both sides are now `S (m + n')`; finish with `reflexivity`.
+## Compile and verify
+
+Save the proof in a `.v` file alongside any needed imports (e.g., from the standard library or `Software Foundations`), then compile:
+
+```bash
+coqc plus_comm.v
+```
 
 ## Common pitfalls
 
-| Symptom | Cause | Fix |
-|---|---|---|
-| `Error: Cannot find a physical path bound to logical path Arith.` | Missing import | Add `Require Import Arith.` at the top |
-| `reflexivity` fails on `m = m + 0` | `plus_n_O` not applied | Insert `rewrite <- plus_n_O` |
-| Goal stalls at `S (n' + m) = S (m + S n')` | Forgot to flip the RHS | Add `rewrite <- plus_n_Sm` before applying `IHn'` |
-| `apply` not finding `IHn'` | Didn't `intros` after `induction` | `induction n` already brings `n'` and `IHn'` into the context; just `rewrite IHn'` |
-
-## Tacticals you can swap in
-
-- `destruct n` works in place of `induction n` only for the base
-  case; you still need the full `induction` to obtain `IHn'`.
-- `ring` or `omega` solve this goal automatically once `Arith` is
-  imported, but the explicit rewrite proof is what the question
-  usually asks for.
+- **Wrong lemma orientation.** If `apply plus_n_O` or `apply plus_n_Sm` fails to unify, check the lemma's statement with `Check plus_n_O.` / `Check plus_n_Sm.` You may need `symmetry` or `apply ... with ...` rather than a different lemma.
+- **Forgetting to `simpl` first.** The base case `m = m + 0` is only visible after reduction; without `simpl` the goal still shows `0 + m = m + 0`.
+- **Inducting on the wrong variable.** Inducting on `m` works but requires a different lemma set (`plus_O_n` instead of `plus_n_O`). Stick with the first argument unless told otherwise.
+- **`rewrite` direction.** `rewrite IHn'` rewrites left-to-right matching the induction hypothesis exactly. If `IHn'` were stated the other way you'd need `rewrite <- IHn'`.

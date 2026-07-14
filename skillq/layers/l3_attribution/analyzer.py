@@ -68,16 +68,16 @@ class AttributionAnalyzer:
         task: str,
         trial_dir: Path,
         skills_root: Path | None = None,
+        available_skill_ids: list[str] | None = None,
         r_task: int,
     ) -> TrialAttribution:
         """Run the attribution step for one trial.
 
         Reads ``trial_dir / "agent" / "sessions" / "projects" / "*.jsonl"``
         (Claude Code's session log) and a list of "available skills"
-        (the directory the lqrl-side recommend step copied skills into,
-        e.g. ``$CLAUDE_CONFIG_DIR/skills``). Falls back to
-        :class:`TrialAttribution` with empty subtasks if the trace
-        file is missing.
+        (either from ``available_skill_ids`` or from ``skills_root``).
+        Falls back to :class:`TrialAttribution` with empty subtasks if
+        the trace file is missing.
 
         ``r_task`` is the ground-truth trial reward (1 = succeeded,
         0 = failed) from the harbor verifier. It is interpolated
@@ -86,12 +86,19 @@ class AttributionAnalyzer:
         a safety net.
         """
         trace = self._load_session_trace(trial_dir)
-        available_skills = self._list_available_skills(skills_root) if skills_root else {}
+        if available_skill_ids:
+            available_skills = {sid: sid for sid in available_skill_ids}
+        elif skills_root is not None:
+            available_skills = self._list_available_skills(skills_root)
+        else:
+            available_skills = {}
         prompt = ATTRIBUTION_PROMPT.format(
             task=task,
             trial_dir=str(trial_dir),
             cwd=str(trial_dir),
-            available_skills=json.dumps(available_skills, ensure_ascii=False, indent=2),
+            available_skills=json.dumps(
+                available_skills, ensure_ascii=False, indent=2
+            ),
             trace=self._truncate_trace(trace, self.trace_max_chars),
             r_task=r_task,
         )

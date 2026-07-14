@@ -105,7 +105,7 @@ class RankParams(BaseModel):
     score_mode: str = "multiplicative"
     beta: float = 0.5
     gamma: float = 0.2
-    c_ucb: float = 0.5
+    c_ucb: float = 0.0
     # ``lambda_`` is the additive-mode weight; the request uses
     # ``lambda`` to keep the JSON shape Python-keyword-clean.
     lambda_: float = Field(default=0.5, alias="lambda")

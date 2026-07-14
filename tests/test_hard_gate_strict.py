@@ -86,7 +86,7 @@ def testscore_skills_strict_floor_zero_no_survivors():
         q_table={},
         emb_cache=emb_cache,
         lambda_=0.5,
-        c_ucb=0.5,
+        c_ucb=0.0,
         top_k=3,
         sim_gate_threshold=0.7,
         sim_gate_floor=0,    # strict
@@ -116,7 +116,7 @@ def testscore_skills_strict_floor_zero_some_above_threshold():
         q_table={},
         emb_cache=emb_cache,
         lambda_=0.5,
-        c_ucb=0.5,
+        c_ucb=0.0,
         top_k=3,
         sim_gate_threshold=0.7,
         sim_gate_floor=0,    # strict
@@ -151,7 +151,7 @@ def testscore_skills_legacy_floor_keeps_exactly_n_fallbacks():
         q_table={},
         emb_cache=emb_cache,
         lambda_=0.5,
-        c_ucb=0.5,
+        c_ucb=0.0,
         top_k=3,
         sim_gate_threshold=0.7,
         sim_gate_floor=1,    # keep top-1 by sim
@@ -162,7 +162,7 @@ def testscore_skills_legacy_floor_keeps_exactly_n_fallbacks():
     assert len(top_k) == 1
     sid, score = top_k[0]
     assert sid in {"skill-0", "skill-1", "skill-2"}
-    assert 0.0 < score < 0.5  # γ·UCB only (sim=0)
+    assert score == 0.0  # γ·UCB only (sim=0), UCB disabled → 0
 
 
 def test_method_config_default_sim_gate_floor_is_zero():

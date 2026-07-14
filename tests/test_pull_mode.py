@@ -173,7 +173,7 @@ def test_score_skills_reused_unchanged():
         q_table=q_table,
         emb_cache=emb_cache,
         lambda_=0.5,
-        c_ucb=0.5,
+        c_ucb=0.0,
         top_k=2,
     )
     assert [sid for sid, _ in top] == ["a", "b"]

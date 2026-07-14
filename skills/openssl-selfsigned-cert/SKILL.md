@@ -1,150 +1,152 @@
+```markdown
 ---
 name: openssl-selfsigned-cert
-description: Guidance for implementing ColumnParallelLinear and RowParallelLinear with PyTorch autograd, and recovering data from a SQLite database with a corrupted or obfuscated WAL file using external decryption and B-tree page parsing.
+description: Generate a self-signed TLS certificate with OpenSSL, verify its metadata with Python, and optionally set up a local PyPI server using the certificate.
 ---
 
-## Guidance for torch tensor parallelism
+# Self-Signed TLS Certificate with OpenSSL + Python Verification
 
-When implementing `ColumnParallelLinear` and `RowParallelLinear` with PyTorch autograd, ensure:
+Create a self-signed RSA certificate and key using OpenSSL, bundle them into a PEM file, and verify the result with a Python script.
 
-1. The custom `all_gather` forward pre‑allocates a list of contiguous tensors of the correct shape per rank and reuses it across calls.
-2. The backward for `all_gather` splits the gradient along the same dimension used for concatenation.
-3. For `world_size=1`, skip all collectives and return outputs/backprop unmodified.
-4. Bias in `ColumnParallelLinear` is sharded exactly like the output dimension and added before the `all_gather`.
-5. Bias in `RowParallelLinear` is full and added after the `all_reduce`.
-6. All tensors are made contiguous before collective operations.
-7. The `all_reduce` sum backward should apply the same sum reduction to the gradient.
-8. **Inference output formatting:** When writing a predicted digit to a file (e.g., `prediction.txt`), ensure the file contains exactly the digit with no trailing newline, extra whitespace, or any other bytes. Use `file.write(prediction)` without an appended newline, and verify the file’s byte content against the exact expected format before submission. A mismatch (e.g., a trailing newline) may cause the verifier to reject the result.
+## When to Use
 
-Missing any of these steps can cause incorrect initialization, output, or gradient checks.
-
----
-
-# Recover SQLite Data After WAL Corruption / Obfuscation
-
-## Overview
-
-When a SQLite database in WAL (Write-Ahead Log) mode has a corrupted or XOR‑obfuscated WAL file, opening it directly with SQLite often destroys the WAL (SQLite overwrites a corrupt WAL with a fresh empty one). This skill provides a safe recovery procedure:
-
-1. **Backup the WAL** before touching the database.
-2. **Decrypt/repair the WAL externally** (e.g., XOR with the key).
-3. **Recover data from the main database B‑tree pages** if the WAL is already lost.
-4. **Reconstruct missing records** from pattern analysis.
-5. **Verify recovery** against expected constraints.
-
-Only the Python standard library (`sqlite3`, `struct`, `pathlib`, `sys`) is used – no new dependencies.
+- Need a quick TLS cert for local dev, testing, or an internal service
+- Want to verify cert metadata (subject, validity dates, fingerprint) programmatically
+- No CA infrastructure available
+- (Optional) Serve a local PyPI package index over HTTPS using this certificate
 
 ## Procedure
 
-### 1. Always back up the WAL first
+### 1. Generate the Private Key
 
 ```bash
-cp /path/to/database.db-wal /path/to/database.db-wal.bak
+mkdir -p <cert_dir>
+openssl genrsa -out <key_path> 2048
+chmod 600 <key_path>
 ```
 
-If the WAL is still on disk, do **not** open the database with SQLite until the WAL is repaired externally.
+### 2. Generate the Self-Signed Certificate
 
-### 2. Decrypt / repair the WAL externally
+```bash
+openssl req -x509 -new -key <key_path> -days <days> \
+  -out <cert_path> \
+  -subj "/O=<Organization>/CN=<CommonName>"
+```
 
-For simple XOR obfuscation (common single‑byte key), decrypt the WAL with a hex editor or a short Python script:
+### 3. Bundle Key + Cert into a Single PEM
+
+```bash
+cat <key_path> <cert_path> > <pem_path>
+```
+
+### 4. Record Metadata via OpenSSL
+
+```bash
+openssl x509 -in <cert_path> -noout -subject
+openssl x509 -in <cert_path> -noout -dates
+openssl x509 -in <cert_path> -noout -fingerprint -sha256
+```
+
+Save each to a verification log so values can be cross-checked.
+
+### 5. Verify with Python
+
+Write a Python verifier (`verify.py`) that performs these checks:
+
+1. **Existence** — `os.path.isfile` on each expected path.
+2. **Decode the cert** using `ssl._ssl._test_decode_cert(<cert_path>)`. (This is a CPython internal API; for production, prefer the `cryptography` or `pyOpenSSL` package.)
+3. **Extract the Common Name (CN)**. The `subject` field is a nested tuple of RDNs:
+   `((('organizationName', 'DevOps Team'),), (('commonName', 'host'),))`.
+   Iterate outer RDNs, then inner attribute pairs, looking for a tuple whose first element equals `"commonName"`.
+4. **Extract `notAfter`** (may be `bytes` — decode to `str` if so), then parse with:
+   ```python
+   datetime.strptime(date_str, "%b %d %H:%M:%S %Y %Z")
+   ```
+   Confirm it is in the future relative to `datetime.utcnow()`.
+5. **Print each check** (`PASS`/`FAIL`) and `sys.exit(0)` on full success, `sys.exit(1)` on any failure.
+
+### 6. Make the Verifier Executable
+
+```bash
+chmod +x <script_path>
+```
+
+### 7. (Optional) Serve a Local PyPI Server with the Certificate
+
+If you want to serve a PyPI-compatible package index using this certificate, follow these steps:
+
+1. Install `pypiserver` if not already installed:
+   ```bash
+   pip install pypiserver
+   ```
+2. Start the server with the `run` subcommand (avoid deprecated `pypi-server` without `run`):
+   ```bash
+   nohup pypi-server run --port 443 --certfile <cert_path> --keyfile <key_path> /path/to/packages > pypi-server.log 2>&1 &
+   ```
+   - Use `--certfile` and `--keyfile` to point to the generated cert and key.
+   - The `nohup` and `&` ensure the server persists after the shell exits.
+3. Poll the server URL until it responds:
+   ```bash
+   until curl -s https://localhost:443/simple/; do sleep 1; done
+   ```
+   (Use `-k` or `--insecure` if the cert is self‑signed and you are testing locally.)
+4. Install packages from this index with:
+   ```bash
+   pip install --index-url https://localhost:443/simple/ <package_name>
+   ```
+
+## Python Verifier Skeleton
 
 ```python
-# decrypt_wal.py – XOR‑decrypt a WAL file with key 0x42 (example)
-import sys
-key = 0x42
-with open(sys.argv[1], 'rb') as f:
-    data = bytearray(f.read())
-for i in range(len(data)):
-    data[i] ^= key
-with open(sys.argv[2], 'wb') as f:
-    f.write(data)
+import os, sys
+import ssl
+from datetime import datetime, timezone
+
+CERT = "<cert_path>"
+KEY  = "<key_path>"
+PEM  = "<pem_path>"
+
+def check(label, ok, detail=""):
+    print(f"[{'PASS' if ok else 'FAIL'}] {label}{(' — ' + detail) if detail else ''}")
+    return ok
+
+ok = True
+for label, path in (("key", KEY), ("cert", CERT), ("pem", PEM)):
+    ok &= check(f"file exists: {path}", os.path.isfile(path))
+
+data = ssl._ssl._test_decode_cert(CERT)
+
+# Subject: walk the nested RDN tuple
+cn = None
+for rdn in data["subject"]:
+    for attr in rdn:
+        if attr[0] == "commonName":
+            cn = attr[1]
+ok &= check("CN extracted", cn == "<CommonName>", f"got {cn!r}")
+
+# Validity: notAfter may be bytes
+not_after = data["notAfter"]
+if isinstance(not_after, bytes):
+    not_after = not_after.decode()
+expiry = datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z")
+ok &= check("not in past", expiry > datetime.utcnow(), f"expires {expiry}")
+
+sys.exit(0 if ok else 1)
 ```
 
-Run: `python3 decrypt_wal.py corrupted.wal repaired.wal`  
-Then replace the original WAL with the repaired one before opening the database.
+## Key Pitfalls
 
-### 3. If the WAL is already lost (overwritten by SQLite)
+- `ssl._ssl._test_decode_cert` is a private CPython API — wrap calls in try/except or fall back to `cryptography.x509.load_pem_x509_certificate` for portable code.
+- `notAfter` from CPython's decoder is `bytes` on some versions, `str` on others — always normalize before `strptime`.
+- The `subject` tuple shape is **outer RDN → inner (oid, value) pairs**, not a flat list — easy to off-by-one.
+- `chmod 600` on the private key is essential before any shared deployment.
+- `-days` accepts integers only; convert years × 365 if needed.
+- When using the certificate with a PyPI server, ensure you use `pypi-server run` (not the deprecated bare `pypi-server`) to avoid warnings and maintain compatibility.
+- The server must be kept running (use `nohup` or a process manager) and the client should poll for readiness before proceeding with installation.
 
-Parse the main database file directly. A SQLite database consists of B‑tree pages (default page size 4096 bytes). For tables with `WITHOUT ROWID` or ordinary rowid tables, leaf pages contain record data:
+## Verification Checklist
 
-```python
-# parse_btree.py – extract records from a SQLite database file
-import struct, sys, pathlib
-
-def varint(data, offset):
-    value = 0
-    while True:
-        byte = data[offset]
-        offset += 1
-        value = (value << 7) | (byte & 0x7F)
-        if not (byte & 0x80):
-            break
-    return value, offset
-
-def parse_page(page_data):
-    # Page header (first 8 bytes for leaf table): cell pointer array starts at offset 8
-    # Skip header; iterate over cell pointers
-    cells = []
-    # First cell pointer offset is at byte 8 (big-endian uint16)
-    # Number of cells is at offset 3-4 (big-endian uint16)
-    num_cells = struct.unpack('>H', page_data[3:5])[0]
-    for i in range(num_cells):
-        ptr = struct.unpack('>H', page_data[8+2*i:10+2*i])[0]
-        # Cell: varint payload length, rowid, then payload
-        payload_len, offset = varint(page_data, ptr)
-        rowid, offset = varint(page_data, offset)
-        # Varint-encoded serial types follow in the payload
-        # ... (implement parsing based on schema)
-    return cells
-
-# Example usage: reads page 2 (first leaf page) from main.db
+- `openssl x509 -in <cert> -noout -text -noout` shows expected subject and issuer.
+- Python verifier exits 0 with all `[PASS]` lines.
+- Fingerprint from step 4 matches the cert loaded in step 5.
 ```
-
-**Reference for record format:**  
-Each cell stores a payload length (varint), rowid (varint), then payload consisting of a varint header (serial types) followed by values. For a table with columns `id INTEGER, value TEXT`, serial type 1 (0x01) is a 1‑byte integer, serial type 13 (0x0D) is a BLOB (text stored as bytes). See SQLite file format docs.
-
-### 4. Reconstruct missing records from pattern analysis
-
-If records follow a predictable pattern (e.g., incremental integer ID, `value = id * N`), reconstruct the missing ones after extracting the existing ones from the B‑tree.
-
-```python
-existing = [(1, "apple"), (2, "banana"), ...]  # from page parsing
-ids_found = {r[0] for r in existing}
-max_id = max(ids_found)
-# Reconstruct all IDs from 1 to max_id
-full_records = []
-for id in range(1, max_id+1):
-    if id in ids_found:
-        full_records.append((id, existing[id-1][1]))  # from list
-    else:
-        # infer value pattern, e.g., fruit names in alphabetical order
-        reconstructed_value = pattern_based_reconstruction(id)
-        full_records.append((id, reconstructed_value))
-```
-
-### 5. Verify recovered data
-
-- Check that all expected IDs are present (no gaps).
-- Confirm values follow the observed pattern (e.g., alphabetical fruit names, numeric multiples).
-- Cross‑reference with any available metadata or constraints (e.g., “all 11 records, values = id × 100”).
-
-## Verification checklist
-
-- [ ] WAL was backed up before any SQLite open.
-- [ ] External decryption applied (if obfuscated) – magic bytes confirm decryption.
-- [ ] If WAL lost: B‑tree leaf pages parsed, records extracted correctly (varint cell pointers, serial types decoded).
-- [ ] Missing records reconstructed from pattern (e.g., sequential IDs, formulaic values).
-- [ ] Recovered dataset matches ground truth (all records present, correct values).
-- [ ] Output saved as JSON (or other format) to `/path/to/recovered.json`.
-
-## Common pitfalls
-
-- **Opening the database destroys the WAL** – SQLite treats a corrupt WAL as invalid and creates a fresh one. Always back up first.
-- **Page number confusion** – The first table B‑tree page is usually page 2 (page 1 is the schema). Use `PRAGMA page_count` (on an intact copy) to verify.
-- **Varint decoding errors** – Ensure correct big‑endian parsing; off‑by‑one offsets lead to garbage.
-- **Serial type mapping** – SQLite serial types are complex; for simple tables (integer, text), hard‑code the expected types if possible.
-- **Pattern overfitting** – Only reconstruct records if a clear, verifiable pattern exists (e.g., known incremental IDs, deterministic formula).
-
-## Security / integrity note
-
-Verify the output against the original application’s data constraints. If the database contained sensitive data, ensure the recovered JSON is handled securely.

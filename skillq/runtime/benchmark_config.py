@@ -17,16 +17,15 @@ import yaml
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 BENCHMARK_VARIANTS: dict[tuple[str, str], str] = {
-    ("tb2", "small10"):         "experiments/configs/tb2_skillq_small10.yaml",
-    ("tb2", "small10_v2"):      "experiments/configs/tb2_skillq_small10_v2.yaml",
-    ("tb2", "full"):             "experiments/configs/tb2_skillq_full.yaml",
     ("tb2", "fromscratch"):     "experiments/configs/tb2_skillq_fromscratch.yaml",
     ("tb2", "fromscratch_resume"): "experiments/configs/tb2_skillq_fromscratch_resume.yaml",
     ("tb2", "fromscratch_r2"):  "experiments/configs/tb2_skillq_fromscratch_r2.yaml",
     ("tb2", "fromscratch_r3"):  "experiments/configs/tb2_skillq_fromscratch_r3.yaml",
     ("tb2", "fromscratch_r4"):  "experiments/configs/tb2_skillq_fromscratch_r4.yaml",
-    ("tb2", "e2e"):             "experiments/configs/tb2_skillq_e2e.yaml",
-    ("tb2", "bm25_5tasks"):     "experiments/configs/tb2_bm25_5tasks.yaml",
+    ("tb2", "zerostart_r4"):  "experiments/configs/tb2_skillq_zerostart_r4.yaml",
+    ("tb2", "zerostart_r2"):  "experiments/configs/tb2_skillq_zerostart_r2.yaml",
+    ("tb2", "zerostart"):       "experiments/configs/tb2_skillq_zerostart.yaml",
+    ("tb2", "full"):             "experiments/configs/tb2_skillq_full.yaml",
     ("tb2", "hard6"):           "experiments/configs/tb2_hard6.yaml",
     ("swebenchpro", "full"):     "experiments/configs/swebenchpro_skillq.yaml",
 }

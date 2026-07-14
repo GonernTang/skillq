@@ -140,7 +140,7 @@ class MethodConfig(BaseModel):
 
     # Two-stage retrieval (Layer 1, Eq. 4)
     lambda_: float = Field(default=0.5, ge=0.0, le=1.0)
-    c_ucb: float = Field(default=0.5, ge=0.0)
+    c_ucb: float = Field(default=0.0, ge=0.0)
     k1: int = Field(default=10, ge=1)
     k2: int = Field(default=3, ge=1)
 
@@ -204,13 +204,14 @@ class MethodConfig(BaseModel):
     # === Per-subtask hook (refactor 2026-06-11) ===
     # The PreToolUse hook runs inside the agent container, fires
     # before every Skill tool call, ranks skills by
-    #     score = (1-λ) sim_z + λ q_z + c_ucb sqrt(log N / (n+1))
+    #     multiplicative (default): score = sim·(1 + β·Q) + γ·UCB
+    #     additive (legacy):       score = (1-λ) sim_z + λ q_z + c_ucb √(log N/(n+1))
     # and either approves the agent's call (if it's in the top-k)
     # or blocks + suggests the top-k + "or skip if none fit".
     hook_enabled: bool = True
     hook_top_k: int = Field(default=3, ge=1, le=10)
     hook_lambda: float = Field(default=0.5, ge=0.0, le=1.0)
-    hook_c_ucb: float = Field(default=0.5, ge=0.0)
+    hook_c_ucb: float = Field(default=0.0, ge=0.0)
     hook_embedding_service_host: str = "host.docker.internal"
     hook_embedding_service_port: int = Field(default=8765, ge=1, le=65535)
     hook_embed_timeout_sec: float = Field(default=5.0, ge=0.1)
@@ -297,12 +298,12 @@ class MethodConfig(BaseModel):
     # leave the list empty (so early trials with little embedding
     # coverage still get a Top-K to choose from).
     #
-    # Default 0.0 = gate disabled. Production runs should opt in via
-    # the method YAML (e.g. 0.30 for typical text-embedding-v4 with
-    # semantic similarity in the [0.2, 0.8] range). With the default
-    # off, the multiplicative scoring formula (Fix 2) still provides
-    # soft gating: skills with sim=0 can only rank by their UCB term,
-    # so they only appear when truly nothing else is relevant.
+    # Default 0.7 = moderate gate. Set 0.0 to disable the gate
+    # (the multiplicative formula's inherent sim=0 → γ·UCB
+    # behavior still applies). With the default 0.7, skills must
+    # have meaningful semantic similarity to the query to enter the
+    # scoring pool. Set 0.99 to effectively keep only the top-1
+    # by raw sim.
     sim_gate_min_score: float = Field(
         default=0.7, ge=0.0, le=1.0,
         description=(

@@ -70,7 +70,7 @@ class RankParams:
     score_mode: str = "multiplicative"
     beta: float = 0.5
     gamma: float = 0.2
-    c_ucb: float = 0.5
+    c_ucb: float = 0.0
     lambda_: float = 0.5
     # 2026-06-29 (Phase 10 Bug 1): q_clip_min / q_clip_max removed;
     # the scorer hard-codes Q clamp to [0, 1] internally.

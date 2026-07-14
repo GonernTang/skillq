@@ -1,61 +1,58 @@
 ---
 name: recover-detached-head
-description: Recover commits lost when a detached HEAD was left behind by a branch checkout. Use when work appears missing after switching branches, after a "git checkout" left HEAD detached, or when the user says "my commits are gone" / "I lost my work" / "detached HEAD recovery". Triggers on `git status` showing "HEAD detached", a reflog entry pointing at expected work, or a branch that does not contain an expected commit. Procedure: reflog → identify lost commit → confirm absence on target branch → cherry-pick → resolve any conflicts.
+description: Recover commits lost after a detached HEAD checkout by finding them via reflog, inspecting them, and cherry-picking them onto a target branch. Use when the user reports missing commits after checking out a commit/tag/branch, or when HEAD is detached and recent work is not on any branch.
 ---
 
-# Recover Lost Commits from a Detached HEAD
+# Recover Lost Commits from Detached HEAD
 
-When a user checks out a branch while in a detached-HEAD state (or any commit becomes unreachable from a branch tip), the work is not deleted — it is still reachable via the reflog. Apply the procedure below to restore it.
+When a user notices their recent commits are missing — typically because they ran `git checkout` on a commit hash, tag, or remote branch and the working tree is now on a detached HEAD — recover the work and land it on a real branch.
+
+## When to use
+
+- User says "my commits are gone", "I lost my work", "detached HEAD", "checked out the wrong thing".
+- `git status` shows `HEAD detached at ...` and the expected branch does not contain the new commits.
+- The user has not yet run `git reset --hard` or otherwise garbage-collected the reflog entries.
 
 ## Procedure
 
-1. **Show the reflog.** The reflog records every movement of HEAD, including commits that are no longer on any branch.
+1. **Inspect reflog to locate the lost commit(s).**
    ```
-   git reflog
+   git reflog -20
    ```
-   Look for entries showing the expected commit message or a recognizable hash. Note the hash of the lost commit (the commit the user was last on while detached).
+   Look for the most recent entry pointing at the user's expected tip. Note the short hash and the relative time.
 
-2. **List all branches** to see where work might already exist:
+2. **Confirm the contents match what the user expects.**
+   ```
+   git show <hash>
+   ```
+   Verify the diff matches the work the user thinks they lost. Do not proceed if `git show` does not match.
+
+3. **Identify a safe target branch to land the work on.**
    ```
    git branch -a
+   git status
    ```
+   Prefer an existing local branch the user names; otherwise create one at the current detached HEAD before continuing. If the user only says "recover", ask which branch they want it on before cherry-picking.
 
-3. **Confirm the commit is not on the target branch.** From the branch the user wants the work on (e.g. `master` / `main`):
-   ```
-   git log --oneline <branch>..<lost-commit-hash>
-   ```
-   - Empty output → the commit is reachable from `<branch>`, no action needed (just `git checkout <branch>` if HEAD is detached).
-   - Non-empty output → the commit is *not* on `<branch>`; proceed to cherry-pick.
-
-4. **Cherry-pick the lost commit onto the target branch.** First make sure you are on the target branch:
+4. **Cherry-pick the lost commit onto the target branch.**
    ```
    git checkout <target-branch>
-   git cherry-pick <lost-commit-hash>
+   git cherry-pick <hash>
    ```
 
-5. **Resolve conflicts if they occur.** Cherry-pick stops with `UU` (both modified) markers on conflicting files.
-   - Open each conflicted file. Git inserts conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`).
-   - Choose the correct content (often the incoming changes from the lost commit, or a manual merge of both sides).
-   - Save the file.
-   - Stage it:
-     ```
-     git add <conflicted-file>
-     ```
-   - Continue the cherry-pick:
-     ```
-     git cherry-pick --continue
-     ```
-   - Git opens the editor for a merge message; accept the default (or edit) and save.
+5. **Handle conflicts if cherry-pick stops mid-way.**
+   - Open each conflicted file and decide between the user's intended change (`--theirs` relative to the picked commit) and the existing branch content (`--ours`).
+   - Edit the file to the desired final content, removing all conflict markers.
+   - Stage it: `git add <file>`
+   - Continue: `git cherry-pick --continue --no-edit`
 
-6. **Verify.** Confirm the commit is now part of the branch's history:
-   ```
-   git log --oneline -n 5
-   git log --oneline <lost-commit-hash>^..<target-branch>
-   ```
+6. **Verify and inform the user.**
+   - Run `git log --oneline -5` on the target branch and confirm the new tip contains the recovered commit.
+   - Tell the user the new commit hash and the branch it now lives on.
 
 ## Notes
 
-- The reflog is local; it is not pushed to remotes. If the user committed on a different clone, recover from that clone's reflog.
-- Reflog entries expire (default 90 days for reachable, 30 for unreachable). Act quickly.
-- If multiple commits were made on the detached HEAD, cherry-pick each in chronological order (oldest first), or use `git rebase --onto <target-branch> <parent-of-first-lost-commit> <lost-tip>`.
-- If the user is currently on a detached HEAD and wants to *keep* the work on a new branch instead of merging into an existing one: `git switch -c <new-branch-name>` (or `git checkout -b <new-branch>`) — this attaches the detached commits to the new branch directly, no cherry-pick needed.
+- Reflog entries expire (default ~90 days) and can be lost after aggressive gc, so recover promptly.
+- Prefer `git cherry-pick` over `git reset --hard` or rewriting an existing branch — cherry-pick leaves an audit trail and is reversible.
+- If multiple commits were lost, cherry-pick them in chronological order; use `git cherry-pick <hash1> <hash2> ...` or a range `git cherry-pick <oldest>..<newest>`.
+- If the target branch already contains a divergent version of the same change, surface that to the user instead of silently overwriting.

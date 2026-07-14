@@ -13,16 +13,22 @@
   ([Tang, 2026, PRICAI](https://example.invalid/skillq-paper)) as an
   independent `on_trial_ended` hook. This is the **user's own
   contribution**:
-  1. Two-stage UCB retrieval (cosine → UCB-augmented re-rank, Eq. 4)
-  2. β-layered Q-learning (Eq. 6 with informationally isolated verifier)
-  3. Q-driven library management (admission / eviction / rejuvenation)
-  4. Near-miss-aware incremental editing (LLM-generative via
-     `EditRefiner` + `LiteLLMEditBackend`, no fixed token cap)
+  1. Two-stage retrieval with Hard Gate + BM25 hybrid scoring
+     (multiplicative mode: ``sim·(1+β·Q)+γ·UCB``, default;
+     additive mode: ``(1-λ)·sim_z+λ·q_z+UCB``, legacy Eq. 4)
+  2. Standard tabular Q-learning (Eq. 5, ``Q += α·(r−Q)``)
+     with optional cosine-weighted delta
+  3. Q-driven library management (admission / eviction,
+     hard-bounded at ``b_max`` with lowest-Q eviction)
+  4. Incremental editing on failure (LLM-generative via
+     `EditRefiner` + `LiteLLMEditBackend`; near-miss gate
+     removed 2026-06-22 — now unconditional on failure)
 
-  The paper method is implemented from the
-  `implementation_guide/lqrl/` Python skeleton but with renamed
-  classes, custom prompts, different default hyperparameters, and a
-  LiteLLM-only backend.
+  The paper method originated from the ``implementation_guide/lqrl/``
+  Python skeleton (the user's earlier paper name, now renamed to
+  **SkillQ**) but has since been rewritten with renamed classes,
+  custom prompts, different hyperparameters, and a LiteLLM-only
+  backend. ``lqrl`` is kept only as a naming note.
 
 > **Naming note**: `lqrl` was the user's earlier paper name; the
 > paper has since been renamed to **SkillQ**. `skills_vote` is the
@@ -115,8 +121,10 @@ uv sync
 uv run python skillq/prebuild_images.py \
   --cfg-path experiments/configs/prebuild_tb2_claude.yaml
 
-# 4. Run a quick smoke test (3 tasks)
-uv run skillq paper run --benchmark tb2 --variant e2e
+# 4. Run a quick smoke test (single task)
+uv run skillq paper run --benchmark tb2 --variant full \
+  --method-override datasets.task_names=[chess-best-move] \
+  --method-override n_concurrent_trials=1
 
 # 5. Run full experiment (89 tasks, 8 concurrent)
 uv run skillq paper run --benchmark tb2 --variant fromscratch_r2
@@ -166,6 +174,7 @@ uv run skillq skillsvote run --help
 │   ├── services/          # host-side /rank HTTP service (ranking_service, ranking_client)
 │   ├── shared/            # Q-table, library, embeddings, calls_log, backends (litellm)
 │   ├── skillsvote_mode/   # pass-through to upstream skills_vote (baseline)
+│   ├── paper_mode/        # ⚠️ legacy empty dir (rename → runtime/ on 2026-06-25, pending cleanup)
 │   └── config.py          # MethodConfig (the method's configuration class)
 ├── skills/                # skill source files (SKILL.md per skill)
 ├── skillsvote/            # vendored upstream skills_vote (the baseline)
