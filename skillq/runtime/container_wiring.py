@@ -385,7 +385,7 @@ def _load_task_instruction(method: Any, task_name: str) -> str | None:
         return None
     # Common benchmark layouts — try each in turn. We don't know
     # which one this trial belongs to at wiring time.
-    for sub in ("terminal-bench", "swebenchpro", "tb-pro", "swebench"):
+    for sub in ("terminal-bench", "swebenchpro", "tb-pro", "swebench", "gaia"):
         candidate = input_root / sub / task_name / "instruction.md"
         try:
             if candidate.is_file():

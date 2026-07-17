@@ -196,6 +196,23 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     overrides = parse_overrides(args.method_override)
+    # Split overrides: job-level keys → job_cfg; rest → method_cfg.
+    # MethodConfig has extra="forbid", so job fields (datasets,
+    # n_concurrent_trials, etc.) must NOT leak into the method YAML.
+    _JOB_KEYS = frozenset({
+        "datasets", "n_concurrent_trials", "n_attempts",
+        "job_name", "jobs_dir", "quiet", "retry",
+        "agent_timeout_multiplier", "environment", "agents",
+    })
+    job_overrides = {k: v for k, v in overrides.items() if k in _JOB_KEYS}
+    method_overrides = {k: v for k, v in overrides.items() if k not in _JOB_KEYS}
+    if job_overrides:
+        # Apply job-level overrides. ``datasets`` is a list in Harbor's
+        # JobConfig — merge into the first dataset item, not replace it.
+        ds_override = job_overrides.pop("datasets", None)
+        job_cfg = deep_merge(job_cfg, job_overrides)
+        if ds_override is not None and isinstance(job_cfg.get("datasets"), list) and job_cfg["datasets"]:
+            job_cfg["datasets"][0] = deep_merge(job_cfg["datasets"][0], ds_override)
     job_name = job_cfg.get("job_name", f"{args.benchmark}_skillq_{args.variant}")
     output_dir = (args.output_dir or merged_path.parent).resolve()
     method_yaml_path = output_dir / f"{job_name}.method.yaml"
@@ -205,7 +222,7 @@ def main(argv: list[str] | None = None) -> int:
         method_yaml_path,
         fresh_start=args.fresh_start,
         runtime=args.runtime,
-        overrides=overrides,
+        overrides=method_overrides,
     )
 
     # Persist the (resolved job_cfg without method-subtree) back to
@@ -230,8 +247,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[run_benchmark] benchmark={args.benchmark} variant={args.variant}")
     print(f"[run_benchmark] job_name={job_name}")
     print(f"[run_benchmark] fresh_start={args.fresh_start} runtime={args.runtime}")
-    if overrides:
-        print(f"[run_benchmark] overrides: {overrides}")
+    if job_overrides:
+        print(f"[run_benchmark] job_overrides: {job_overrides}")
+    if method_overrides:
+        print(f"[run_benchmark] method_overrides: {method_overrides}")
     print(f"[run_benchmark] wrote {job_yaml_path}")
     print(f"[run_benchmark] wrote {method_yaml_path}")
     print(f"[run_benchmark] cmd: {cmd_str}")

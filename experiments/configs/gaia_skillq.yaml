@@ -1,0 +1,110 @@
+# GAIA 165-task paper-mode run (all levels: 53 L1 + 86 L2 + 26 L3).
+#
+# GAIA vs TB2 — key differences to know before running:
+#
+#   1. NETWORK: GAIA tasks NEED internet (web search, API calls).
+#      Container must have outbound access. If behind proxy, set
+#      HTTP_PROXY/HTTPS_PROXY in agent kwargs.
+#
+#   2. VISION:  38 tasks have png/jpg/pdf attachments. Claude Code
+#      reads them via vision — ensure model supports it.
+#
+#   3. VERIFIER: Simple string match (agent writes /app/answer.txt,
+#      verifier compares with expected_answer.txt). No compilation.
+#
+#   4. SKILLS:   GAIA skills are reasoning patterns, not engineering
+#      tricks. L4 evolve output will differ qualitatively from TB2.
+#
+#   5. TIME:     ~3-5h wall clock (165 tasks × ~2-5 min avg × 4 concurrent).
+#      Level 3 tasks can run longer (web research + multi-step).
+#
+# Build images first:
+#   bash scripts/build_gaia_image.sh
+#
+# Run:
+#   # Full 165-task experiment:
+#   uv run python experiments/run/run_benchmark.py --benchmark gaia --variant full
+#
+#   # Smoke test (1 task):
+#   uv run python experiments/run/run_benchmark.py --benchmark gaia --variant full \
+#     --method-override datasets.task_names=[7bd855d8-463d-4ed5-93ca-5fe35145f733] \
+#     --method-override n_concurrent_trials=1
+#
+#   # Level 1 only (53 tasks):
+#   uv run python experiments/run/run_benchmark.py --benchmark gaia --variant full \
+#     --method-override datasets.task_names=["*level1*"] \
+#     --method-override n_concurrent_trials=4
+
+jobs_dir: output
+job_name: gaia_skillq__${now:%Y-%m-%d__%H-%M-%S}
+n_attempts: 1
+n_concurrent_trials: 4
+quiet: false
+retry:
+  max_retries: 0
+  exclude_exceptions:
+    - VerifierTimeoutError
+    - RewardFileNotFoundError
+    - RewardFileEmptyError
+    - VerifierOutputParseError
+agent_timeout_multiplier: 1.0
+environment:
+  type: docker
+  force_build: false
+  delete: false
+  mounts_json:
+    - type: bind
+      source: /home/gonern/workspace/skillq/skills/gaia
+      target: /skills
+      read_only: true
+agents:
+  - import_path: skillq.runtime.agent:SkillQClaudeCodeAgent
+    model_name: ${oc.env:ANTHROPIC_MODEL,anthropic/claude-sonnet-4-5}
+    override_timeout_sec: 1200.0
+    kwargs:
+      reasoning_effort: high
+datasets:
+  # GAIA tasks downloaded via `harbor datasets download gaia@1.0 --export -o input/gaia`.
+  # Export mode nests under input/gaia/gaia/ — adjust if using different layout.
+  - path: ${oc.env:SkillQ_INPUT_ROOT,/home/gonern/workspace/skillq/input}/gaia/gaia
+
+# === Paper method ===
+method:
+  retrieval_mode: pull
+
+  # GAIA export-mode nests tasks under input/gaia/gaia/.
+  # benchmark_input_path + the "gaia" sub in container_wiring.py
+  # resolves to input/gaia/gaia/<uuid>/instruction.md.
+  benchmark_input_path: ${oc.env:SkillQ_INPUT_ROOT,/home/gonern/workspace/skillq/input}/gaia
+
+  library_root: ${oc.env:SkillQ_OUTPUT_ROOT,/home/gonern/workspace/skillq/output}/${job_name}/.skillq_library
+  state_path:   ${oc.env:SkillQ_OUTPUT_ROOT,/home/gonern/workspace/skillq/output}/${job_name}/.skillq_library/.state/method_state.json
+  seed_skills_dir: /home/gonern/workspace/skillq/skills/gaia
+
+  retrieval:
+    top_k: 3
+    score_mode: multiplicative
+    beta: 0.5
+    gamma: 0.2
+    sim_gate_min_score: 0.5
+    sim_gate_floor: 0
+    c_ucb: 0.0
+    lambda: 0.5
+
+  attribution_model: anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-flash}
+  editor_model:      anthropic/${oc.env:ANTHROPIC_MODEL,deepseek-v4-flash}
+  embedder_model:    openai/${oc.env:EMBEDDING_MODEL,text-embedding-v4}
+  embedder_dim: 1024
+
+  evolve:
+    enabled: true
+    extract_every_n_trials: 1
+    enforce_failure_skill_structure: true
+
+  b_max: 1000
+  seed_initial_q: 0.5
+
+  reuse_q_table: true
+  reuse_embedding_cache: true
+
+  runtime: new

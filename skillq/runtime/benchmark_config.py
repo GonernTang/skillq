@@ -28,6 +28,7 @@ BENCHMARK_VARIANTS: dict[tuple[str, str], str] = {
     ("tb2", "full"):             "experiments/configs/tb2_skillq_full.yaml",
     ("tb2", "hard6"):           "experiments/configs/tb2_hard6.yaml",
     ("swebenchpro", "full"):     "experiments/configs/swebenchpro_skillq.yaml",
+    ("gaia", "full"):            "experiments/configs/gaia_skillq.yaml",
 }
 
 
@@ -58,6 +59,10 @@ def parse_overrides(items: list[str] | None) -> dict[str, Any]:
         key, raw = key.strip(), raw.strip()
         if raw.lower() in {"true", "false"}:
             value: Any = raw.lower() == "true"
+        elif raw.startswith("[") and raw.endswith("]"):
+            # List syntax: [a,b,c] → parse inner items
+            inner = raw[1:-1]
+            value = [v.strip().strip("\"'") for v in inner.split(",") if v.strip()]
         else:
             try:
                 value = int(raw)
