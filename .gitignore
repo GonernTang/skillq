@@ -56,3 +56,5 @@ experiments/configs/*.method.yaml
 
 # Local planning artifacts (claude-code OMO session output).
 .omo/
+input/
+jobs/

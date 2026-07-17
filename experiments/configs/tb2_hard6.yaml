@@ -29,7 +29,7 @@ environment:
   delete: false
   mounts_json:
     - type: bind
-      source: /home/gonern/workspace/skillq/skills
+      source: /home/gonern/workspace/skillq/skills/tb2
       target: /skills
       read_only: true
 agents:
@@ -53,7 +53,7 @@ method:
 
   library_root: ${oc.env:SkillQ_OUTPUT_ROOT,/home/gonern/workspace/skillq/output}/${job_name}/.skillq_library
   state_path:   /home/gonern/workspace/skillq/output/tb2_skillq_fromscratch__2026-07-01__19-08-16/.skillq_library/.state/method_state.json
-  seed_skills_dir: /home/gonern/workspace/skillq/skills
+  seed_skills_dir: /home/gonern/workspace/skillq/skills/tb2
 
   retrieval:
     top_k: 3
