@@ -56,7 +56,7 @@ from harbor.job import Job
 from harbor.trial.hooks import TrialHookEvent
 
 from skillq.layers.l3_attribution.analyzer import AttributionAnalyzer
-from skillq.layers.l3_attribution.edit import EditRefiner
+from skillq.layers.l4_evolve.edit import EditRefiner
 from skillq.layers.l3_attribution.models import LiteLLMAttributionBackend
 from skillq.layers.l4_evolve.create import SkillExtractor
 from skillq.layers.l4_evolve.extract_buffer import ExtractBuffer

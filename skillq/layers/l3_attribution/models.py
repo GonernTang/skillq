@@ -97,7 +97,14 @@ class TrialAttribution(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    overall_attribution: Attribution
+    # 2026-07-20: the LLM no longer outputs ``overall_attribution`` —
+    # the analyzer derives it in code from ``r_task`` + ``called_skill_ids``.
+    # The default keeps ``_parse`` working when the LLM omits the field
+    # (and lets ``model_validate`` succeed on older/stub payloads that
+    # still include it — the explicit value simply overrides the default).
+    overall_attribution: Attribution = Field(
+        default=Attribution.SUCCESS_NO_SKILL_SEEN
+    )
     overall_rationale: str = Field(min_length=1)
     subtasks: list[SubtaskOutcome] = Field(default_factory=list)
     knowledge_to_extract: str = ""  # empty when nothing reusable was found

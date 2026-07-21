@@ -99,6 +99,16 @@ def seed_agent_env(
     if agent_cfg.env is None:
         agent_cfg.env = {}
 
+    # ── Ablation L1 (2026-07-20): disable all skill injection ──
+    # When ``enable_retrieval`` is False the agent runs as a pure
+    # baseline with no hook-driven skill recommendations. We set
+    # SKILLQ_PULL_TOP_K=0 (the hook reads this as "inject zero
+    # skills") and return before any other SKILLQ_* var is seeded,
+    # so the container-side hook stays inert.
+    if not getattr(method, "enable_retrieval", True):
+        agent_cfg.env["SKILLQ_PULL_TOP_K"] = "0"
+        return
+
     # ---- RANK endpoint (NEW) ----
     # The /rank endpoint replaces the legacy SKILLQ_EMBED_HOST +
     # SKILLQ_EMBED_PORT pair. Default points at the host's
@@ -205,6 +215,18 @@ def seed_agent_env(
     # seeded above).
     if getattr(method, "retrieval_mode", "pull") == "pull":
         agent_cfg.env["SKILLQ_PULL_TOP_K"] = str(method.hook_pull_top_k)
+
+    # ── Ablation L1 (2026-07-20): pure cosine similarity ranking ──
+    # When ``enable_q_retrieval`` is False, zero out the Q-amplification
+    # (β), UCB bonus (γ, c_ucb), and λ blend so the hook's score
+    # collapses to raw cosine similarity. Q-learning may still run
+    # (controlled by ``enable_q_learning``) but its values no longer
+    # influence retrieval ranking.
+    if not getattr(method, "enable_q_retrieval", True):
+        agent_cfg.env["SKILLQ_HOOK_MULT_BETA"] = "0.000000"
+        agent_cfg.env["SKILLQ_HOOK_MULT_GAMMA"] = "0.000000"
+        agent_cfg.env["SKILLQ_HOOK_C_UCB"] = "0.000000"
+        agent_cfg.env["SKILLQ_HOOK_LAMBDA"] = "0.000000"
 
     n_seeded = sum(1 for k in agent_cfg.env if k.startswith("SKILLQ_"))
     logger.info(

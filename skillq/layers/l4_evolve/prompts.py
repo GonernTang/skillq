@@ -50,8 +50,9 @@ tasks can leverage this knowledge.
   - The skill must be **coherent and self-contained** — a future
     agent that has never seen any of the current trials should be
     able to follow this skill successfully on a similar task.
-  - You MAY optionally create a ``scripts/`` subdirectory with helper
-    code, but only if the procedure genuinely needs it.
+  - Always use the ``skill-creator`` skill when creating or restructuring a skill,
+    and follow the standard skill folder layout (``SKILL.md`` + optional
+    ``scripts/``, ``references/``, ``assets/`` subdirectories).
   - The skill name in the YAML frontmatter must match the directory name.
 
 ## Aggregation strategy
@@ -84,9 +85,9 @@ tasks can leverage this knowledge.
 2. Decide on a skill name (kebab-case, **{name_min_words}..{name_max_words}** words)
    that captures the *common reusable procedure*.
 3. Create the directory `{sandbox_dir}/create/<skill-name>/`.
-4. Write `SKILL.md` with YAML frontmatter and the procedure body.
-5. Optionally add a `scripts/` subdir if the procedure has concrete
-   reusable code.
+4. After creating the skill directory, use the ``skill-creator`` skill to
+   validate the resulting skill structure before returning.
+5. Write `SKILL.md` with YAML frontmatter and the procedure body.
 6. As your **final response**, output a single JSON line:
    `{{"status": "ok", "skill_name": "<name>", "body_tokens": <N>}}`
    or `{{"status": "skip", "reason": "<why>"}}` if you decide no new
@@ -151,8 +152,9 @@ tasks can avoid repeating the mistake.
     ``SkillExtractor.enforce_failure_skill_structure`` flag,
     default True; configured by
     ``MethodConfig.enforce_failure_skill_structure``).
-  - You MAY optionally create a ``scripts/`` subdirectory with helper
-    code, but only if the avoidance procedure genuinely needs it.
+  - Always use the ``skill-creator`` skill when creating or restructuring a skill,
+    and follow the standard skill folder layout (``SKILL.md`` + optional
+    ``scripts/``, ``references/``, ``assets/`` subdirectories).
   - The skill name in the YAML frontmatter must match the directory name.
 
 ## Aggregation strategy
@@ -218,9 +220,9 @@ wins.
 2. Decide on a skill name (kebab-case, **{name_min_words}..{name_max_words}** words)
    that captures the *common avoidance pattern*.
 3. Create the directory `{sandbox_dir}/create/<skill-name>/`.
-4. Write `SKILL.md` with YAML frontmatter and the guard-rail body.
-5. Optionally add a `scripts/` subdir if the procedure has concrete
-   reusable code.
+4. After creating the skill directory, use the ``skill-creator`` skill to
+   validate the resulting skill structure before returning.
+5. Write `SKILL.md` with YAML frontmatter and the guard-rail body.
 6. As your **final response**, output a single JSON line:
    `{{"status": "ok", "skill_name": "<name>", "body_tokens": <N>}}`
    or `{{"status": "skip", "reason": "<why>"}}` if you decide no new
@@ -259,6 +261,9 @@ so future agents facing similar tasks can reuse it.
     task.
   - If the knowledge is too task-specific to form a reusable skill,
     output ``{{"status": "skip", "reason": "<why>"}}`` instead.
+  - Always use the ``skill-creator`` skill when creating or restructuring a skill,
+    and follow the standard skill folder layout (``SKILL.md`` + optional
+    ``scripts/``, ``references/``, ``assets/`` subdirectories).
   - The skill name in the YAML frontmatter must match the directory name.
 
 ## Trial record
@@ -280,8 +285,10 @@ so future agents facing similar tasks can reuse it.
 1. Decide on a skill name (kebab-case, **{name_min_words}..{name_max_words}** words)
    that captures the reusable procedure.
 2. Create the directory `{sandbox_dir}/create/<skill-name>/`.
-3. Write `SKILL.md` with YAML frontmatter and the procedure body.
-4. As your **final response**, output a single JSON line:
+3. After creating the skill directory, use the ``skill-creator`` skill to
+   validate the resulting skill structure before returning.
+4. Write `SKILL.md` with YAML frontmatter and the procedure body.
+5. As your **final response**, output a single JSON line:
    `{{"status": "ok", "skill_name": "<name>", "body_tokens": <N>}}`
    or `{{"status": "skip", "reason": "<why>"}}`.
 
@@ -314,6 +321,9 @@ mistake.
           MUST run BEFORE committing to the main approach.
       (b) **Stop signal** — a concrete threshold and reset action.
     A skill missing either section is incomplete and will be rejected.
+  - Always use the ``skill-creator`` skill when creating or restructuring a skill,
+    and follow the standard skill folder layout (``SKILL.md`` + optional
+    ``scripts/``, ``references/``, ``assets/`` subdirectories).
   - The skill name in the YAML frontmatter must match the directory name.
 
 ## Trial record
@@ -333,12 +343,61 @@ mistake.
 1. Decide on a skill name (kebab-case, **{name_min_words}..{name_max_words}** words)
    that captures the avoidance pattern.
 2. Create the directory `{sandbox_dir}/create/<skill-name>/`.
-3. Write `SKILL.md` with YAML frontmatter and the guard-rail body.
-4. As your **final response**, output a single JSON line:
+3. After creating the skill directory, use the ``skill-creator`` skill to
+   validate the resulting skill structure before returning.
+4. Write `SKILL.md` with YAML frontmatter and the guard-rail body.
+5. As your **final response**, output a single JSON line:
    `{{"status": "ok", "skill_name": "<name>", "body_tokens": <N>}}`
    or `{{"status": "skip", "reason": "<why>"}}`.
 
 Begin now."""
+
+
+# ---------------------------------------------------------------------------
+# EDIT — incremental in-place editing of existing skills (moved from
+# l3_attribution/prompts.py, 2026-07-20 refactor: EDIT belongs in L4
+# with the other evolution actions, not in attribution layer).
+# ---------------------------------------------------------------------------
+EDIT_PROMPT = """\
+You are an independent reviewer acting in *generative mode*. The skill \
+below just failed a task. Propose a MINIMAL edit that would have \
+prevented the failure.
+
+Hard constraints (any violation makes the edit invalid):
+
+  - Keep the skill's name unchanged.
+  - Do not introduce new dependencies, new tools, or new files.
+  - Preserve all currently-correct content; only patch the gap.
+  - Return the FULL post-edit skill (the entire SKILL.md), not a diff.
+
+Soft guidance:
+
+  - Prefer local replacement or local insertion over rewriting.
+  - Do not delete existing content only because the agent did not use it.
+  - If the failure is environment-specific (network flake, missing \
+    package), prefer recording the failure mode as a guard than as a \
+    rewrite.
+  - Update the frontmatter ``description:`` line if the skill's \
+    scope meaningfully changed (so the L1 retrieval can re-rank \
+    it). If the scope is unchanged, leave the description alone.
+
+TASK
+----
+{task}
+
+FAILURE DIAGNOSIS (from attribution analyzer)
+---------------------------------------------
+{diagnosis}
+
+RECENT AGENT TRACE (last {tail_k} assistant messages, markdown)
+----------------------------------------------------------------
+{tail}
+
+ORIGINAL SKILL
+--------------
+{old_skill}
+
+POST-EDIT SKILL (full text, not a diff):"""
 
 
 __all__ = [
@@ -346,4 +405,5 @@ __all__ = [
     "BATCHED_EXTRACT_SKILL_FROM_FAILURE_PROMPT",
     "PER_TRIAL_EXTRACT_SKILL_PROMPT",
     "PER_TRIAL_EXTRACT_SKILL_FROM_FAILURE_PROMPT",
+    "EDIT_PROMPT",
 ]

@@ -56,7 +56,7 @@ from skillq.shared.types import Qlib
 if TYPE_CHECKING:
     from skillq.config import MethodConfig
     from skillq.layers.l3_attribution.analyzer import AttributionAnalyzer
-    from skillq.layers.l3_attribution.edit import EditRefiner
+    from skillq.layers.l4_evolve.edit import EditRefiner
     from skillq.layers.l4_evolve.create import SkillExtractor
     from skillq.shared.library import QlibState
 

@@ -88,8 +88,11 @@ class QlibState:
         }
         if lib_root is not None:
             payload["library_root"] = str(lib_root)
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(
+            target = Path(lib_root) / ".state" / "method_state.json"
+        else:
+            target = self.state_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )

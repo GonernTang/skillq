@@ -22,7 +22,10 @@
      hard-bounded at ``b_max`` with lowest-Q eviction)
   4. Incremental editing on failure (LLM-generative via
      `EditRefiner` + `LiteLLMEditBackend`; near-miss gate
-     removed 2026-06-22 — now unconditional on failure)
+     removed 2026-06-22 — now unconditional on failure).
+     L4 skill creation uses the `skill-creator` meta-skill
+     to produce standard-layout skill directories (``SKILL.md``
+     + optional ``scripts/``, ``references/``, ``assets/``).
 
   The paper method originated from the ``implementation_guide/lqrl/``
   Python skeleton (the user's earlier paper name, now renamed to
@@ -137,14 +140,12 @@ cd /home/gonern/workspace/skillq
 uv sync
 ```
 
-`uv sync` resolves `skills_vote` from `../lqrl` via the
-`[tool.uv.sources]` block in `pyproject.toml`. The dependency on
-the upstream `skills_vote` (the actual distribution name of the
-*baseline*) is pulled in editable mode so the `skillq skillsvote`
-pass-through can `import` the package's `attach_registers` /
-`run_job` directly.
+`uv sync` resolves `skills_vote` from the vendored `./skillsvote/`
+directory via the `[tool.uv.sources]` block in `pyproject.toml`. The
+baseline package is pulled in editable mode so the `skillq skillsvote`
+pass-through can `import` the package directly.
 
-To run the test suite:
+To run the test suite (334 tests):
 
 ```bash
 uv run pytest tests/
@@ -154,14 +155,17 @@ uv run pytest tests/
 
 ```bash
 # skillsvote mode — runs the *baseline* lifecycle verbatim
-uv run skillq skillsvote run -c configs/job_skillsvote.yaml
+uv run skillq skillsvote run -c experiments/configs/tb_pro_skillsvote.yaml
 
 # paper mode — runs the *SkillQ paper's* four-layer method
-# (module path: skillq.runtime/)
-uv run skillq paper run -c configs/job_paper.yaml
+uv run skillq paper run --benchmark tb2 --variant fromscratch
 
-# Inspect the baseline-side help text (it's the same as `svt run --help`)
-uv run skillq skillsvote run --help
+# Available variants: fromscratch, zerostart, full, hard6,
+#   fromscratch_r2/r3/r4, zerostart_r2/r4, fromscratch_resume
+uv run skillq paper run --benchmark tb2 --variant zerostart_r4
+
+# Or pass a raw Harbor job config directly
+uv run skillq paper run -c experiments/configs/tb2_skillq_full.yaml
 ```
 
 ## Layout
@@ -176,11 +180,27 @@ uv run skillq skillsvote run --help
 │   ├── skillsvote_mode/   # pass-through to upstream skills_vote (baseline)
 │   ├── paper_mode/        # ⚠️ legacy empty dir (rename → runtime/ on 2026-06-25, pending cleanup)
 │   └── config.py          # MethodConfig (the method's configuration class)
-├── skills/                # skill source files (SKILL.md per skill)
+├── skills/                # skill source files (SKILL.md + optional scripts/, references/)
 ├── skillsvote/            # vendored upstream skills_vote (the baseline)
-├── tests/                 # unit + integration tests
-└── experiments/           # Terminal-Bench 2.0 runs and configs
+├── tests/                 # unit + integration tests (334 tests)
+├── experiments/           # Terminal-Bench 2.0 configs and run scripts
+└── doc/                   # experiment reports, figures, paper notes
+    ├── figures/           # paper-quality PDF/PNG figures
+    └── experiment_final_summary.md  # 5-round experiment results
 ```
+
+## Experiment Results
+
+Full 5-round experiment results and paper-ready figures are in `doc/experiment_final_summary.md`
+and `doc/figures/`. Quick summary:
+
+| Series | Rounds | Best Pass Rate | Q Convergence | Skills |
+|---|---|---|---|---|
+| From-Scratch (A) | R1-R4 | 55.7% (R4, BM25) | 6% → 80% non-default | 67 → 102 |
+| Zero-Start (B) | R1-R5 | 57.6% (R4, 2h timeout) | 10% → 69% non-default | 62 → 112 |
+
+Key findings: Q-values predict task success (Q ≥ 0.55 → 90%+ pass rate); task difficulty
+dominates (86% cross-round stability); BM25 hybrid retrieval improves pass rate by +5.1pp.
 
 ## Why a branch-style entrypoint
 

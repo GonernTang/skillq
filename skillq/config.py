@@ -49,7 +49,7 @@ RETRIEVAL_UNPACK: dict[str, str] = {
     "pull_top_k": "hook_pull_top_k",
 }
 EVOLVE_UNPACK: dict[str, str] = {
-    "enabled": "enable_auto_extract",
+    "enabled": "enable_success_skill_create",
     "extract_every_n_trials": "extract_every_n_trials",
     "enforce_failure_skill_structure": "enforce_failure_skill_structure",
 }
@@ -77,6 +77,16 @@ def _unpack_nested(data: Any) -> Any:
         for k, v in evolve.items():
             flat_key = EVOLVE_UNPACK.get(k, k)
             data.setdefault(flat_key, v)
+    # ── Ablation alias (2026-07-20): ``enable_auto_extract`` is the
+    # legacy name for what is now ``enable_success_skill_create``.
+    # Existing YAMLs / programmatic construction that pass
+    # ``enable_auto_extract`` (flat top-level) must keep working —
+    # rename it here so the new field is the single source of truth.
+    # ``setdefault`` preserves an explicit ``enable_success_skill_create``
+    # value over the legacy alias.
+    if "enable_auto_extract" in data:
+        legacy = data.pop("enable_auto_extract")
+        data.setdefault("enable_success_skill_create", legacy)
     return data
 
 
@@ -455,8 +465,41 @@ class MethodConfig(BaseModel):
         ),
     )
 
-    # Auto-extract (create_skill path) — opt-in, see bridge.py
-    enable_auto_extract: bool = False
+    # ── Ablation switches (2026-07-20) ──
+    # L1: whether the hook injects skill recommendations at all.
+    # False = pure baseline (agent runs without any skill injection).
+    enable_retrieval: bool = True
+
+    # L1: whether retrieval scoring uses Q-values and UCB.
+    # False = pure embedding cosine similarity ranking.
+    enable_q_retrieval: bool = True
+
+    # L2: whether per-trial Q-learning updates fire.
+    # False = Q-table frozen (UCB still applies if enable_q_retrieval=True).
+    enable_q_learning: bool = True
+
+    # L3: whether the attribution LLM call runs.
+    # False = skip attribution (save cost; downstream edit/create become no-ops).
+    enable_attribution: bool = True
+
+    # L4 EDIT: whether existing skills can be edited on failure.
+    enable_skill_edit: bool = True
+
+    # L4 CREATE — success path: skill created from successful no-skill trials.
+    enable_success_skill_create: bool = True
+
+    # L4 CREATE — failure path: skill created from failed no-skill trials.
+    enable_failure_skill_create: bool = True
+
+    # Auto-extract (create_skill path) — opt-in, see bridge.py.
+    # ``enable_auto_extract`` is retained as a read-only alias for
+    # ``enable_success_skill_create`` so existing YAMLs / call sites
+    # (bridge.py, tests) keep working. The before-validator renames
+    # any input ``enable_auto_extract`` to ``enable_success_skill_create``.
+    @property
+    def enable_auto_extract(self) -> bool:
+        return self.enable_success_skill_create
+
     extract_every_n_trials: int = Field(
         default=4, ge=1,
         description=(

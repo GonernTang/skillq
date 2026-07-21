@@ -1,7 +1,9 @@
-"""L3 (Edit) — incremental in-place editing of existing skills.
+"""L4 (Edit) — incremental in-place editing of existing skills.
 
 Step 2 of the 2026-06-26 refactor extracted this from
-``skillq.layers.l3_attribution.edit``. The bridge invokes
+``skillq.layers.l3_attribution.edit`` (moved to
+``skillq.layers.l4_evolve.edit`` 2026-07-20: all skill-mutation
+actions belong in L4). The bridge invokes
 :meth:`EditRefiner.propose_edit` on every failed trial (r_task == 0).
 
 The previous near-miss gate (Eq. 11
@@ -24,7 +26,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from skillq.layers.l3_attribution.prompts import EDIT_PROMPT
+from skillq.layers.l4_evolve.prompts import EDIT_PROMPT
 from skillq.shared.types import Skill
 
 
