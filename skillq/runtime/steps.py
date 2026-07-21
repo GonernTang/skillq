@@ -52,6 +52,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shutil
 import time
 from collections import defaultdict
 from dataclasses import replace
@@ -174,6 +175,10 @@ async def step_q_update(ctx: "TrialContext", result: "StepResult") -> None:
     lib = ctx.services.lib
     mgr = ctx.services.mgr
     emb_cache = ctx.services.emb_cache
+
+    # Ablation L2: freeze the Q-table (no per-trial updates).
+    if not method.enable_q_learning:
+        return
 
     # 1. Read the PreToolUse hook log.
     #    2026-07-01 (Bug #51/#52 fix): the per-trial calls log now
@@ -320,6 +325,10 @@ async def step_attribute(ctx: "TrialContext", result: "StepResult") -> None:
     when the verdict is overridden — because it contains the raw
     material for L3 skill edits and L4 new-skill creation.
     """
+    # Ablation L3: skip the attribution LLM call entirely.
+    if not ctx.services.method.enable_attribution:
+        return
+
     # Read calls_log for ground-truth skill usage check.
     _log = (
         ctx.trial_dir / "agent" / "sessions"
@@ -342,11 +351,13 @@ async def step_attribute(ctx: "TrialContext", result: "StepResult") -> None:
     )
 
     try:
+        called_skill_ids = [c.skill_id for c in _approved]
         attribution = ctx.services.attribution_analyzer.analyze(
             task=ctx.intent_text,
             trial_dir=ctx.trial_dir,
             available_skill_ids=skill_ids,
             r_task=ctx.r_task,
+            called_skill_ids=called_skill_ids,
         )
     except Exception:
         logger.exception(
@@ -540,6 +551,10 @@ async def step_incremental_edit(ctx: "TrialContext", result: "StepResult") -> No
     services = ctx.services
     method = services.method
 
+    # Ablation L4 EDIT: disable in-place skill editing on failure.
+    if not method.enable_skill_edit:
+        return
+
     if ctx.r_task or not services.lib.skills:
         return
     attribution = result.attribution
@@ -550,11 +565,22 @@ async def step_incremental_edit(ctx: "TrialContext", result: "StepResult") -> No
     ):
         return
 
-    top = max(
-        services.lib.skills.values(),
-        key=lambda s: services.mgr.q_for(s.skill_id),
-        default=None,
+    # Edit the skill that was ACTUALLY called during this trial
+    # (from calls_log — ground truth), not the highest-Q skill.
+    # Pick the lowest-Q among actually-called skills: the one most
+    # likely to be at fault.
+    _log = (
+        ctx.trial_dir / "agent" / "sessions"
+        / "_calls_log" / "skillq_skill_calls.jsonl"
     )
+    _calls = _read_skill_calls_log(_log)
+    _called_ids = {c.skill_id for c in _calls if c.skill_id and not c.denied}
+    if not _called_ids:
+        return
+    target_skills = [services.lib.get(sid) for sid in _called_ids if services.lib.get(sid)]
+    if not target_skills:
+        return
+    top = min(target_skills, key=lambda s: services.mgr.q_for(s.skill_id))
     if top is None:
         return
 
@@ -764,6 +790,14 @@ async def step_dispatch_evolve(ctx: "TrialContext", result: "StepResult") -> Non
                 "l4_dispatch_rule2_success: trial=%s knowledge_chars=%d",
                 ctx.trial_id, len(knowledge),
             )
+            if not method.enable_success_skill_create:
+                logger.info(
+                    "l4_dispatch_rule2_success: ablation "
+                    "enable_success_skill_create=False, skipping buffer add "
+                    "(trial=%s).",
+                    ctx.trial_id,
+                )
+                return
             buffer_full = services.extract_buffer.add(
                 task=ctx.intent_text,
                 knowledge=knowledge,
@@ -783,6 +817,14 @@ async def step_dispatch_evolve(ctx: "TrialContext", result: "StepResult") -> Non
                 "l4_dispatch_rule5_failure: trial=%s knowledge_chars=%d",
                 ctx.trial_id, len(knowledge),
             )
+            if not method.enable_failure_skill_create:
+                logger.info(
+                    "l4_dispatch_rule5_failure: ablation "
+                    "enable_failure_skill_create=False, skipping buffer add "
+                    "(trial=%s).",
+                    ctx.trial_id,
+                )
+                return
             buffer_full = services.extract_buffer.add(
                 task=ctx.intent_text,
                 knowledge=knowledge,
@@ -857,7 +899,7 @@ async def _flush_buffer(ctx: "TrialContext", result: "StepResult") -> None:
             continue
         try:
             mode_extractor = _extractor_for_mode(services.extractor, mode)
-            new_skill = await mode_extractor.extract_batch(
+            new_skill, sandbox = await mode_extractor.extract_batch(
                 trials=batch,
             )
         except Exception:
@@ -885,6 +927,8 @@ async def _flush_buffer(ctx: "TrialContext", result: "StepResult") -> None:
                 task=batch[0].get("task", "") if batch else "",
                 knowledge=batch[0].get("knowledge", "") if batch else "",
             )
+            if sandbox is not None:
+                shutil.rmtree(sandbox, ignore_errors=True)
             continue
         if new_skill.skill_id in services.lib:
             # -- name-collision resolution (Fix A, 2026-07-01) --
@@ -909,6 +953,27 @@ async def _flush_buffer(ctx: "TrialContext", result: "StepResult") -> None:
         new_skill.admission_exempt = True
         services.lib.add(new_skill)
         mirror_skill_to_host_dir(new_skill, method.seed_skills_dir)
+        if sandbox is not None and method.seed_skills_dir is not None:
+            target = method.seed_skills_dir / new_skill.skill_id
+            try:
+                create_dir = sandbox / "create"
+                if create_dir.is_dir():
+                    dirs = [p for p in create_dir.iterdir() if p.is_dir()]
+                    if len(dirs) == 1:
+                        n = mode_extractor.copy_aux_files(dirs[0], target)
+                        if n > 0:
+                            logger.info(
+                                "extract_batch copied %d aux files for skill %s",
+                                n,
+                                new_skill.skill_id,
+                            )
+            except Exception:
+                logger.exception(
+                    "copy_aux_files failed for %s",
+                    new_skill.skill_id,
+                )
+        if sandbox is not None:
+            shutil.rmtree(sandbox, ignore_errors=True)
         services.mgr.set_q(new_skill.skill_id, method.new_skill_initial_q)
         result.lib_changes.append(("add", new_skill.skill_id, new_skill.body))
         logger.info(

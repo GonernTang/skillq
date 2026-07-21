@@ -91,16 +91,21 @@ def test_analyze_reads_session_jsonl(tmp_path: Path):
         + "\n",
         encoding="utf-8",
     )
-    # 2026-06-26: SUCCESS_VIEWED_SKILL_BUT_NOT_USED removed. Sub
-    # SUCCESS_SKILL_USED here (a surviving enum) — the test's
-    # purpose is to verify the analyzer round-trips the stub's
-    # attribution choice verbatim.
+    # 2026-07-20: overall_attribution is now derived from r_task x
+    # called_skill_ids (not the LLM). Pass called_skill_ids=["alpha"]
+    # so the derived value is SUCCESS_SKILL_USED, matching the
+    # stub's value; the test's purpose is still to verify the
+    # analyzer reads the session jsonl and round-trips a value.
     backend = StubAttributionBackend(
         overall_attribution=Attribution.SUCCESS_SKILL_USED
     )
     analyzer = AttributionAnalyzer(backend=backend, model="m")
     attribution = analyzer.analyze(
-        task="the thing", trial_dir=trial_dir, skills_root=None, r_task=1
+        task="the thing",
+        trial_dir=trial_dir,
+        skills_root=None,
+        r_task=1,
+        called_skill_ids=["alpha"],
     )
     assert attribution.overall_attribution == Attribution.SUCCESS_SKILL_USED
 
@@ -158,37 +163,41 @@ def test_litellm_backend_imports_only_when_called():
 
 
 # ---------------------------------------------------------------------------
-# Consistency clamp: r_task ↔ overall_attribution invariant
+# Derivation: r_task x called_skill_ids -> overall_attribution
+# (replaces the old consistency-clamp tests; 2026-07-20 refactor
+# moved overall_attribution determination out of the LLM and into
+# code, so the clamp is no longer needed.)
 # ---------------------------------------------------------------------------
-def test_consistency_clamp_r_task_1_with_fail_enum(tmp_path: Path):
-    """r_task=1 with a fail_* enum from the LLM should be clamped to
-    SUCCESS_NO_SKILL_SEEN (most conservative success enum). This is
-    the exact bug shape that surfaced in the auto-extract smoke.
-
-    2026-06-26: input enum renamed FAIL_AGENT_ISSUE →
-    FAILURE_SKILL_NOT_USED; clamp target unchanged.
+def test_analyze_r1_no_skills_derives_success_no_skill_seen(tmp_path: Path):
+    """r_task=1 with called_skill_ids=[] -> SUCCESS_NO_SKILL_SEEN,
+    regardless of what the LLM returns. This is the exact bug shape
+    that surfaced in the auto-extract smoke (LLM said
+    FAILURE_SKILL_NOT_USED despite r_task=1); the derivation makes
+    that impossible.
     """
     backend = StubAttributionBackend(
         overall_attribution=Attribution.FAILURE_SKILL_NOT_USED,
-        knowledge_to_extract="",  # empty — the original bug signature
+        knowledge_to_extract="",  # empty -- the original bug signature
     )
     analyzer = AttributionAnalyzer(backend=backend, model="m")
     attribution = analyzer.analyze(
-        task="the thing", trial_dir=tmp_path, skills_root=None, r_task=1
+        task="the thing",
+        trial_dir=tmp_path,
+        skills_root=None,
+        r_task=1,
+        called_skill_ids=[],
     )
     assert attribution.overall_attribution == Attribution.SUCCESS_NO_SKILL_SEEN
-    assert "[consistency-clamp]" in attribution.overall_rationale
-    # NB: knowledge is still empty here — the clamp only fixes the
-    # enum. The prompt's hard constraint is what populates
-    # knowledge_to_extract in production.
+    # No clamp marker -- derivation is code-driven, not a clamp.
+    assert "[consistency-clamp]" not in attribution.overall_rationale
     assert attribution.knowledge_to_extract == ""
 
 
-def test_consistency_clamp_r_task_0_with_success_enum(tmp_path: Path):
-    """r_task=0 with a success_* enum from the LLM should be clamped
-    to FAILURE_SKILL_USED (most conservative fail enum under the
-    2026-06-26 enum rename; renamed from the old FAIL_SKILL_ISSUE).
-    Previously silently ignored; now routes into the L3 Edit path.
+def test_analyze_r0_with_skill_derives_failure_skill_used(tmp_path: Path):
+    """r_task=0 with called_skill_ids=['a'] -> FAILURE_SKILL_USED,
+    regardless of what the LLM returns. Previously this was a
+    silent gap (LLM said SUCCESS_SKILL_USED despite r_task=0); the
+    derivation routes it into the L3 Edit path.
     """
     backend = StubAttributionBackend(
         overall_attribution=Attribution.SUCCESS_SKILL_USED,
@@ -196,17 +205,22 @@ def test_consistency_clamp_r_task_0_with_success_enum(tmp_path: Path):
     )
     analyzer = AttributionAnalyzer(backend=backend, model="m")
     attribution = analyzer.analyze(
-        task="the thing", trial_dir=tmp_path, skills_root=None, r_task=0
+        task="the thing",
+        trial_dir=tmp_path,
+        skills_root=None,
+        r_task=0,
+        called_skill_ids=["skill-a"],
     )
     assert attribution.overall_attribution == Attribution.FAILURE_SKILL_USED
-    assert "[consistency-clamp]" in attribution.overall_rationale
+    assert "[consistency-clamp]" not in attribution.overall_rationale
     # knowledge passes through (no fabrication)
     assert attribution.knowledge_to_extract == "some failure-mode knowledge"
 
 
-def test_consistency_clamp_no_op_when_consistent(tmp_path: Path):
-    """When the LLM and r_task agree, the clamp is a no-op and the
-    rationale is *not* prefixed with the marker.
+def test_analyze_r1_no_skills_no_clamp_marker(tmp_path: Path):
+    """r_task=1 with called_skill_ids=[] -> SUCCESS_NO_SKILL_SEEN.
+    The rationale must NOT contain a [consistency-clamp] marker
+    because the derivation is code-driven, not a clamp.
     """
     backend = StubAttributionBackend(
         overall_attribution=Attribution.SUCCESS_NO_SKILL_SEEN,
@@ -214,7 +228,11 @@ def test_consistency_clamp_no_op_when_consistent(tmp_path: Path):
     )
     analyzer = AttributionAnalyzer(backend=backend, model="m")
     attribution = analyzer.analyze(
-        task="t", trial_dir=tmp_path, skills_root=None, r_task=1
+        task="t",
+        trial_dir=tmp_path,
+        skills_root=None,
+        r_task=1,
+        called_skill_ids=[],
     )
     assert attribution.overall_attribution == Attribution.SUCCESS_NO_SKILL_SEEN
     assert "[consistency-clamp]" not in attribution.overall_rationale

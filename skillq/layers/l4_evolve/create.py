@@ -98,7 +98,7 @@ class SkillExtractor:
         trials: list[dict[str, Any]],
         sandbox_root: Path | None = None,
         aggregated_intent_hash: int = 0,
-    ) -> Skill | None:
+    ) -> tuple[Skill | None, Path | None]:
         """Materialize a new SKILL.md from N aggregated (task, knowledge)
         records. Spawns ONE ``claude --print`` subprocess.
 
@@ -115,9 +115,15 @@ class SkillExtractor:
         extract prompt no longer injects the library's skill-id list
         (the cosine-based semantic dedup that depended on this is
         gone). Name-collision dedup at the bridge boundary remains.
+
+        Returns ``(skill, sandbox)`` where ``sandbox`` is the Path the
+        LLM wrote into. The caller is responsible for ``shutil.rmtree``
+        of the sandbox (after copying any aux files via
+        :meth:`copy_aux_files`). ``sandbox`` is ``None`` only when
+        ``trials`` is empty.
         """
         if not trials:
-            return None
+            return None, None
         # N=1 → per-trial prompt (2026-07-03).
         # The batch prompt's "find common patterns across N trials"
         # framing is vacuous for N=1 and harmful for heterogeneous
@@ -181,7 +187,7 @@ class SkillExtractor:
         gap_description: str,
         intent_hash: int,
         sandbox_root: Path | None,
-    ) -> Skill | None:
+    ) -> tuple[Skill | None, Path | None]:
         """Per-trial extract — N=1 fast path (2026-07-03).
 
         Uses :data:`PER_TRIAL_EXTRACT_SKILL_PROMPT` (success) or
@@ -213,8 +219,13 @@ class SkillExtractor:
         task: str,
         intent_hash: int,
         sandbox_root: Path | None,
-    ) -> Skill | None:
-        """Subprocess + sandbox + collect plumbing for :meth:`extract_batch`."""
+    ) -> tuple[Skill | None, Path | None]:
+        """Subprocess + sandbox + collect plumbing for :meth:`extract_batch`.
+
+        Returns ``(skill, sandbox)``. The caller owns sandbox cleanup
+        (``shutil.rmtree``) so it can copy aux files first via
+        :meth:`copy_aux_files`.
+        """
         sandbox = self._make_sandbox(sandbox_root)
         system_prompt = prompt_template.format(
             sandbox_dir=str(sandbox),
@@ -268,12 +279,10 @@ class SkillExtractor:
             logger.warning(
                 "extractor subprocess timed out after %s s", self.timeout_sec
             )
-            shutil.rmtree(sandbox, ignore_errors=True)
-            return None
+            return None, sandbox
         except FileNotFoundError:
             logger.warning("claude CLI not found at %s", self.claude_cli)
-            shutil.rmtree(sandbox, ignore_errors=True)
-            return None
+            return None, sandbox
 
         if proc.returncode != 0:
             logger.warning(
@@ -281,12 +290,10 @@ class SkillExtractor:
                 proc.returncode,
                 proc.stderr[:500] if proc.stderr else "",
             )
-            shutil.rmtree(sandbox, ignore_errors=True)
-            return None
+            return None, sandbox
 
         skill = self._collect_skill(sandbox, intent_hash, task)
-        shutil.rmtree(sandbox, ignore_errors=True)
-        return skill
+        return skill, sandbox
 
     # ------------------------------------------------------------------
     # Sandbox + collection
@@ -429,3 +436,19 @@ class SkillExtractor:
                 "has_scripts": scripts_dir.is_dir(),
             },
         )
+
+    def copy_aux_files(self, skill_dir: Path, target_dir: Path) -> int:
+        """Copy scripts/, references/, assets/ from skill_dir to target_dir.
+
+        Returns number of files copied. Preserves subdirectory structure.
+        Uses shutil.copytree with dirs_exist_ok=True for each aux dir found.
+        Does NOT copy SKILL.md (mirror_skill_to_host_dir handles that).
+        """
+        count = 0
+        for subdir in ("scripts", "references", "assets"):
+            src = skill_dir / subdir
+            if src.is_dir():
+                dst = target_dir / subdir
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+                count += sum(1 for _ in src.rglob("*") if _.is_file())
+        return count

@@ -9,9 +9,10 @@ Step 2 of the 2026-06-26 refactor extracted this from
 - :mod:`skillq.layers.l3_attribution.edit` — :class:`EditRefiner`.
 
 The analyzer reads the trial's session jsonl, builds the
-ATTRIBUTION_PROMPT, calls the configured backend, and applies the
-consistency safety net that coerces enum values inconsistent with
-``r_task``.
+ATTRIBUTION_PROMPT, calls the configured backend, and derives the
+top-level ``overall_attribution`` in code from ``r_task`` +
+``called_skill_ids`` (the LLM only analyzes the trace; it no longer
+judges success vs failure — 2026-07-20 refactor).
 """
 
 from __future__ import annotations
@@ -70,6 +71,7 @@ class AttributionAnalyzer:
         skills_root: Path | None = None,
         available_skill_ids: list[str] | None = None,
         r_task: int,
+        called_skill_ids: list[str] | None = None,
     ) -> TrialAttribution:
         """Run the attribution step for one trial.
 
@@ -80,10 +82,12 @@ class AttributionAnalyzer:
         the trace file is missing.
 
         ``r_task`` is the ground-truth trial reward (1 = succeeded,
-        0 = failed) from the harbor verifier. It is interpolated
-        into ``ATTRIBUTION_PROMPT`` as a hard constraint and is
-        also enforced post-parse by :meth:`_enforce_consistency` as
-        a safety net.
+        0 = failed) from the harbor verifier. ``called_skill_ids`` is
+        the list of library skill ids the agent actually called (from
+        the calls_log ground truth). The LLM no longer decides the
+        top-level ``overall_attribution`` — this method derives it in
+        code from ``r_task`` + ``called_skill_ids`` after parsing the
+        LLM's analysis output.
         """
         trace = self._load_session_trace(trial_dir)
         if available_skill_ids:
@@ -104,7 +108,20 @@ class AttributionAnalyzer:
         )
         raw = self.backend(prompt, self.model)
         att = self._parse(raw)
-        return self._enforce_consistency(att, r_task)
+        # Code-derived verdict: LLM analyzes only, never judges success/failure.
+        if r_task == 1:
+            att.overall_attribution = (
+                Attribution.SUCCESS_SKILL_USED
+                if called_skill_ids
+                else Attribution.SUCCESS_NO_SKILL_SEEN
+            )
+        else:
+            att.overall_attribution = (
+                Attribution.FAILURE_SKILL_USED
+                if called_skill_ids
+                else Attribution.FAILURE_SKILL_NOT_USED
+            )
+        return att
 
     @staticmethod
     def _load_session_trace(trial_dir: Path) -> str:
@@ -192,62 +209,6 @@ class AttributionAnalyzer:
                 overall_attribution=Attribution.FAILURE_SKILL_NOT_USED,
                 overall_rationale="attribution validation failed; defaulting to FAILURE_SKILL_NOT_USED",
             )
-
-    @staticmethod
-    def _enforce_consistency(
-        att: TrialAttribution, r_task: int
-    ) -> TrialAttribution:
-        """Safety net for the prompt's hard constraints.
-
-        If the LLM returned an ``overall_attribution`` inconsistent
-        with ``r_task`` (e.g. ``FAILURE_SKILL_NOT_USED`` despite a
-        successful trial), coerce the enum to a consistent value
-        rather than crash the bridge. The ``[consistency-clamp]``
-        marker in the rationale makes coercion events greppable in
-        logs.
-
-        ``knowledge_to_extract`` is passed through unchanged — we
-        never fabricate knowledge (fake knowledge would let the
-        extractor synthesize low-quality SKILL.md files, which is
-        worse than skipping extraction).
-
-        2026-06-26 rename: clamp sets updated to the new 5-enum
-        surface (``SUCCESS_VIEWED_SKILL_BUT_NOT_USED`` removed);
-        the r_task=0 clamp target is now ``FAILURE_SKILL_USED``
-        (the renamed equivalent of the old ``FAIL_SKILL_ISSUE``)
-        — chosen because it is the most conservative failure
-        enum: "a skill was used and the trial failed", which is
-        the natural interpretation when an LLM returned a
-        ``SUCCESS_SKILL_USED`` value alongside ``r_task=0``.
-        """
-        success_enums = {
-            Attribution.SUCCESS_SKILL_USED,
-            Attribution.SUCCESS_NO_SKILL_SEEN,
-        }
-        fail_enums = {
-            Attribution.FAILURE_SKILL_USED,
-            Attribution.FAILURE_SKILL_NOT_USED,
-            Attribution.FAIL_ENV_ISSUE,
-        }
-        if r_task == 1 and att.overall_attribution in fail_enums:
-            return att.model_copy(update={
-                "overall_attribution": Attribution.SUCCESS_NO_SKILL_SEEN,
-                "overall_rationale": (
-                    f"[consistency-clamp] r_task=1 but LLM returned "
-                    f"{att.overall_attribution.value}; coerced to "
-                    f"success_no_skill_seen. {att.overall_rationale}"
-                ),
-            })
-        if r_task == 0 and att.overall_attribution in success_enums:
-            return att.model_copy(update={
-                "overall_attribution": Attribution.FAILURE_SKILL_USED,
-                "overall_rationale": (
-                    f"[consistency-clamp] r_task=0 but LLM returned "
-                    f"{att.overall_attribution.value}; coerced to "
-                    f"failure_skill_used. {att.overall_rationale}"
-                ),
-            })
-        return att
 
 
 # ---------------------------------------------------------------------------

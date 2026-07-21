@@ -31,7 +31,7 @@ import pytest
 def test_edit_refiner_default_uses_anthropic_prefix(monkeypatch):
     """EditRefiner() with no model arg → anthropic/<ANTHROPIC_MODEL>."""
     monkeypatch.setenv("ANTHROPIC_MODEL", "deepseek-v4-flash")
-    from skillq.layers.l3_attribution.edit import EditRefiner, StubEditBackend
+    from skillq.layers.l4_evolve.edit import EditRefiner, StubEditBackend
 
     refiner = EditRefiner(backend=StubEditBackend())
     assert refiner.model == "anthropic/deepseek-v4-flash"

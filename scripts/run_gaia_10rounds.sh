@@ -36,13 +36,16 @@ for round in $(seq 1 "$ROUNDS"); do
         R1_OUTPUT="$(ls -dt "$REPO_ROOT/output/gaia_skillq__"* 2>/dev/null | head -1)"
         PREV_STATE="$R1_OUTPUT/.skillq_library/.state/method_state.json"
     else
-        # Rounds 2-10: inherit Q-table from previous round
-        # seed_skills_dir already points to skills/gaia/ which accumulates
+        # Rounds 2-10: inherit Q-table, disable L4 CREATE (ablation design)
+        # — seed_skills_dir already points to skills/gaia/ (R1's skills)
+        # — evolve.enabled=false: no new skills, only L3 EDIT on failures
+        # — Q-learning optimizes skill selection on the fixed skill library
         uv run python experiments/run/run_benchmark.py \
             --benchmark gaia --variant full \
             --method-override state_path="$PREV_STATE" \
             --method-override reuse_q_table=true \
-            --method-override reuse_embedding_cache=true
+            --method-override reuse_embedding_cache=true \
+            --method-override evolve.enabled=false
 
         CURRENT="$(ls -dt "$REPO_ROOT/output/gaia_skillq__"* 2>/dev/null | head -1)"
         PREV_STATE="$CURRENT/.skillq_library/.state/method_state.json"

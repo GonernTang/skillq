@@ -91,6 +91,23 @@ def test_attribution_prompt_empty_default_is_clear():
     assert "Empty string otherwise" in ATTRIBUTION_PROMPT
 
 
+def test_attribution_prompt_no_longer_asks_for_overall_attribution_field():
+    """The LLM prompt must no longer list ``overall_attribution`` as a
+    field in the output schema -- it is now code-derived from
+    ``r_task`` x ``called_skill_ids`` (2026-07-20 refactor).
+
+    We check the bullet-point field listing (``- `overall_attribution```)
+    specifically. The gap-field description may still reference
+    ``overall_attribution`` in prose (double-backtick form), which is
+    fine -- we only pin that the LLM is no longer asked to *produce*
+    it as an output field.
+    """
+    assert "- `overall_attribution`" not in ATTRIBUTION_PROMPT, (
+        "Prompt still lists overall_attribution as an output schema field; "
+        "it should be code-derived from r_task x called_skill_ids."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Edit 3 — BATCHED_EXTRACT_SKILL_FROM_FAILURE_PROMPT
 # ---------------------------------------------------------------------------
