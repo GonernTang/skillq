@@ -317,9 +317,12 @@ def _wire_agentic_trial(
     skills_target = f"{CONTAINER_CLAUDE_CONFIG_DIR}/{method.agentic_skill_dir_name}"
     mounts.append(_bind_mount(str(staging), skills_target, read_only=True))
 
-    seed_host_src = _seed_skills_host_source(cfg)
-    if seed_host_src is not None:
-        mounts.append(_bind_mount(seed_host_src, CONTAINER_SKILLS_DIR, read_only=True))
+    if method.enable_retrieval:
+        seed_host_src = _seed_skills_host_source(cfg)
+        if seed_host_src is not None:
+            mounts.append(
+                _bind_mount(seed_host_src, CONTAINER_SKILLS_DIR, read_only=True)
+            )
 
     # uv cache mount (RW) for verifier warm cache — unchanged.
     if method.verifier_uv_cache_path is not None:
@@ -450,11 +453,14 @@ def _wire_hook_trial(
     mounts.append(_bind_mount(hook_host_path, CONTAINER_HOOK_PATH, read_only=True))
 
     # Skills tree at the ClaudeCode-standard path.
-    seed_host_src = _seed_skills_host_source(cfg)
-    if seed_host_src is not None:
-        mounts.append(
-            _bind_mount(seed_host_src, CONTAINER_SKILLS_DIR, read_only=True)
-        )
+    # Ablation L1: when retrieval is disabled the agent runs as a pure
+    # baseline and should not have access to any skills on disk.
+    if method.enable_retrieval:
+        seed_host_src = _seed_skills_host_source(cfg)
+        if seed_host_src is not None:
+            mounts.append(
+                _bind_mount(seed_host_src, CONTAINER_SKILLS_DIR, read_only=True)
+            )
 
     # 2026-06-29 (Phase 10 Bug 5): per-trial RW bind-mount for the
     # hook's calls log. The prebuilt image's /logs/agent/sessions/
