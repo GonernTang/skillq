@@ -52,6 +52,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import shutil
 import time
 from collections import defaultdict
@@ -611,11 +612,38 @@ async def step_incremental_edit(ctx: "TrialContext", result: "StepResult") -> No
         gx = attribution.library_gap_skill_description.strip()
         if gx:
             diagnosis_parts.append(f"library_gap_skill_description: {gx}")
+        rx = attribution.overall_rationale.strip()
+        if rx:
+            diagnosis_parts.append(f"overall_rationale: {rx}")
     diagnosis = "\n".join(diagnosis_parts)
     logger.warning(
         "L3 incremental_edit: trial=%s diagnosis_chars=%d",
         ctx.trial_id, len(diagnosis),
     )
+    # Quality gate: skip edit when the attribution LLM produced a
+    # diagnosis that is too short or too vague to support a targeted
+    # fix.  Editing a skill based on a guess risks degrading a
+    # correctly-working skill (Case 2/4 in the L4 edit audit).
+    if not diagnosis or len(diagnosis) < 50:
+        logger.warning(
+            "L3 incremental_edit skipped: diagnosis too short (%d chars) "
+            "for trial %s; attribution couldn't identify a specific fix.",
+            len(diagnosis), ctx.trial_id,
+        )
+        return
+    _uncertain = re.search(
+        r"\b(?:可能|不确定|unclear|appears?\s+correct|may\s+stem|may\s+be|likely|probably|mismatch|unknown)\b",
+        diagnosis, re.IGNORECASE,
+    )
+    if _uncertain:
+        logger.warning(
+            "L3 incremental_edit skipped: diagnosis contains uncertainty "
+            "marker '%s' for trial %s; edit withheld to avoid degrading "
+            "a potentially-correct skill.",
+            _uncertain.group(0), ctx.trial_id,
+        )
+        return
+
     tail = _read_session_assistant_tail(ctx.trial_dir, k=3, per_message_chars=2000)
 
     try:
