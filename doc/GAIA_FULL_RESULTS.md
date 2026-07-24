@@ -31,10 +31,10 @@ tasks using only its own reasoning and built-in tools.
 | Metric | Value |
 |--------|-------|
 | Overall | 108/165 **65.5%** |
-| L1 | — |
-| L2 | — |
-| L3 | — |
-| Errors | 21 |
+| L1 | 37/53 **69.8%** |
+| L2 | 58/86 **67.4%** |
+| L3 | 13/26 **50.0%** |
+| Errors | 21 (all timeout) |
 | Mean reward | 0.6545 |
 | Agent timeout | 1200s |
 | Concurrent trials | 8 |
@@ -43,12 +43,19 @@ tasks using only its own reasoning and built-in tools.
 
 | | Baseline | R1 | R3 (best) | Δ (R3 − baseline) |
 |---|:---:|:---:|:---:|:---:|
-| Pass rate | 65.5% | 69.7% | 72.7% | **+7.2pp** |
+| Overall | 65.5% | 69.7% | 72.7% | **+7.2pp** |
 | Pass count | 108/165 | 115/165 | 120/165 | +12 |
+| L1 | 69.8% | 73.6% | 79.2% | **+9.4pp** |
+| L2 | 67.4% | 75.6% | 75.6% | **+8.2pp** |
+| L3 | 50.0% | 42.3% | 50.0% | +0pp |
 
 SkillQ's best round (R3) outperforms the baseline by **7.2 percentage points**
-(+12 tasks), demonstrating that the four-layer skill evolution method provides
-a meaningful improvement over raw agent capability.
+(+12 tasks). The gains are concentrated in L1 (+9.4pp) and L2 (+8.2pp),
+demonstrating that skill-based assistance is most effective for intermediate
+tasks where agent capability is strong but task-specific knowledge provides
+an edge. L3 shows no improvement (50.0% in both baseline and R3), suggesting
+a fundamental ceiling for the hardest tasks given the current model and
+20-minute timeout.
 
 ---
 
@@ -85,14 +92,14 @@ a meaningful improvement over raw agent capability.
 
 | Round | Overall | L1 | L2 | L3 |
 |-------|---------|-----|-----|-----|
-| **Baseline** | **108/165 65.5%** | — | — | — |
+| **Baseline** | **108/165 65.5%** | **37/53 69.8%** | **58/86 67.4%** | **13/26 50.0%** |
 | R1 | 115/165 **69.7%** | 39/53 73.6% | 65/86 75.6% | 11/26 42.3% |
 | R2 | 112/165 **67.9%** | 38/53 71.7% | 61/86 70.9% | 13/26 50.0% |
 | R3 | 120/165 **72.7%** | 42/53 79.2% | 65/86 75.6% | 13/26 50.0% |
 | R4 | 116/165 **70.3%** | 39/53 73.6% | 64/86 74.4% | 13/26 50.0% |
 | R5 | 110/165 **66.7%** | 37/53 69.8% | 62/86 72.1% | 11/26 42.3% |
 
-**Best performance**: R3 at 72.7% overall and 79.2% on L1 — achieved one round after L4 was re-enabled following the R2 ablation. L3 plateaus at 50.0% after R2, suggesting a performance ceiling for the hardest tasks given the current model and skill representation.
+**Best performance**: R3 at 72.7% overall and 79.2% on L1 — achieved one round after L4 was re-enabled following the R2 ablation. L3 plateaus at 50.0% across all rounds from R2 onward (including baseline), suggesting a performance ceiling for the hardest tasks given the current model and 20-minute timeout.
 
 ---
 
@@ -195,7 +202,7 @@ During the experiment series, the following issues were discovered and fixed:
 
 3. **Q-learning converges on a subset**: Q mean rises from 0.522 to 0.549, and Q max reaches 0.832, demonstrating effective differentiation. However, ~45% of skills across later rounds are never called (Q=0.5), suggesting L4 CREATE generates many skills that L1 retrieval never surfaces.
 
-4. **L3 hits a ceiling at 50%**: The hardest 26 tasks stabilize at 50.0% after R2, suggesting fundamental limits of the current model/skill representation for complex multi-step reasoning.
+4. **L3 hits a ceiling at 50%**: The hardest 26 tasks stabilize at 50.0% — identical in baseline, R2, R3, and R4 — suggesting fundamental limits of the current model at the 20-minute timeout, not a skill representation bottleneck.
 
 5. **Skill usage increases regardless of pass rate**: Skill-using trials grow monotonically (19→84→87→102→116) even when overall pass rate declines. Q-learning makes the agent trust skills more, but skill quality determines whether that trust pays off.
 
