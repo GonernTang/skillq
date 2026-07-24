@@ -83,7 +83,7 @@ def test_extract_happy_path_writes_skill_md(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("asyncio.to_thread", fake_to_thread)
 
     extractor = SkillExtractor(claude_cli="claude", timeout_sec=10)
-    skill = asyncio.run(
+    skill, _ = asyncio.run(
         _call_extractor_batch(
             extractor,
             task="parse fixed-width COBOL records",
@@ -112,7 +112,7 @@ def test_extract_rejects_undersized_body(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr("asyncio.to_thread", fake_to_thread)
     extractor = SkillExtractor(body_min_tokens=50, body_max_tokens=2000)
-    skill = asyncio.run(
+    skill, _ = asyncio.run(
         _call_extractor_batch(
             extractor,
             task="t",
@@ -137,7 +137,7 @@ def test_extract_rejects_oversized_body(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr("asyncio.to_thread", fake_to_thread)
     extractor = SkillExtractor(body_min_tokens=50, body_max_tokens=2000)
-    skill = asyncio.run(
+    skill, _ = asyncio.run(
         _call_extractor_batch(
             extractor,
             task="t",
@@ -164,7 +164,7 @@ def test_extract_rejects_bad_name_length(tmp_path: Path, monkeypatch):
     extractor = SkillExtractor(
         name_min_words=1, name_max_words=4, body_min_tokens=10, body_max_tokens=5000
     )
-    skill = asyncio.run(
+    skill, _ = asyncio.run(
         _call_extractor_batch(
             extractor,
             task="t",
@@ -182,7 +182,7 @@ def test_extract_returns_none_on_subprocess_failure(tmp_path: Path, monkeypatch)
 
     monkeypatch.setattr("asyncio.to_thread", fake_to_thread)
     extractor = SkillExtractor()
-    skill = asyncio.run(
+    skill, _ = asyncio.run(
         _call_extractor_batch(
             extractor,
             task="t",
@@ -202,7 +202,7 @@ def test_extract_returns_none_on_timeout(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr("asyncio.to_thread", fake_to_thread)
     extractor = SkillExtractor()
-    skill = asyncio.run(
+    skill, _ = asyncio.run(
         _call_extractor_batch(
             extractor,
             task="t",
@@ -220,7 +220,7 @@ def test_extract_returns_none_on_missing_claude_cli(tmp_path: Path, monkeypatch)
 
     monkeypatch.setattr("asyncio.to_thread", fake_to_thread)
     extractor = SkillExtractor()
-    skill = asyncio.run(
+    skill, _ = asyncio.run(
         _call_extractor_batch(
             extractor,
             task="t",

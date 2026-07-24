@@ -129,7 +129,7 @@ def _patch_paths(monkeypatch) -> tuple[dict, dict]:
     async def fake_extract_batch(self, **kwargs):
         extract_calls["n"] += 1
         extract_calls["modes"].append(getattr(self, "prompt_mode", None))
-        return Skill(skill_id="auto-extracted", body="x" * 200)
+        return Skill(skill_id="auto-extracted", body="x" * 200), None
 
     def fake_propose_edit(
         self, skill, task, failure_diagnosis="", session_tail="",

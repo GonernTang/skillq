@@ -85,8 +85,8 @@ def _patch_extractor_to_return(monkeypatch, skill: Skill | None) -> None:
     """
     from skillq.runtime import bridge as bridge_mod
 
-    async def fake_extract_batch(self, **kwargs) -> Skill | None:
-        return skill
+    async def fake_extract_batch(self, **kwargs) -> tuple[Skill | None, Path | None]:
+        return skill, None
 
     monkeypatch.setattr(bridge_mod.SkillExtractor, "extract_batch", fake_extract_batch)
 
@@ -184,7 +184,7 @@ def test_bridge_skips_extract_on_failure(tmp_path: Path, monkeypatch):
 
     async def fake_extract_batch(self, **kwargs):
         called["n"] += 1
-        return new_skill
+        return new_skill, None
 
     from skillq.runtime import bridge as bridge_mod
     monkeypatch.setattr(bridge_mod.SkillExtractor, "extract_batch", fake_extract_batch)
@@ -222,7 +222,7 @@ def test_bridge_skips_extract_on_skill_used(tmp_path: Path, monkeypatch):
 
     async def fake_extract_batch(self, **kwargs):
         called["n"] += 1
-        return new_skill
+        return new_skill, None
 
     from skillq.runtime import bridge as bridge_mod
     monkeypatch.setattr(bridge_mod.SkillExtractor, "extract_batch", fake_extract_batch)
@@ -361,7 +361,7 @@ def test_bridge_extracts_on_failure_even_when_skill_exists(tmp_path: Path, monke
 
     async def fake_extract_batch(self, **kwargs):
         called["n"] += 1
-        return new_skill
+        return new_skill, None
 
     from skillq.runtime import bridge as bridge_mod
     from skillq.layers.l3_attribution.models import Attribution, TrialAttribution
@@ -550,7 +550,7 @@ def test_bridge_skips_extract_on_oom_even_with_trajectory(
 
     async def fake_extract_batch(self, **kwargs):
         called["n"] += 1
-        return new_skill
+        return new_skill, None
 
     monkeypatch.setattr(bridge_mod.SkillExtractor, "extract_batch", fake_extract_batch)
     monkeypatch.setattr(
@@ -666,7 +666,7 @@ def test_extract_buffer_carries_gap_description_to_extractor(
 
     async def _capture_extract_batch(self, *, trials, **_kwargs):
         captured["trials"] = trials
-        return None
+        return None, None
 
     # Monkeypatch the SkillExtractor.extract_batch method (the
     # actual entry point the bridge calls in
@@ -736,7 +736,7 @@ def test_extract_buffer_gap_description_empty_by_default(
 
     async def _capture_extract_batch(self, *, trials, **_kwargs):
         captured["trials"] = trials
-        return None
+        return None, None
 
     monkeypatch.setattr(
         bridge_mod.SkillExtractor, "extract_batch", _capture_extract_batch

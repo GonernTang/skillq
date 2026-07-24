@@ -52,6 +52,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import shutil
 import time
 from collections import defaultdict
@@ -77,6 +78,21 @@ from skillq.shared.classify_trial_failure import (
     classify_trial_failure,
 )
 from skillq.shared.session_tail import _read_session_assistant_tail
+
+
+def _resolve_calls_log_path(trial_dir: Path) -> Path:
+    """Return the per-trial calls-log path that the hook actually writes to.
+
+    The hook writes ``<trial_name>.jsonl`` inside the bind-mounted
+    ``_calls_log/`` dir.  Falls back to the legacy shared path
+    ``skillq_skill_calls.jsonl`` for old runs or empty trial names.
+    """
+    trial_name = trial_dir.name
+    per_trial = trial_dir / "agent" / "sessions" / "_calls_log" / f"{trial_name}.jsonl"
+    if per_trial.is_file():
+        return per_trial
+    return trial_dir / "agent" / "sessions" / "_calls_log" / "skillq_skill_calls.jsonl"
+
 
 if TYPE_CHECKING:
     from skillq.runtime.context import MethodServices, StepResult, TrialContext
@@ -188,7 +204,7 @@ async def step_q_update(ctx: "TrialContext", result: "StepResult") -> None:
     #    The old library-scoped path is gone — 4 concurrent trials
     #    sharing it caused write races / empty files.
     calls_log = _read_skill_calls_log(
-        ctx.trial_dir / "agent" / "sessions" / "_calls_log" / "skillq_skill_calls.jsonl"
+        _resolve_calls_log_path(ctx.trial_dir)
     )
     if not calls_log:
         calls_log = _extract_skill_calls_from_session(ctx.trial_dir)
@@ -330,10 +346,7 @@ async def step_attribute(ctx: "TrialContext", result: "StepResult") -> None:
         return
 
     # Read calls_log for ground-truth skill usage check.
-    _log = (
-        ctx.trial_dir / "agent" / "sessions"
-        / "_calls_log" / "skillq_skill_calls.jsonl"
-    )
+    _log = _resolve_calls_log_path(ctx.trial_dir)
     _calls = _read_skill_calls_log(_log)
     if not _calls:
         _calls = _extract_skill_calls_from_session(ctx.trial_dir)
@@ -342,6 +355,14 @@ async def step_attribute(ctx: "TrialContext", result: "StepResult") -> None:
         if c.skill_id and not c.denied
         and c.skill_id in ctx.services.lib
     ]
+
+    # Ablation L1: when retrieval is disabled the agent runs as a pure
+    # baseline — it should not have been given any skills.  Even if the
+    # agent called Skill() on its own (the tool is still available), we
+    # treat the trial as if no skill was used so the verdict is always
+    # "success_no_skill_seen" / "failure_skill_not_used".
+    if not ctx.services.method.enable_retrieval:
+        _approved = []
 
     # Build available skill list from the in-memory library.
     skill_ids = list(ctx.services.lib.skills.keys())
@@ -569,10 +590,7 @@ async def step_incremental_edit(ctx: "TrialContext", result: "StepResult") -> No
     # (from calls_log — ground truth), not the highest-Q skill.
     # Pick the lowest-Q among actually-called skills: the one most
     # likely to be at fault.
-    _log = (
-        ctx.trial_dir / "agent" / "sessions"
-        / "_calls_log" / "skillq_skill_calls.jsonl"
-    )
+    _log = _resolve_calls_log_path(ctx.trial_dir)
     _calls = _read_skill_calls_log(_log)
     _called_ids = {c.skill_id for c in _calls if c.skill_id and not c.denied}
     if not _called_ids:
@@ -594,11 +612,38 @@ async def step_incremental_edit(ctx: "TrialContext", result: "StepResult") -> No
         gx = attribution.library_gap_skill_description.strip()
         if gx:
             diagnosis_parts.append(f"library_gap_skill_description: {gx}")
+        rx = attribution.overall_rationale.strip()
+        if rx:
+            diagnosis_parts.append(f"overall_rationale: {rx}")
     diagnosis = "\n".join(diagnosis_parts)
     logger.warning(
         "L3 incremental_edit: trial=%s diagnosis_chars=%d",
         ctx.trial_id, len(diagnosis),
     )
+    # Quality gate: skip edit when the attribution LLM produced a
+    # diagnosis that is too short or too vague to support a targeted
+    # fix.  Editing a skill based on a guess risks degrading a
+    # correctly-working skill (Case 2/4 in the L4 edit audit).
+    if not diagnosis or len(diagnosis) < 50:
+        logger.warning(
+            "L3 incremental_edit skipped: diagnosis too short (%d chars) "
+            "for trial %s; attribution couldn't identify a specific fix.",
+            len(diagnosis), ctx.trial_id,
+        )
+        return
+    _uncertain = re.search(
+        r"\b(?:可能|不确定|unclear|appears?\s+correct|may\s+stem|may\s+be|likely|probably|mismatch|unknown)\b",
+        diagnosis, re.IGNORECASE,
+    )
+    if _uncertain:
+        logger.warning(
+            "L3 incremental_edit skipped: diagnosis contains uncertainty "
+            "marker '%s' for trial %s; edit withheld to avoid degrading "
+            "a potentially-correct skill.",
+            _uncertain.group(0), ctx.trial_id,
+        )
+        return
+
     tail = _read_session_assistant_tail(ctx.trial_dir, k=3, per_message_chars=2000)
 
     try:
@@ -738,13 +783,7 @@ async def step_dispatch_evolve(ctx: "TrialContext", result: "StepResult") -> Non
         Attribution.SUCCESS_NO_SKILL_SEEN,
         Attribution.FAILURE_SKILL_NOT_USED,
     ):
-        _log_path = (
-            ctx.trial_dir
-            / "agent"
-            / "sessions"
-            / "_calls_log"
-            / "skillq_skill_calls.jsonl"
-        )
+        _log_path = _resolve_calls_log_path(ctx.trial_dir)
         _calls = _read_skill_calls_log(_log_path)
         if not _calls:
             _calls = _extract_skill_calls_from_session(ctx.trial_dir)

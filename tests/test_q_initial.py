@@ -71,8 +71,8 @@ def _patch_litellm_backends(monkeypatch) -> None:
 def _patch_extractor_to_return(monkeypatch, skill: Skill | None) -> None:
     from skillq.runtime import bridge as bridge_mod
 
-    async def fake_extract_batch(self, **kwargs) -> Skill | None:
-        return skill
+    async def fake_extract_batch(self, **kwargs) -> tuple[Skill | None, Path | None]:
+        return skill, None
 
     monkeypatch.setattr(bridge_mod.SkillExtractor, "extract_batch", fake_extract_batch)
 

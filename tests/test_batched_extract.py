@@ -81,12 +81,12 @@ def _patch_extractor_recording(monkeypatch) -> list[dict[str, Any]]:
 
     calls: list[dict[str, Any]] = []
 
-    async def fake_extract_batch(self, **kwargs) -> Skill:
+    async def fake_extract_batch(self, **kwargs) -> tuple[Skill | None, Path | None]:
         calls.append(kwargs)
         return Skill(
             skill_id=f"batched-{len(calls)}",
             body="x" * 200,
-        )
+        ), None
 
     monkeypatch.setattr(bridge_mod.SkillExtractor, "extract_batch", fake_extract_batch)
     return calls

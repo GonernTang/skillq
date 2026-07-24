@@ -93,7 +93,7 @@ RANK_ENDPOINT = os.environ["SKILLQ_RANK_ENDPOINT"]
 # overrides them with method-config-derived values.
 TOP_K = int(os.environ.get("SKILLQ_HOOK_TOP_K", "3"))
 LAMBDA = float(os.environ.get("SKILLQ_HOOK_LAMBDA", "0.5"))
-C_UCB = float(os.environ.get("SKILLQ_HOOK_C_UCB", "0.5"))
+C_UCB = float(os.environ.get("SKILLQ_HOOK_C_UCB", "0.0"))
 SCORE_MODE = os.environ.get("SKILLQ_HOOK_SCORE_MODE", "multiplicative")
 MULT_BETA = float(os.environ.get("SKILLQ_HOOK_MULT_BETA", "0.5"))
 MULT_GAMMA = float(os.environ.get("SKILLQ_HOOK_MULT_GAMMA", "0.2"))

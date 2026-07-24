@@ -155,7 +155,14 @@ def build_method_services(
             "will re-seed with seed_initial_q at %s",
             method.resolved_state_path(),
         )
-    if not lib.skills and method.seed_skills_dir is not None:
+    if not method.enable_retrieval:
+        lib.skills.clear()
+        mgr.q_table.clear()
+        logger.info(
+            "enable_retrieval=False: cleared in-memory library + Q-table; "
+            "agent runs as pure no-skill baseline"
+        )
+    if not lib.skills and method.seed_skills_dir is not None and method.enable_retrieval:
         seeded = state.ensure_seeded(
             lib=lib,
             mgr=mgr,
