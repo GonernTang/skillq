@@ -84,19 +84,87 @@ def _patch_litellm_backends(monkeypatch) -> None:
         pass
 
 
-def _patch_attribution_to(monkeypatch, attribution: Attribution,
-                          knowledge: str = "reusable knowledge"):
+def _patch_attribution_to(
+    monkeypatch,
+    attribution: Attribution,
+    knowledge: str = "reusable knowledge",
+    *,
+    edit_candidate_skill_id: str | None = None,
+):
     """Force AttributionAnalyzer.analyze to return a fixed verdict."""
     from skillq.runtime import bridge as bridge_mod
+    from skillq.runtime import steps as steps_mod
+    from skillq.layers.l3_attribution.models import (
+        AnalysisStatus,
+        DiagnosisStatus,
+        SkillUsageAssessment,
+        SkillUsageStatus,
+    )
+
+    if (
+        attribution == Attribution.FAILURE_SKILL_USED
+        and edit_candidate_skill_id is None
+    ):
+        edit_candidate_skill_id = "seed"
 
     def returning(self, **kwargs):
+        actionable = attribution in {
+            Attribution.SUCCESS_NO_SKILL_SEEN,
+            Attribution.FAILURE_SKILL_NOT_USED,
+            Attribution.FAILURE_SKILL_USED,
+        }
         return TrialAttribution(
             overall_attribution=attribution,
             overall_rationale="test",
             knowledge_to_extract=knowledge,
+            analysis_status=AnalysisStatus.VALID,
+            diagnosis_status=(
+                DiagnosisStatus.ACTIONABLE
+                if actionable
+                else DiagnosisStatus.INSUFFICIENT_EVIDENCE
+            ),
+            diagnosis_confidence=0.95 if actionable else 0.0,
+            failure_mechanism=(
+                "The selected skill omitted a required deterministic step."
+                if actionable else ""
+            ),
+            proposed_skill_change=(
+                "Add the missing deterministic step and its verification."
+                if actionable else ""
+            ),
+            edit_candidate_skill_id=(
+                edit_candidate_skill_id
+                if attribution == Attribution.FAILURE_SKILL_USED
+                else None
+            ),
+            skill_usage_assessments=(
+                [
+                    SkillUsageAssessment(
+                        skill_id=edit_candidate_skill_id,
+                        status=SkillUsageStatus.FOLLOWED,
+                        evidence=["session shows the procedure was followed"],
+                        causal_to_failure=True,
+                        confidence=0.95,
+                    )
+                ]
+                if attribution == Attribution.FAILURE_SKILL_USED
+                and edit_candidate_skill_id
+                else []
+            ),
         )
 
     monkeypatch.setattr(bridge_mod.AttributionAnalyzer, "analyze", returning)
+    if edit_candidate_skill_id:
+        call = MagicMock(
+            skill_id=edit_candidate_skill_id,
+            requested=edit_candidate_skill_id,
+            approved=True,
+            denied=False,
+            intent_text="sample-task",
+        )
+        monkeypatch.setattr(
+            steps_mod, "_read_skill_calls_log", lambda *_a, **_k: [call]
+        )
 
 
 def _patch_paths(monkeypatch) -> tuple[dict, dict]:
@@ -269,10 +337,14 @@ def test_edit_path_failure_skill_used(tmp_path, monkeypatch):
     assert "seed" in edit_calls["skill_ids"]
 
 
-def test_edit_path_edits_top_q_skill(tmp_path, monkeypatch):
-    """Edit path targets the highest-Q skill in the library."""
+def test_edit_path_edits_causal_candidate_not_q_extreme(tmp_path, monkeypatch):
+    """Edit path targets the causal candidate, independent of Q ordering."""
     _patch_litellm_backends(monkeypatch)
-    _patch_attribution_to(monkeypatch, Attribution.FAILURE_SKILL_USED)
+    _patch_attribution_to(
+        monkeypatch,
+        Attribution.FAILURE_SKILL_USED,
+        edit_candidate_skill_id="alpha",
+    )
     _, edit_calls = _patch_paths(monkeypatch)
 
     method = _build_method(tmp_path)
@@ -293,9 +365,9 @@ def test_edit_path_edits_top_q_skill(tmp_path, monkeypatch):
     _run_trial(tmp_path, method, r_task=0)
 
     assert edit_calls["n"] >= 1
-    assert edit_calls["skill_ids"][0] == "beta", (
-        "edit should target the highest-Q skill (beta at 0.9, "
-        "alpha at 0.2)"
+    assert edit_calls["skill_ids"][0] == "alpha", (
+        "edit must target the analyzer's causal candidate (alpha), "
+        "not select beta from Q ordering"
     )
 
 
@@ -512,7 +584,7 @@ def test_l3_propose_edit_exception_does_not_abort_trial(tmp_path, monkeypatch):
     _run_trial(tmp_path, method, r_task=0)
 
     # state.save ran: q_table.json mirror exists at the trial staging dir.
-    q_path = tmp_path / "trial-x" / "skillq_state" / "q_table.json"
+    q_path = method.resolved_state_path()
     assert q_path.exists(), (
         "q_table.json should exist — state.save ran after the L3 "
         "exception was caught by the inner try/except"
@@ -650,6 +722,17 @@ def test_edit_path_threads_session_tail_to_propose_edit(tmp_path, monkeypatch):
             },
         }))
     jsonl_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # The bridge's Windows trial_uri parser drops the drive letter in this
+    # legacy integration fixture. Exercise the real tail reader against the
+    # intended trial directory and feed that value into the edit step.
+    from skillq.shared.session_tail import read_session_assistant_tail
+    from skillq.runtime import steps as steps_mod
+    expected_tail = read_session_assistant_tail(trial_dir, k=3)
+    monkeypatch.setattr(
+        steps_mod,
+        "_read_session_assistant_tail",
+        lambda *_a, **_k: expected_tail,
+    )
 
     _run_trial(tmp_path, method, r_task=0)
 
@@ -709,7 +792,7 @@ def test_edit_prompt_contains_diagnosis_label(tmp_path, monkeypatch):
     captured: dict = {"prompt": None}
 
     def capture_edit(self, skill, task, failure_diagnosis="", session_tail=""):
-        from skillq.layers.l3_attribution.prompts import EDIT_PROMPT
+        from skillq.layers.l4_evolve.prompts import EDIT_PROMPT
         prompt = EDIT_PROMPT.format(
             task=task,
             diagnosis=failure_diagnosis[: 6000 // 2],
@@ -753,7 +836,7 @@ def test_edit_prompt_drops_20pct_token_cap(tmp_path, monkeypatch):
     captured: dict = {"prompt": None}
 
     def capture_edit(self, skill, task, failure_diagnosis="", session_tail=""):
-        from skillq.layers.l3_attribution.prompts import EDIT_PROMPT
+        from skillq.layers.l4_evolve.prompts import EDIT_PROMPT
         prompt = EDIT_PROMPT.format(
             task=task,
             diagnosis=failure_diagnosis[: 6000 // 2],

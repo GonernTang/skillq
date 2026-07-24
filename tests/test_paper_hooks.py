@@ -225,6 +225,34 @@ def _build_fake_hook_event(trial_id: str, result: Any) -> MagicMock:
     return event
 
 
+def test_trial_dir_decodes_windows_file_uri():
+    from skillq.runtime.bridge import _trial_dir
+
+    event = SimpleNamespace(
+        result=SimpleNamespace(
+            trial_uri="file:///D:/workspace/skillq/output/trial-x"
+        )
+    )
+
+    assert str(_trial_dir(event)).replace("\\", "/") == (
+        "D:/workspace/skillq/output/trial-x"
+    )
+
+
+def test_trial_dir_unquotes_file_uri():
+    from skillq.runtime.bridge import _trial_dir
+
+    event = SimpleNamespace(
+        result=SimpleNamespace(
+            trial_uri="file:///D:/workspace/skillq/output/trial%20x"
+        )
+    )
+
+    assert str(_trial_dir(event)).replace("\\", "/") == (
+        "D:/workspace/skillq/output/trial x"
+    )
+
+
 # ---------------------------------------------------------------------------
 # score_skills — Fix 1 (Hard Gate) + Fix 2 (multiplicative scoring)
 # (2026-06-24)

@@ -232,6 +232,31 @@ def test_extract_returns_none_on_missing_claude_cli(tmp_path: Path, monkeypatch)
     assert skill is None
 
 
+def test_extract_resolves_cli_shim_before_subprocess(tmp_path: Path, monkeypatch):
+    """Use an absolute npm ``.cmd`` shim when the configured CLI is bare."""
+    captured: dict[str, object] = {}
+
+    async def fake_to_thread(fn, cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _fake_proc(returncode=2, stderr="expected test stop")
+
+    monkeypatch.setattr("shutil.which", lambda name: "C:/npm/claude.cmd")
+    monkeypatch.setattr("asyncio.to_thread", fake_to_thread)
+    extractor = SkillExtractor(claude_cli="claude")
+
+    asyncio.run(
+        _call_extractor_batch(
+            extractor,
+            task="t",
+            knowledge="k",
+            intent_hash=1,
+            sandbox_root=tmp_path,
+        )
+    )
+
+    assert captured["cmd"][0] == "C:/npm/claude.cmd"
+
+
 def test_make_sandbox_unique_per_call(tmp_path: Path) -> None:
     """Each ``_make_sandbox`` call produces a distinct path even with
     the same ``root``. The 2026-06-22 bug was a deterministic name

@@ -6,13 +6,18 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from skillq.layers.l3_attribution.analyzer import AttributionAnalyzer  # noqa: E402
 from skillq.layers.l3_attribution.models import (  # noqa: E402
+    AnalysisStatus,
     Attribution,
+    DiagnosisStatus,
     LiteLLMAttributionBackend,
+    SkillUsageStatus,
     StubAttributionBackend,
     TrialAttribution,
 )
@@ -54,6 +59,26 @@ def test_parse_returns_conservative_default_on_garbage():
     attribution = AttributionAnalyzer(backend=backend, model="m")._parse("lol nope")
     assert attribution.overall_attribution == Attribution.FAILURE_SKILL_NOT_USED
     assert "parse failed" in attribution.overall_rationale
+    assert attribution.analysis_status == AnalysisStatus.INVALID
+    assert attribution.diagnosis_status == DiagnosisStatus.INSUFFICIENT_EVIDENCE
+
+
+def test_parse_returns_invalid_on_schema_failure():
+    """Parseable JSON with an invalid schema must also fail closed."""
+    raw = json.dumps(
+        {
+            "overall_rationale": "",
+            "analysis_status": "valid",
+            "diagnosis_status": "actionable",
+            "diagnosis_confidence": 1.0,
+            "edit_candidate_skill_id": "alpha",
+        }
+    )
+    attribution = AttributionAnalyzer._parse(raw)
+
+    assert attribution.analysis_status == AnalysisStatus.INVALID
+    assert attribution.diagnosis_status == DiagnosisStatus.INSUFFICIENT_EVIDENCE
+    assert attribution.edit_candidate_skill_id is None
 
 
 def test_analyze_reads_session_jsonl(tmp_path: Path):
@@ -217,6 +242,118 @@ def test_analyze_r0_with_skill_derives_failure_skill_used(tmp_path: Path):
     assert attribution.knowledge_to_extract == "some failure-mode knowledge"
 
 
+@pytest.mark.parametrize(
+    ("confidence", "expected_status"),
+    [
+        (0.6, DiagnosisStatus.ACTIONABLE),
+        (0.59, DiagnosisStatus.INSUFFICIENT_EVIDENCE),
+    ],
+)
+def test_analyze_edit_causality_uses_point_six_threshold(
+    tmp_path: Path,
+    confidence: float,
+    expected_status: DiagnosisStatus,
+):
+    raw = json.dumps(
+        {
+            "overall_rationale": "The followed skill omitted a required check.",
+            "analysis_status": "valid",
+            "diagnosis_status": "actionable",
+            "diagnosis_confidence": confidence,
+            "proposed_skill_change": "Add the required check.",
+            "edit_candidate_skill_id": "skill-a",
+            "skill_usage_assessments": [
+                {
+                    "skill_id": "skill-a",
+                    "status": SkillUsageStatus.FOLLOWED.value,
+                    "evidence": ["The trace follows the skill."],
+                    "causal_to_failure": True,
+                    "confidence": confidence,
+                }
+            ],
+        }
+    )
+    analyzer = AttributionAnalyzer(backend=lambda *_args: raw, model="m")
+
+    attribution = analyzer.analyze(
+        task="the thing",
+        trial_dir=tmp_path,
+        r_task=0,
+        called_skill_ids=["skill-a"],
+    )
+
+    assert attribution.diagnosis_status == expected_status
+
+
+def test_analyze_called_but_ignored_becomes_agent_noncompliance(tmp_path: Path):
+    raw = json.dumps(
+        {
+            "overall_rationale": "The agent read but rejected the procedure.",
+            "analysis_status": "valid",
+            "diagnosis_status": "actionable",
+            "diagnosis_confidence": 0.95,
+            "proposed_skill_change": "Unnecessary edit.",
+            "edit_candidate_skill_id": "skill-a",
+            "skill_usage_assessments": [
+                {
+                    "skill_id": "skill-a",
+                    "status": SkillUsageStatus.IGNORED.value,
+                    "evidence": ["The trace explicitly chose an unrelated method."],
+                    "causal_to_failure": False,
+                    "confidence": 0.95,
+                }
+            ],
+        }
+    )
+    analyzer = AttributionAnalyzer(backend=lambda *_args: raw, model="m")
+
+    attribution = analyzer.analyze(
+        task="the thing",
+        trial_dir=tmp_path,
+        r_task=0,
+        called_skill_ids=["skill-a"],
+    )
+
+    assert attribution.diagnosis_status == DiagnosisStatus.AGENT_NONCOMPLIANCE
+    assert attribution.edit_candidate_skill_id is None
+    assert attribution.proposed_skill_change == ""
+
+
+def test_analyze_does_not_call_partial_usage_evidence_noncompliance(
+    tmp_path: Path,
+):
+    raw = json.dumps(
+        {
+            "overall_rationale": "Only one of two calls could be assessed.",
+            "analysis_status": "valid",
+            "diagnosis_status": "actionable",
+            "diagnosis_confidence": 0.95,
+            "proposed_skill_change": "Change skill-a.",
+            "edit_candidate_skill_id": "skill-a",
+            "skill_usage_assessments": [
+                {
+                    "skill_id": "skill-a",
+                    "status": SkillUsageStatus.IGNORED.value,
+                    "evidence": ["The trace ignored skill-a."],
+                    "causal_to_failure": False,
+                    "confidence": 0.95,
+                }
+            ],
+        }
+    )
+    analyzer = AttributionAnalyzer(backend=lambda *_args: raw, model="m")
+
+    attribution = analyzer.analyze(
+        task="the thing",
+        trial_dir=tmp_path,
+        r_task=0,
+        called_skill_ids=["skill-a", "skill-b"],
+    )
+
+    assert attribution.diagnosis_status == DiagnosisStatus.INSUFFICIENT_EVIDENCE
+    assert attribution.edit_candidate_skill_id is None
+
+
 def test_analyze_r1_no_skills_no_clamp_marker(tmp_path: Path):
     """r_task=1 with called_skill_ids=[] -> SUCCESS_NO_SKILL_SEEN.
     The rationale must NOT contain a [consistency-clamp] marker
@@ -248,10 +385,12 @@ def test_prompt_includes_r_task_placeholder():
     rendered = ATTRIBUTION_PROMPT.format(
         r_task=1, task="x", cwd="/", trial_dir="/",
         available_skills="[]", trace="(truncated)",
+        called_skill_ids="[]", verifier_context="reward=1",
     )
     assert "r_task = 1" in rendered
     rendered_0 = ATTRIBUTION_PROMPT.format(
         r_task=0, task="x", cwd="/", trial_dir="/",
         available_skills="[]", trace="(truncated)",
+        called_skill_ids="[]", verifier_context="reward=0",
     )
     assert "r_task = 0" in rendered_0

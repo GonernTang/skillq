@@ -46,11 +46,15 @@ sys.path.insert(0, str(ROOT))
 from skillq.config import MethodConfig  # noqa: E402
 from skillq.layers.l3_attribution.models import (  # noqa: E402
     Attribution,
+    DiagnosisStatus,
+    SkillUsageAssessment,
+    SkillUsageStatus,
     TrialAttribution,
 )
 from skillq.runtime import steps as steps_mod  # noqa: E402
 from skillq.runtime.context import StepResult, TrialContext  # noqa: E402
 from skillq.runtime.env_seed import seed_agent_env  # noqa: E402
+from skillq.shared.types import Skill  # noqa: E402
 
 SWITCH_NAMES = (
     "enable_retrieval",
@@ -390,6 +394,8 @@ def test_enable_success_skill_create_false(tmp_path: Path, monkeypatch):
         overall_attribution=Attribution.SUCCESS_NO_SKILL_SEEN,
         overall_rationale="test",
         knowledge_to_extract="harvestable knowledge",
+        diagnosis_status=DiagnosisStatus.ACTIONABLE,
+        diagnosis_confidence=0.95,
     )
     ctx, result = _build_ctx(
         tmp_path, method=method, r_task=1, attribution=attribution
@@ -415,6 +421,8 @@ def test_enable_failure_skill_create_false(tmp_path: Path, monkeypatch):
         overall_attribution=Attribution.FAILURE_SKILL_NOT_USED,
         overall_rationale="test",
         knowledge_to_extract="harvestable knowledge",
+        diagnosis_status=DiagnosisStatus.ACTIONABLE,
+        diagnosis_confidence=0.95,
     )
     ctx, result = _build_ctx(
         tmp_path, method=method, r_task=0, attribution=attribution
@@ -446,6 +454,8 @@ def test_all_enabled_runs_normally(tmp_path: Path, monkeypatch):
         overall_attribution=Attribution.SUCCESS_NO_SKILL_SEEN,
         overall_rationale="test",
         knowledge_to_extract="harvestable knowledge",
+        diagnosis_status=DiagnosisStatus.ACTIONABLE,
+        diagnosis_confidence=0.95,
     )
     ctx, result = _build_ctx(
         tmp_path,
@@ -502,3 +512,83 @@ def test_enable_retrieval_false_env_seed_assert_safe(tmp_path: Path):
         "enable_retrieval=False should return before the RANK_ENDPOINT "
         "assert; the var should not be seeded."
     )
+
+
+@pytest.mark.parametrize(
+    ("r_task", "attribution_enum", "mode"),
+    [
+        (1, Attribution.SUCCESS_NO_SKILL_SEEN, "success"),
+        (0, Attribution.FAILURE_SKILL_NOT_USED, "failure"),
+    ],
+)
+def test_create_paths_ignore_diagnosis_confidence(
+    tmp_path: Path,
+    monkeypatch,
+    r_task: int,
+    attribution_enum: Attribution,
+    mode: str,
+):
+    """No-skill create rules dispatch despite a low-confidence diagnosis."""
+    monkeypatch.setattr(steps_mod, "_read_skill_calls_log", lambda *_a, **_k: [])
+    attribution = TrialAttribution(
+        overall_attribution=attribution_enum,
+        overall_rationale="trace has reusable knowledge",
+        knowledge_to_extract="harvestable workflow",
+        diagnosis_status=DiagnosisStatus.INSUFFICIENT_EVIDENCE,
+        diagnosis_confidence=0.0,
+    )
+    ctx, result = _build_ctx(
+        tmp_path, method=MockMethod(), r_task=r_task, attribution=attribution
+    )
+    ctx.services.extract_buffer.add = MagicMock(return_value=False)
+
+    asyncio.run(steps_mod.step_dispatch_evolve(ctx, result))
+
+    ctx.services.extract_buffer.add.assert_called_once()
+    assert result.dispatched_mode == mode
+
+
+@pytest.mark.parametrize(
+    ("confidence", "should_edit"),
+    [(0.6, True), (0.59, False)],
+)
+def test_failure_skill_edit_uses_point_six_confidence_threshold(
+    tmp_path: Path,
+    monkeypatch,
+    confidence: float,
+    should_edit: bool,
+):
+    """Confidence gates only existing-skill edits, at the 0.6 boundary."""
+    call = MagicMock(skill_id="skill-a", denied=False)
+    monkeypatch.setattr(steps_mod, "_read_skill_calls_log", lambda *_a, **_k: [call])
+    attribution = TrialAttribution(
+        overall_attribution=Attribution.FAILURE_SKILL_USED,
+        overall_rationale="the followed skill omitted a required check",
+        diagnosis_status=DiagnosisStatus.ACTIONABLE,
+        diagnosis_confidence=confidence,
+        proposed_skill_change="Add the required check.",
+        edit_candidate_skill_id="skill-a",
+        skill_usage_assessments=[
+            SkillUsageAssessment(
+                skill_id="skill-a",
+                status=SkillUsageStatus.FOLLOWED,
+                evidence=["trace followed the skill"],
+                causal_to_failure=True,
+                confidence=confidence,
+            )
+        ],
+    )
+    ctx, result = _build_ctx(
+        tmp_path,
+        method=MockMethod(),
+        r_task=0,
+        lib_skills=["skill-a"],
+        attribution=attribution,
+    )
+    skill = Skill(skill_id="skill-a", body="existing skill body")
+    ctx.services.lib.skills["skill-a"] = skill
+    ctx.services.refiner.propose_edit.side_effect = lambda **kwargs: kwargs["skill"]
+
+    asyncio.run(steps_mod.step_incremental_edit(ctx, result))
+
+    assert ctx.services.refiner.propose_edit.called is should_edit

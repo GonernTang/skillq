@@ -23,6 +23,7 @@ from skillq.shared.q_table import LibManager  # noqa: E402
 from skillq.shared.library import QlibState  # noqa: E402
 from skillq.shared.types import Qlib, Skill  # noqa: E402
 from skillq.config import MethodConfig  # noqa: E402
+from skillq.layers.l3_attribution.models import DiagnosisStatus  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +135,8 @@ def test_extract_writes_q_initial_to_q_table(tmp_path: Path, monkeypatch):
             overall_attribution=Attribution.SUCCESS_NO_SKILL_SEEN,
             overall_rationale="test",
             knowledge_to_extract="reusable knowledge",
+            diagnosis_status=DiagnosisStatus.ACTIONABLE,
+            diagnosis_confidence=1.0,
         ),
     )
 
@@ -176,6 +179,8 @@ def test_extract_uses_configured_initial_q(tmp_path: Path, monkeypatch):
             overall_attribution=Attribution.SUCCESS_NO_SKILL_SEEN,
             overall_rationale="test",
             knowledge_to_extract="x",
+            diagnosis_status=DiagnosisStatus.ACTIONABLE,
+            diagnosis_confidence=1.0,
         ),
     )
 
@@ -302,6 +307,8 @@ def test_bridge_redumps_q_table_to_staging_on_ended(tmp_path: Path, monkeypatch)
             overall_attribution=Attribution.SUCCESS_NO_SKILL_SEEN,
             overall_rationale="test",
             knowledge_to_extract="reusable knowledge",
+            diagnosis_status=DiagnosisStatus.ACTIONABLE,
+            diagnosis_confidence=1.0,
         ),
     )
 

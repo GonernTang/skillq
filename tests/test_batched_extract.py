@@ -24,7 +24,11 @@ from unittest.mock import MagicMock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from skillq.layers.l3_attribution.models import Attribution, TrialAttribution  # noqa: E402
+from skillq.layers.l3_attribution.models import (  # noqa: E402
+    Attribution,
+    DiagnosisStatus,
+    TrialAttribution,
+)
 from skillq.shared.q_table import LibManager  # noqa: E402
 from skillq.shared.library import QlibState  # noqa: E402
 from skillq.shared.types import Qlib, Skill  # noqa: E402
@@ -133,6 +137,8 @@ def _patch_attribution_no_skill_seen(monkeypatch) -> None:
             overall_attribution=Attribution.SUCCESS_NO_SKILL_SEEN,
             overall_rationale="test",
             knowledge_to_extract="reusable knowledge",
+            diagnosis_status=DiagnosisStatus.ACTIONABLE,
+            diagnosis_confidence=1.0,
         )
 
     monkeypatch.setattr(bridge_mod.AttributionAnalyzer, "analyze", returning)

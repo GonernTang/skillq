@@ -18,7 +18,11 @@ from unittest.mock import MagicMock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from skillq.layers.l3_attribution.models import Attribution, TrialAttribution  # noqa: E402
+from skillq.layers.l3_attribution.models import (  # noqa: E402
+    Attribution,
+    DiagnosisStatus,
+    TrialAttribution,
+)
 from skillq.shared.q_table import LibManager  # noqa: E402
 from skillq.shared.library import QlibState  # noqa: E402
 from skillq.shared.types import Qlib, Skill  # noqa: E402
@@ -147,6 +151,8 @@ def test_bridge_extracts_on_success_no_skill_seen(tmp_path: Path, monkeypatch):
             overall_attribution=Attribution.SUCCESS_NO_SKILL_SEEN,
             overall_rationale="test",
             knowledge_to_extract="reusable knowledge",
+            diagnosis_status=DiagnosisStatus.ACTIONABLE,
+            diagnosis_confidence=1.0,
         )
 
     monkeypatch.setattr(
@@ -308,6 +314,8 @@ def test_bridge_extracts_on_failure_no_skill(tmp_path: Path, monkeypatch):
             overall_attribution=Attribution.FAILURE_SKILL_NOT_USED,
             overall_rationale="test",
             knowledge_to_extract="avoid doing X without first checking Y",
+            diagnosis_status=DiagnosisStatus.ACTIONABLE,
+            diagnosis_confidence=1.0,
         )
 
     monkeypatch.setattr(
@@ -377,6 +385,8 @@ def test_bridge_extracts_on_failure_even_when_skill_exists(tmp_path: Path, monke
                 "the existing seed skill was high-Q, but the agent still "
                 "failed — synthesize a guard-rail from this attribution"
             ),
+            diagnosis_status=DiagnosisStatus.ACTIONABLE,
+            diagnosis_confidence=1.0,
         ),
     )
 
@@ -432,6 +442,8 @@ def test_bridge_flush_writes_mirror_to_seed_dir(tmp_path: Path, monkeypatch):
             overall_attribution=Attribution.SUCCESS_NO_SKILL_SEEN,
             overall_rationale="test",
             knowledge_to_extract="reusable knowledge",
+            diagnosis_status=DiagnosisStatus.ACTIONABLE,
+            diagnosis_confidence=1.0,
         ),
     )
 
@@ -500,6 +512,8 @@ def test_bridge_extracts_on_nonzero_agent_exit_with_trajectory(
             overall_attribution=Attribution.FAILURE_SKILL_NOT_USED,
             overall_rationale="test",
             knowledge_to_extract="reflection on the failed run",
+            diagnosis_status=DiagnosisStatus.ACTIONABLE,
+            diagnosis_confidence=1.0,
         ),
     )
 
@@ -683,6 +697,8 @@ def test_extract_buffer_carries_gap_description_to_extractor(
             overall_rationale="agent debug-spiraled",
             knowledge_to_extract="wrote 7 versions of gen.py",
             library_gap_skill_description=GAP_TEXT,
+            diagnosis_status=DiagnosisStatus.ACTIONABLE,
+            diagnosis_confidence=1.0,
         ),
     )
 
@@ -750,6 +766,8 @@ def test_extract_buffer_gap_description_empty_by_default(
             overall_rationale="agent failed",
             knowledge_to_extract="some reflection",
             # library_gap_skill_description omitted → defaults to ''
+            diagnosis_status=DiagnosisStatus.ACTIONABLE,
+            diagnosis_confidence=1.0,
         ),
     )
 
