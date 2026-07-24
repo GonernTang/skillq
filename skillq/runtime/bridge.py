@@ -50,7 +50,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from harbor.job import Job
 from harbor.trial.hooks import TrialHookEvent
@@ -108,7 +108,24 @@ def _harbor_r_task(result: "TrialResult") -> int:
 
 def _trial_dir(event: TrialHookEvent) -> Path:
     """Resolve the host-side trial directory from the event."""
-    return Path(urlparse(event.result.trial_uri).path)  # type: ignore[union-attr]
+    uri = event.result.trial_uri  # type: ignore[union-attr]
+    parsed = urlparse(uri)
+    path = unquote(parsed.path)
+    if parsed.scheme == "file" and parsed.netloc:
+        path = f"//{parsed.netloc}{path}"
+    # RFC 8089 Windows file URIs use ``file:///D:/...``. urlparse
+    # returns ``/D:/...``; WindowsPath would turn that into the invalid
+    # ``\D:\...`` instead of restoring the drive root.
+    if (
+        parsed.scheme == "file"
+        and len(path) >= 4
+        and path[0] == "/"
+        and path[1].isalpha()
+        and path[2] == ":"
+        and path[3] in ("/", "\\")
+    ):
+        path = path[1:]
+    return Path(path)
 
 
 # ---------------------------------------------------------------------------

@@ -26,8 +26,11 @@ from typing import Any
 import yaml
 
 from skillq.layers.l3_attribution.models import (
+    AnalysisStatus,
     Attribution,
     AttributionBackend,
+    DiagnosisStatus,
+    SkillUsageStatus,
     TrialAttribution,
 )
 from skillq.layers.l3_attribution.prompts import ATTRIBUTION_PROMPT
@@ -72,6 +75,7 @@ class AttributionAnalyzer:
         available_skill_ids: list[str] | None = None,
         r_task: int,
         called_skill_ids: list[str] | None = None,
+        verifier_context: str = "",
     ) -> TrialAttribution:
         """Run the attribution step for one trial.
 
@@ -105,22 +109,63 @@ class AttributionAnalyzer:
             ),
             trace=self._truncate_trace(trace, self.trace_max_chars),
             r_task=r_task,
+            called_skill_ids=json.dumps(called_skill_ids or [], ensure_ascii=False),
+            verifier_context=verifier_context or "(no detailed verifier feedback available)",
         )
         raw = self.backend(prompt, self.model)
         att = self._parse(raw)
-        # Code-derived verdict: LLM analyzes only, never judges success/failure.
-        if r_task == 1:
+        called = set(called_skill_ids or [])
+        assessments = [
+            item for item in att.skill_usage_assessments
+            if item.skill_id in called
+        ]
+        if (
+            r_task == 0
+            and att.analysis_status == AnalysisStatus.VALID
+            and att.diagnosis_status == DiagnosisStatus.ENVIRONMENT
+        ):
+            att.overall_attribution = Attribution.FAIL_ENV_ISSUE
+        elif r_task == 1:
             att.overall_attribution = (
                 Attribution.SUCCESS_SKILL_USED
-                if called_skill_ids
+                if called
                 else Attribution.SUCCESS_NO_SKILL_SEEN
             )
         else:
             att.overall_attribution = (
                 Attribution.FAILURE_SKILL_USED
-                if called_skill_ids
+                if called
                 else Attribution.FAILURE_SKILL_NOT_USED
             )
+
+        if r_task == 0 and called and att.analysis_status == AnalysisStatus.VALID:
+            assessed_ids = {item.skill_id for item in assessments}
+            noncompliant = assessed_ids == called and all(
+                item.status in {
+                    SkillUsageStatus.IGNORED,
+                    SkillUsageStatus.CONTRADICTED,
+                }
+                for item in assessments
+            )
+            if noncompliant:
+                att.diagnosis_status = DiagnosisStatus.AGENT_NONCOMPLIANCE
+                att.edit_candidate_skill_id = None
+                att.proposed_skill_change = ""
+            elif att.diagnosis_status == DiagnosisStatus.ACTIONABLE:
+                candidate = att.edit_candidate_skill_id
+                causal = any(
+                    item.skill_id == candidate
+                    and item.causal_to_failure
+                    and item.status in {
+                        SkillUsageStatus.FOLLOWED,
+                        SkillUsageStatus.PARTIALLY_FOLLOWED,
+                    }
+                    and item.confidence >= 0.6
+                    for item in assessments
+                )
+                if not causal:
+                    att.diagnosis_status = DiagnosisStatus.INSUFFICIENT_EVIDENCE
+                    att.edit_candidate_skill_id = None
         return att
 
     @staticmethod
@@ -158,9 +203,8 @@ class AttributionAnalyzer:
     def _parse(raw: str) -> TrialAttribution:
         """Parse the LLM JSON output, robust to prose-wrapped JSON.
 
-        Empty / unparseable responses fall back to a conservative
-        default of ``FAILURE_SKILL_NOT_USED`` with no extracted knowledge,
-        so the bridge can still update Q-tables without crashing.
+        Empty, unparseable, or schema-invalid responses are explicitly
+        marked invalid so downstream mutation steps fail closed.
         """
         candidates: list[dict[str, Any]] = []
         # Direct parse
@@ -198,7 +242,12 @@ class AttributionAnalyzer:
             # in the audit log instead of being silently swallowed.
             return TrialAttribution(
                 overall_attribution=Attribution.FAILURE_SKILL_NOT_USED,
-                overall_rationale="attribution parse failed; defaulting to FAILURE_SKILL_NOT_USED",
+                overall_rationale=(
+                    "attribution parse failed; nominal "
+                    "FAILURE_SKILL_NOT_USED; library mutation disabled"
+                ),
+                analysis_status=AnalysisStatus.INVALID,
+                diagnosis_status=DiagnosisStatus.INSUFFICIENT_EVIDENCE,
             )
 
         obj = candidates[0]
@@ -207,7 +256,12 @@ class AttributionAnalyzer:
         except Exception:
             return TrialAttribution(
                 overall_attribution=Attribution.FAILURE_SKILL_NOT_USED,
-                overall_rationale="attribution validation failed; defaulting to FAILURE_SKILL_NOT_USED",
+                overall_rationale=(
+                    "attribution validation failed; nominal "
+                    "FAILURE_SKILL_NOT_USED; library mutation disabled"
+                ),
+                analysis_status=AnalysisStatus.INVALID,
+                diagnosis_status=DiagnosisStatus.INSUFFICIENT_EVIDENCE,
             )
 
 

@@ -61,6 +61,46 @@ class Attribution(str, Enum):
     FAIL_ENV_ISSUE = "fail_env_issue"
 
 
+class AnalysisStatus(str, Enum):
+    """Whether the attribution response is safe to consume downstream."""
+
+    VALID = "valid"
+    INVALID = "invalid"
+
+
+class DiagnosisStatus(str, Enum):
+    """Structured routing signal for skill-library mutations."""
+
+    ACTIONABLE = "actionable"
+    UNCERTAIN = "uncertain"
+    VERIFIER_MISMATCH = "verifier_mismatch"
+    ENVIRONMENT = "environment"
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+    AGENT_NONCOMPLIANCE = "agent_noncompliance"
+
+
+class SkillUsageStatus(str, Enum):
+    """How an approved skill call affected the agent's execution."""
+
+    FOLLOWED = "followed"
+    PARTIALLY_FOLLOWED = "partially_followed"
+    IGNORED = "ignored"
+    CONTRADICTED = "contradicted"
+    UNCLEAR = "unclear"
+
+
+class SkillUsageAssessment(BaseModel):
+    """Evidence-backed assessment for one actually-called skill."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    skill_id: str = Field(min_length=1)
+    status: SkillUsageStatus = SkillUsageStatus.UNCLEAR
+    evidence: list[str] = Field(default_factory=list)
+    causal_to_failure: bool = False
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
 class SubtaskOutcome(BaseModel):
     """Per-subtask attribution. Currently informational; the bridge
     aggregates to :class:`TrialAttribution.overall_attribution`.
@@ -113,6 +153,18 @@ class TrialAttribution(BaseModel):
     # field on the attribution result so the failure-path extract
     # prompt can prefer it over knowledge_to_extract as the seed.
     library_gap_skill_description: str = ""
+    # These fields are optional-at-load for compatibility with historical
+    # attribution artifacts.  Their conservative defaults deliberately make
+    # old/unstructured diagnoses ineligible for automatic mutation.
+    analysis_status: AnalysisStatus = AnalysisStatus.VALID
+    diagnosis_status: DiagnosisStatus = DiagnosisStatus.INSUFFICIENT_EVIDENCE
+    diagnosis_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    failure_mechanism: str = ""
+    proposed_skill_change: str = ""
+    edit_candidate_skill_id: str | None = None
+    skill_usage_assessments: list[SkillUsageAssessment] = Field(
+        default_factory=list
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +199,11 @@ class StubAttributionBackend:
             "overall_rationale": "stub: deterministic attribution",
             "subtasks": [],
             "knowledge_to_extract": self._knowledge,
+            "analysis_status": AnalysisStatus.VALID.value,
+            "diagnosis_status": DiagnosisStatus.ACTIONABLE.value,
+            "diagnosis_confidence": 1.0,
+            "failure_mechanism": self._knowledge,
+            "proposed_skill_change": self._knowledge,
         }
         return json.dumps(payload, ensure_ascii=False)
 
@@ -176,6 +233,8 @@ class LiteLLMAttributionBackend(LiteLLMCompletion):
 def summarize_for_log(attribution: TrialAttribution) -> str:
     return (
         f"attribution={attribution.overall_attribution.value} "
+        f"analysis_status={attribution.analysis_status.value} "
+        f"diagnosis_status={attribution.diagnosis_status.value} "
         f"knowledge_chars={len(attribution.knowledge_to_extract)} "
         f"subtasks={len(attribution.subtasks)}"
     )
@@ -183,6 +242,10 @@ def summarize_for_log(attribution: TrialAttribution) -> str:
 
 __all__ = [
     "Attribution",
+    "AnalysisStatus",
+    "DiagnosisStatus",
+    "SkillUsageStatus",
+    "SkillUsageAssessment",
     "SubtaskOutcome",
     "TrialAttribution",
     "AttributionBackend",

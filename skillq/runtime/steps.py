@@ -49,10 +49,8 @@ impossible here because step functions take only ``ctx`` and
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import re
 import shutil
 import time
 from collections import defaultdict
@@ -60,23 +58,28 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from skillq.layers.l3_attribution.models import Attribution, TrialAttribution
+from skillq.layers.l1_retrieval.scoring import cosine as _cosine
+from skillq.layers.l3_attribution.models import (
+    AnalysisStatus,
+    Attribution,
+    DiagnosisStatus,
+    SkillUsageStatus,
+    TrialAttribution,
+)
+from skillq.layers.l4_evolve.create import SkillExtractor
 from skillq.services.ranking_service import sync_embed
 from skillq.shared.backends.litellm import LiteLLMEmbedder
-from skillq.shared.embeddings import _description_of, sync_lib_to_vector_table
-from skillq.shared.mirror import mirror_skill_to_host_dir
-from skillq.layers.l1_retrieval.scoring import cosine as _cosine
-from skillq.layers.l4_evolve.create import SkillExtractor
 from skillq.shared.calls_log import (
-    _SubTaskCallRecord,
     _extract_skill_calls_from_session,
     _read_skill_calls_log,
+    _SubTaskCallRecord,
 )
-from skillq.shared.chown import chown_agent_sessions_to_host_user
 from skillq.shared.classify_trial_failure import (
     TrialFailureClass,
     classify_trial_failure,
 )
+from skillq.shared.embeddings import _description_of, sync_lib_to_vector_table
+from skillq.shared.mirror import mirror_skill_to_host_dir
 from skillq.shared.session_tail import _read_session_assistant_tail
 
 
@@ -95,7 +98,7 @@ def _resolve_calls_log_path(trial_dir: Path) -> Path:
 
 
 if TYPE_CHECKING:
-    from skillq.runtime.context import MethodServices, StepResult, TrialContext
+    from skillq.runtime.context import StepResult, TrialContext
 
 
 logger = logging.getLogger("skillq.runtime.steps")
@@ -373,12 +376,34 @@ async def step_attribute(ctx: "TrialContext", result: "StepResult") -> None:
 
     try:
         called_skill_ids = [c.skill_id for c in _approved]
+        task_instruction = next(
+            (
+                c.intent_text.strip()
+                for c in _calls
+                if c.intent_text and c.intent_text.strip()
+            ),
+            ctx.intent_text,
+        )
+        event_result = getattr(ctx.event, "result", None)
+        verifier_payload = {
+            "rewards": getattr(
+                getattr(event_result, "verifier_result", None),
+                "rewards",
+                None,
+            ),
+            "exception_info": str(
+                getattr(event_result, "exception_info", "") or ""
+            )[:2000],
+        }
         attribution = ctx.services.attribution_analyzer.analyze(
-            task=ctx.intent_text,
+            task=task_instruction,
             trial_dir=ctx.trial_dir,
             available_skill_ids=skill_ids,
             r_task=ctx.r_task,
             called_skill_ids=called_skill_ids,
+            verifier_context=json.dumps(
+                verifier_payload, ensure_ascii=False, default=str
+            ),
         )
     except Exception:
         logger.exception(
@@ -388,15 +413,22 @@ async def step_attribute(ctx: "TrialContext", result: "StepResult") -> None:
         attribution = TrialAttribution(
             overall_attribution=(
                 Attribution.SUCCESS_NO_SKILL_SEEN if ctx.r_task
-                else Attribution.FAILURE_SKILL_USED
+                else Attribution.FAILURE_SKILL_NOT_USED
             ),
             overall_rationale="[attribution-fallback] model call failed",
             knowledge_to_extract="",
+            analysis_status=AnalysisStatus.INVALID,
+            diagnosis_status=DiagnosisStatus.INSUFFICIENT_EVIDENCE,
         )
 
-    # If calls_log proves a lib skill was used but the LLM returned a
-    # mismatch, correct the verdict.  knowledge_to_extract is preserved.
-    if ctx.r_task == 0 and _approved:
+    # Keep the enum consistent with objective call evidence, but never
+    # upgrade an invalid analysis into an edit-eligible diagnosis.
+    if (
+        ctx.r_task == 0
+        and _approved
+        and attribution.analysis_status == AnalysisStatus.VALID
+        and attribution.diagnosis_status != DiagnosisStatus.ENVIRONMENT
+    ):
         if attribution.overall_attribution not in (
             Attribution.FAILURE_SKILL_USED,
         ):
@@ -583,6 +615,11 @@ async def step_incremental_edit(ctx: "TrialContext", result: "StepResult") -> No
     if (
         attribution is None
         or attribution.overall_attribution != Attribution.FAILURE_SKILL_USED
+        or attribution.analysis_status != AnalysisStatus.VALID
+        or attribution.diagnosis_status != DiagnosisStatus.ACTIONABLE
+        or attribution.diagnosis_confidence < 0.6
+        or not attribution.proposed_skill_change.strip()
+        or not attribution.edit_candidate_skill_id
     ):
         return
 
@@ -592,13 +629,30 @@ async def step_incremental_edit(ctx: "TrialContext", result: "StepResult") -> No
     # likely to be at fault.
     _log = _resolve_calls_log_path(ctx.trial_dir)
     _calls = _read_skill_calls_log(_log)
+    if not _calls:
+        _calls = _extract_skill_calls_from_session(ctx.trial_dir)
     _called_ids = {c.skill_id for c in _calls if c.skill_id and not c.denied}
     if not _called_ids:
         return
-    target_skills = [services.lib.get(sid) for sid in _called_ids if services.lib.get(sid)]
-    if not target_skills:
+    candidate_id = attribution.edit_candidate_skill_id
+    if candidate_id not in _called_ids:
         return
-    top = min(target_skills, key=lambda s: services.mgr.q_for(s.skill_id))
+    causal_assessment = next(
+        (
+            item for item in attribution.skill_usage_assessments
+            if item.skill_id == candidate_id
+            and item.causal_to_failure
+            and item.status in {
+                SkillUsageStatus.FOLLOWED,
+                SkillUsageStatus.PARTIALLY_FOLLOWED,
+            }
+            and item.confidence >= 0.6
+        ),
+        None,
+    )
+    if causal_assessment is None:
+        return
+    top = services.lib.skills.get(candidate_id)
     if top is None:
         return
 
@@ -606,44 +660,21 @@ async def step_incremental_edit(ctx: "TrialContext", result: "StepResult") -> No
     # + a tail of the session log.
     diagnosis_parts: list[str] = []
     if attribution is not None:
-        kx = attribution.knowledge_to_extract.strip()
-        if kx:
-            diagnosis_parts.append(f"knowledge_to_extract: {kx}")
-        gx = attribution.library_gap_skill_description.strip()
-        if gx:
-            diagnosis_parts.append(f"library_gap_skill_description: {gx}")
-        rx = attribution.overall_rationale.strip()
-        if rx:
-            diagnosis_parts.append(f"overall_rationale: {rx}")
+        knowledge = attribution.knowledge_to_extract.strip()
+        if knowledge:
+            diagnosis_parts.append(f"knowledge_to_extract: {knowledge}")
+        mechanism = attribution.failure_mechanism.strip()
+        if mechanism:
+            diagnosis_parts.append(f"failure_mechanism: {mechanism}")
+        diagnosis_parts.append(
+            "proposed_skill_change: "
+            f"{attribution.proposed_skill_change.strip()}"
+        )
     diagnosis = "\n".join(diagnosis_parts)
     logger.warning(
         "L3 incremental_edit: trial=%s diagnosis_chars=%d",
         ctx.trial_id, len(diagnosis),
     )
-    # Quality gate: skip edit when the attribution LLM produced a
-    # diagnosis that is too short or too vague to support a targeted
-    # fix.  Editing a skill based on a guess risks degrading a
-    # correctly-working skill (Case 2/4 in the L4 edit audit).
-    if not diagnosis or len(diagnosis) < 50:
-        logger.warning(
-            "L3 incremental_edit skipped: diagnosis too short (%d chars) "
-            "for trial %s; attribution couldn't identify a specific fix.",
-            len(diagnosis), ctx.trial_id,
-        )
-        return
-    _uncertain = re.search(
-        r"\b(?:可能|不确定|unclear|appears?\s+correct|may\s+stem|may\s+be|likely|probably|mismatch|unknown)\b",
-        diagnosis, re.IGNORECASE,
-    )
-    if _uncertain:
-        logger.warning(
-            "L3 incremental_edit skipped: diagnosis contains uncertainty "
-            "marker '%s' for trial %s; edit withheld to avoid degrading "
-            "a potentially-correct skill.",
-            _uncertain.group(0), ctx.trial_id,
-        )
-        return
-
     tail = _read_session_assistant_tail(ctx.trial_dir, k=3, per_message_chars=2000)
 
     try:
@@ -661,6 +692,28 @@ async def step_incremental_edit(ctx: "TrialContext", result: "StepResult") -> No
         return
     if new_skill is top:
         return
+
+    # Publish to the host-visible skill directory before committing the
+    # in-memory replacement.  A mirror failure therefore leaves the active
+    # library, Q value, and embedding delta untouched.
+    if method.seed_skills_dir is not None:
+        try:
+            mirrored = mirror_skill_to_host_dir(
+                new_skill, method.seed_skills_dir, force=True,
+            )
+            if not mirrored:
+                logger.error(
+                    "L3 mirror reported failure for skill %s; edit rejected.",
+                    new_skill.skill_id,
+                )
+                return
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "L3 mirror to seed_skills_dir failed for skill %s; "
+                "edit rejected and in-memory library left unchanged.",
+                new_skill.skill_id,
+            )
+            return
 
     services.lib.replace(new_skill)
     result.edited_skill_id = new_skill.skill_id
@@ -692,26 +745,6 @@ async def step_incremental_edit(ctx: "TrialContext", result: "StepResult") -> No
             "L3 edit: skill=%s Q %.3f→%.3f (edit_dist=%.3f)",
             new_skill.skill_id, _old_q, _new_q, _edit_dist,
         )
-
-    # 2026-06-29 (Phase 10 Bug 3): critical — mirror the edited body
-    # to seed_skills_dir so the next trial's container (which reads
-    # bind-mounted /skills) sees the *new* body, not the seed body
-    # or L3's prior write. force=True because L3 itself wrote the
-    # previous body; the default idempotent skip would silently
-    # re-expose the bug after the first edit lands. L4 Create keeps
-    # the default force=False to preserve the human-edit guarantee.
-    if method.seed_skills_dir is not None:
-        try:
-            mirror_skill_to_host_dir(
-                new_skill, method.seed_skills_dir, force=True,
-            )
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "L3 mirror to seed_skills_dir failed for skill %s; "
-                "in-memory lib is correct but next trial may read "
-                "stale body until the next successful edit.",
-                new_skill.skill_id,
-            )
 
     # 2026-07-01: funnel the edit through result.lib_changes so
     # step_refresh_emb_cache (which now runs LAST, after both L3
@@ -771,7 +804,11 @@ async def step_dispatch_evolve(ctx: "TrialContext", result: "StepResult") -> Non
     attribution = result.attribution
     if attribution is None or extractor is None:
         return
-
+    if attribution.analysis_status != AnalysisStatus.VALID:
+        logger.warning(
+            "l4_dispatch_skipped_invalid_analysis: trial=%s", ctx.trial_id
+        )
+        return
     # Fix 2 (2026-07-01, small10 gap 2): cross-check the "no skill used"
     # verdict against the container's PreToolUse calls_log. The LLM
     # occasionally misclassifies *_NO_SKILL_SEEN / *_SKILL_NOT_USED when

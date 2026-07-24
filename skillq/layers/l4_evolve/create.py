@@ -236,8 +236,13 @@ class SkillExtractor:
             **format_kwargs,
         )
 
+        # On Windows, ``subprocess.run(["claude", ...])`` does not
+        # resolve npm's ``claude.cmd`` shim even though PowerShell does.
+        # Resolve the executable before spawning so host-side L4 Create
+        # works with the normal npm installation on every platform.
+        resolved_cli = shutil.which(self.claude_cli) or self.claude_cli
         cmd = [
-            self.claude_cli,
+            resolved_cli,
             "--print",
             "--permission-mode=bypassPermissions",
             "--output-format",
@@ -246,13 +251,13 @@ class SkillExtractor:
             "--append-system-prompt",
             system_prompt,
             # Bug 4 fix: ``claude --print`` requires a user prompt
-            # (from stdin or as the ``-p`` argument); the system
+            # (from stdin or as a positional argument); the system
             # prompt alone is rejected with "Input must be provided
             # either through stdin or as a prompt argument when
             # using --print". The user prompt is the trigger
             # instruction — the system prompt carries the format
             # and constraints.
-            "-p",
+            "--",
             f"Task: {task}\n\n"
             f"Synthesize a reusable SKILL.md into "
             f"{sandbox}/create/<your-skill-name>/SKILL.md.",
@@ -260,7 +265,7 @@ class SkillExtractor:
 
         logger.info(
             "extract_batch invoking: claude_cli=%s model=%s timeout=%ss",
-            self.claude_cli,
+            resolved_cli,
             self.model or "(claude CLI default)",
             self.timeout_sec,
         )
@@ -281,7 +286,7 @@ class SkillExtractor:
             )
             return None, sandbox
         except FileNotFoundError:
-            logger.warning("claude CLI not found at %s", self.claude_cli)
+            logger.warning("claude CLI not found at %s", resolved_cli)
             return None, sandbox
 
         if proc.returncode != 0:

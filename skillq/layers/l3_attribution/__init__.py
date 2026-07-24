@@ -14,20 +14,28 @@ EditRefiner and EDIT_PROMPT moved to ``layers/l4_evolve/``
 (2026-07-20 refactor: all skill-mutation actions belong in L4).
 """
 
+from skillq.layers.l3_attribution.analyzer import AttributionAnalyzer  # noqa: F401
 from skillq.layers.l3_attribution.models import (  # noqa: F401
+    AnalysisStatus,
     Attribution,
+    AttributionBackend,
+    DiagnosisStatus,
+    LiteLLMAttributionBackend,
+    SkillUsageAssessment,
+    SkillUsageStatus,
+    StubAttributionBackend,
     SubtaskOutcome,
     TrialAttribution,
-    AttributionBackend,
-    StubAttributionBackend,
-    LiteLLMAttributionBackend,
     summarize_for_log,
 )
-from skillq.layers.l3_attribution.analyzer import AttributionAnalyzer  # noqa: F401
 from skillq.layers.l3_attribution.prompts import ATTRIBUTION_PROMPT  # noqa: F401
 
 __all__ = [
     "Attribution",
+    "AnalysisStatus",
+    "DiagnosisStatus",
+    "SkillUsageStatus",
+    "SkillUsageAssessment",
     "SubtaskOutcome",
     "TrialAttribution",
     "AttributionBackend",

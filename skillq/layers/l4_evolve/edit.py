@@ -23,8 +23,11 @@ Create). See ``doc/SKILLQ_RUN_RESULTS_2026-06-25.md`` for context.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Protocol
+
+import yaml
 
 from skillq.layers.l4_evolve.prompts import EDIT_PROMPT
 from skillq.shared.types import Skill
@@ -58,6 +61,58 @@ class StubEditBackend:
 
     def __call__(self, prompt: str, model: str) -> str:
         return "\n<!-- EDIT: handle previously-missed edge case. -->\n"
+
+
+def _frontmatter(body: str) -> dict[str, object] | None:
+    """Parse a leading YAML frontmatter block, returning ``None`` if absent."""
+
+    match = re.match(
+        r"\A---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|$)",
+        body,
+        re.DOTALL,
+    )
+    if not match:
+        return None
+    try:
+        parsed = yaml.safe_load(match.group(1))
+    except yaml.YAMLError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def validate_edited_skill(old_skill: Skill, new_body: str) -> str | None:
+    """Return a safe normalized edit, or ``None`` when validation fails."""
+
+    candidate = new_body.strip()
+    if not candidate or candidate == old_skill.body.strip():
+        return None
+    if re.fullmatch(
+        r"```(?:markdown|md)?[ \t]*\r?\n[\s\S]*\r?\n```[ \t]*",
+        candidate,
+        re.IGNORECASE,
+    ):
+        return None
+
+    old_meta = _frontmatter(old_skill.body.strip())
+    new_meta = _frontmatter(candidate)
+    if old_meta is not None or candidate.startswith("---"):
+        if new_meta is None:
+            return None
+        old_name = (
+            str(old_meta.get("name", "")).strip()
+            if old_meta is not None
+            else old_skill.skill_id
+        )
+        if not old_name or str(new_meta.get("name", "")).strip() != old_name:
+            return None
+        description = new_meta.get("description")
+        if not isinstance(description, str) or not description.strip():
+            return None
+
+    old_size = len(old_skill.body.strip())
+    if old_size >= 80 and len(candidate) < int(old_size * 0.6):
+        return None
+    return candidate
 
 
 @dataclass
@@ -131,10 +186,10 @@ class EditRefiner:
             tail_k=3,
             old_skill=skill.body,
         )
-        new_body = self.backend(prompt, self.model).strip()
-
-        # Basic sanity: empty or no-op edit → keep the original.
-        if not new_body or new_body == skill.body.strip():
+        new_body = validate_edited_skill(
+            skill, self.backend(prompt, self.model)
+        )
+        if new_body is None:
             return skill
 
         return Skill(
@@ -150,5 +205,6 @@ class EditRefiner:
 __all__ = [
     "EditProposalBackend",
     "StubEditBackend",
+    "validate_edited_skill",
     "EditRefiner",
 ]

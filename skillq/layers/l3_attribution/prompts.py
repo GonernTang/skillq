@@ -16,7 +16,6 @@ intentionally not a copy of the vendored skillsvote prompts.
 
 from __future__ import annotations
 
-
 # ---------------------------------------------------------------------------
 # ATTRIBUTION (mirrors skillsvote feedback step)
 # ---------------------------------------------------------------------------
@@ -42,6 +41,20 @@ pick the top-level ``overall_attribution`` enum. You do NOT output
 that field. You DO still attribute each *subtask* to one of the enum
 values below, because subtask-level attribution is informational and
 not derivable from the verifier reward alone.
+
+Approved skill calls recorded by the hook:
+```json
+{called_skill_ids}
+```
+
+Detailed verifier context (may be unavailable):
+```
+{verifier_context}
+```
+
+Do not assume a zero reward proves that a skill is defective. A
+format-only verifier failure, inconsistent expected answer, or missing
+evidence must be represented by the structured diagnosis fields below.
 
 ## Available skills
 
@@ -123,12 +136,11 @@ Return a JSON object with these fields. Do NOT include
     - `skill_refs`: list of `{{file_path, start_line, end_line,
       capability, used_for}}` (may be empty)
 - `knowledge_to_extract`: a *concrete* procedural description of
-  what made the trial succeed (or, for failures, what went
-  wrong). MUST be non-empty when r_task = 1; the whole point of
-  this step is to harvest a reusable procedure. For r_task = 0,
-  also provide a non-empty string unless the failure was strictly
-  env-only. DO NOT include task-specific facts, paths, or one-off
-  values; only the reusable *procedure*.
+  what made the trial succeed, or a reusable failure lesson when
+  the evidence clearly supports one. It MAY be empty. An empty
+  value is required when evidence is insufficient; never invent a
+  procedure merely because r_task is zero. DO NOT include
+  task-specific facts, paths, or one-off values.
 - `library_gap_skill_description`: set this when the trial
   signals a missing-skill scenario — i.e. the agent succeeded
   without any library skill contributing (``success_no_skill_seen``)
@@ -143,6 +155,37 @@ Return a JSON object with these fields. Do NOT include
   Empty string otherwise. This field seeds the failure-path
   auto-extract step — without it the library will not learn
   from this trial.
+
+- `analysis_status`: `valid` when this JSON is a complete,
+  evidence-based analysis; otherwise `invalid`.
+- `diagnosis_status`: exactly one of `actionable`, `uncertain`,
+  `verifier_mismatch`, `environment`, `insufficient_evidence`, or
+  `agent_noncompliance`. A well-supported missing-library-skill gap
+  is `actionable` even though `edit_candidate_skill_id` remains null.
+- `diagnosis_confidence`: number from 0 to 1. Use at least 0.6 only
+  when direct evidence supports both the failure mechanism and change.
+- `failure_mechanism`: concise causal mechanism supported by trace
+  evidence; empty when it cannot be established.
+- `proposed_skill_change`: a concrete, minimal change to an existing
+  skill. Empty unless `diagnosis_status` is `actionable`.
+- `edit_candidate_skill_id`: the exact called skill id that should
+  be edited, or null. It must be null unless that skill was followed
+  and causally contributed to the failure.
+- `skill_usage_assessments`: one item for each approved called skill:
+    - `skill_id`: exact id from the approved-call list
+    - `status`: one of `followed`, `partially_followed`, `ignored`,
+      `contradicted`, `unclear`
+    - `evidence`: short trace-grounded evidence strings
+    - `causal_to_failure`: boolean
+    - `confidence`: number from 0 to 1
+
+If a skill was called but ignored or contradicted by the agent, use
+`agent_noncompliance`; do not propose editing or creating a skill.
+If verifier evidence conflicts with the trace, use
+`verifier_mismatch`. When you cannot distinguish an agent error from
+a skill defect, use `uncertain` or `insufficient_evidence`. In all
+these cases leave `proposed_skill_change` empty and
+`edit_candidate_skill_id` null.
 
 TASK INSTRUCTION
 ----------------

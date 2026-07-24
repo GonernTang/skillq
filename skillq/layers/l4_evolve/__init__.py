@@ -19,6 +19,7 @@ from skillq.layers.l4_evolve.edit import (  # noqa: F401
     EditProposalBackend,
     EditRefiner,
     StubEditBackend,
+    validate_edited_skill,
 )
 from skillq.layers.l4_evolve.extract_buffer import ExtractBuffer  # noqa: F401
 from skillq.layers.l4_evolve.prompts import (  # noqa: F401
@@ -33,6 +34,7 @@ __all__ = [
     "EditRefiner",
     "EditProposalBackend",
     "StubEditBackend",
+    "validate_edited_skill",
     "BATCHED_EXTRACT_SKILL_PROMPT",
     "BATCHED_EXTRACT_SKILL_FROM_FAILURE_PROMPT",
     "EDIT_PROMPT",
